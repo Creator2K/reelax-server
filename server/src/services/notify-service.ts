@@ -46,7 +46,16 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 }
 
 /** 登录/连接阶段的超时（扫码等待不算在内，那是 onQrUrl 回调） */
-const CONNECT_TIMEOUT_MS = 45_000;
+const CONNECT_TIMEOUT_MS = 60_000;
+
+/**
+ * 进程内每个通道自动恢复的尝试次数上限。
+ *
+ * 为什么需要：状态是 error 时不该无限重连（会刷日志），但也不能"一次失败就
+ * 永久等用户手动点"—— 那样一次网络抖动之后，重启也不会再试，用户以为坏了。
+ * 折中：每次进程启动最多自动试这么多次，用尽后等用户点「重新连接」。
+ */
+const MAX_AUTO_RECOVER = 3;
 
 export type NotifyMessage = {
   title: string;
@@ -231,6 +240,8 @@ export class NotifyService {
     /** channelId → 运行中的 bot */
     const bots = new Map<string, any>();
     const starting = new Set<string>();
+    /** 自动恢复尝试计数（见 shouldInit） */
+    const autoRecoverCount = new Map<string, number>();
 
     const credsDir = (id: string) => path.join(this.deps.dataDir, "wechat-creds", id);
 
@@ -418,9 +429,9 @@ export class NotifyService {
           });
 
           // 给轮询一点启动时间，然后确认它真的在跑
-          await sleep(600);
+          await sleep(1500);
           if (bot.isRunning === false) {
-            throw new Error("微信轮询未能启动");
+            throw new Error("微信轮询未能启动（isRunning=false）");
           }
 
           const live = repos.notify.findById(ch.id);
@@ -501,7 +512,12 @@ export class NotifyService {
      */
     const shouldInit = (channel: NotifyRow): boolean => {
       if (!channel.enabled) return false;
-      if (channel.status === "error") return false;
+      if (channel.status === "error") {
+        // 失败过的通道：本次进程内最多再自动试几次；用尽后交给用户手动重连
+        const tried = autoRecoverCount.get(channel.id) ?? 0;
+        if (tried >= MAX_AUTO_RECOVER) return false;
+        autoRecoverCount.set(channel.id, tried + 1);
+      }
       return true;
     };
 
