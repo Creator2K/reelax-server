@@ -166,7 +166,10 @@ export function buildStatusPanel(inputs: StatusPanelInputs): StatusPanel {
   // 船队分区：最近一杆的服务端结算里带出来
   const partyBp = num(state?.lastResult?.partyBonusBasisPoints);
 
-  const weatherId = biome?.weather?.weatherId ?? null;
+  // 天气 id：模拟器（对真实响应验证过）用的是 `weatherId || id`，
+  // 这里保持一致，避免游戏在某处只下发 id 时天气面板变成空白。
+  const weatherRaw = biome?.weather ?? null;
+  const weatherId = weatherRaw?.weatherId ?? weatherRaw?.id ?? null;
   const weatherMult = weatherMultiplier(weatherId);
   const weatherBp = Math.round((weatherMult - 1) * 10_000);
 

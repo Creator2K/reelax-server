@@ -1,21 +1,6 @@
-fix: 自动换饵反复购买鱼饵（字段名写错）
+﻿fix: 天气 id 兼容 weatherId / id 两种写法
 
-真机日志暴露的 bug：每次检查都在买 200 个鱼饵
-
-  🛒 已购买 高级饵 ×200（单价 200，约 40,000 金币）   ← 每轮都买
-
-原因：判断余量时读的是 wanted.ownedQuantity，而 /api/baits 的真实字段是
-wanted.quantity，还漏了基础饵的 isUnlimited。
-读不到的字段不会报错，只会变成 undefined → 永远判定「没饵」→ 反复购买，
-白花金币而且日志刷屏。
-
-修复与加固：
-- 抽出 modules/auto-bait/baits.ts，把「余量字段名 / 无限饵 / 购买数量夹取」
-  这些接口契约写成纯函数，并加 18 项测试钉住
-- 补货前先看 isUnlimited（基础饵免费且无限，不该买）
-- 有库存时记一条「还有 N 个，无需补货」，而不是静默
-- extractBaits / findSelectedBait 统一兼容 baits|items|list 与
-  isSelected|selected|isEquipped 三种字段写法（旧代码只认一种）
-- 顺带：日志与提示统一用中文档位名（baitDisplayName）
-
-测试：355 项（新增 18 项）
+模拟器（对真实响应验证过）读的是 biome.weather.weatherId || biome.weather.id，
+我这边只认 weatherId。当前真实响应带的是 weatherId，所以一直正常，
+但游戏若在某处只下发 id，天气面板会变空白、奥秘涌流判断也会失效。
+两处都补上回退，保持与模拟器一致。

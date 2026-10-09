@@ -130,7 +130,9 @@ const definition: ModuleDefinition = {
         const data = await ctx.api.biomes();
         const list: any[] = data?.biomes ?? [];
         const current = list.find((b) => b.isCurrent);
-        if (current?.weather?.weatherId === ARCANE_SURGE) return { key: "surge", why: "奥秘涌流" };
+        // 与模拟器一致：天气 id 可能是 weatherId 或 id
+        const wid = current?.weather?.weatherId ?? current?.weather?.id;
+        if (wid === ARCANE_SURGE) return { key: "surge", why: "奥秘涌流" };
       } catch {
         /* 天气拿不到就按平时处理 */
       }
