@@ -9,6 +9,7 @@ import {
 } from "@tabler/icons-react";
 import { PageContainer, EmptyState, SectionTitle } from "@/components/layout/PageContainer.tsx";
 import { StatCard } from "@/components/domain/StatCard.tsx";
+import { CountingNumber } from "@/components/animate-ui/counting-number.tsx";
 import { StatusBadge } from "@/components/domain/StatusBadge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -93,13 +94,37 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard
           label="在线账号"
-          value={`${online} / ${list.length}`}
-          sub={`${list.filter((a) => a.status !== "stopped").length} 个引擎运行中`}
-          icon={<IconUsers />}
+          tone={online > 0 ? "success" : "neutral"}
+          value={
+            <span>
+              {online} <span className="text-muted-foreground text-base font-normal">/ {list.length}</span>
+            </span>
+          }
+          hint={`${list.filter((a) => a.status !== "stopped").length} 个引擎运行中`}
+          icon={<IconUsers className="size-3.5" />}
         />
-        <StatCard label="累计结算" value={fmtNum(casts)} sub="引擎启动以来（杆）" icon={<IconActivity />} />
-        <StatCard label="累计金币" value={fmtNum(gold)} sub="税后净金币" icon={<IconCoin />} />
-        <StatCard label="累计渔获" value={fmtNum(fish)} sub="鱼条数" icon={<IconFish />} />
+        <StatCard
+          label="累计结算"
+          value={<CountingNumber number={casts} />}
+          hint="引擎启动以来（杆）"
+          icon={<IconActivity className="size-3.5" />}
+          delay={0.04}
+        />
+        <StatCard
+          label="累计金币"
+          tone="warning"
+          value={<CountingNumber number={gold} />}
+          hint="税后净金币"
+          icon={<IconCoin className="size-3.5" />}
+          delay={0.08}
+        />
+        <StatCard
+          label="累计渔获"
+          value={<CountingNumber number={fish} />}
+          hint="鱼条数"
+          icon={<IconFish className="size-3.5" />}
+          delay={0.12}
+        />
       </div>
 
       <div className="mt-6">

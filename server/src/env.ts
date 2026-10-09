@@ -47,6 +47,18 @@ const schema = z.object({
    */
   ALLOW_LOCAL_UPDATE: boolish,
 
+  // ---- 部署时的默认管理员 ----
+  /**
+   * 启动时自动创建/修正的管理员登录名。
+   * 留空 = 不自动创建（此时「第一个注册的用户」成为管理员，适合本地自用）。
+   */
+  ADMIN_USERNAME: z.string().optional().default("admin"),
+  /**
+   * 管理员口令。留空 = 每次全新创建时**随机生成**并在启动日志里打印一次。
+   * 一旦设置，每次启动都会把该账号口令重置成这个值（便于找回）。
+   */
+  ADMIN_PASSWORD: z.string().optional().default(""),
+
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).optional().default("info"),
   LOG_RETENTION_DAYS: intish(14),
 
@@ -84,6 +96,10 @@ export type Env = {
   repoSlug: string;
   updaterUrl: string | null;
   allowLocalUpdate: boolean;
+  /** 部署时的默认管理员（username 为空表示不自动创建） */
+  adminUsername: string;
+  /** 管理员指定口令（空表示随机生成） */
+  adminPassword: string;
 };
 
 export class EnvError extends Error {
@@ -180,5 +196,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     updaterUrl: e.REELAX_UPDATER_URL.trim() || null,
     // Docker 里代码在镜像内，本地 git pull 没有意义（而且容器里通常没有 git）
     allowLocalUpdate: e.ALLOW_LOCAL_UPDATE ?? false,
+    adminUsername: e.ADMIN_USERNAME.trim(),
+    adminPassword: e.ADMIN_PASSWORD,
   };
 }

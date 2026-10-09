@@ -1,7 +1,7 @@
 // 业务写操作的 mutation 钩子
 //
 // 统一处理：成功 toast + 失效相关查询；失败由调用方 catch 后展示（useMutation 的 onError）。
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError } from "./api.ts";
 import { ACCOUNTS_QUERY_KEY, MODULES_QUERY_KEY, PROXIES_QUERY_KEY } from "./queries.ts";
@@ -319,6 +319,22 @@ export function useNotifyAction() {
 
 /* ---------------- 在线更新 ---------------- */
 
+export type UpdateStep = "idle" | "preflight" | "git-pull" | "install" | "build" | "recreate" | "done" | "failed";
+
+export type UpdateProgress = {
+  running: boolean;
+  mode: "updater" | "local" | "none";
+  step: UpdateStep;
+  label: string;
+  tail: string[];
+  startedAt: string | null;
+  finishedAt: string | null;
+  ok: boolean | null;
+  error: string | null;
+  before: string | null;
+  after: string | null;
+};
+
 export type UpdateCheck = {
   current: { sha: string; short: string; message: string; date: string | null; author: string | null } | null;
   latest: { sha: string; short: string; message: string; date: string | null; author: string | null } | null;
@@ -334,11 +350,38 @@ export type UpdateCheck = {
 
 export type UpdateApplyResult = { ok: boolean; message: string; restarting: boolean; log?: string };
 
+/** 更新进度轮询：只在「正在更新」时保持较快的间隔，其余时间基本不打扰服务端 */
+export function useUpdateProgress(enabled: boolean) {
+  return useQuery({
+    queryKey: ["admin", "update", "status"],
+    queryFn: () => api.get<UpdateProgress>("/api/admin/update/status"),
+    enabled,
+    refetchInterval: (q) => {
+      const d = q.state.data as UpdateProgress | undefined;
+      // 正在更新 → 1.5 秒看一次；已完成/失败 → 停
+      if (!d) return 1500;
+      return d.running ? 1500 : false;
+    },
+    // 更新期间服务会重启，请求失败是预期内的，不要反复弹错
+    retry: false,
+  });
+}
+
 export function useCheckUpdate() {
   return useMutation({
     mutationFn: () => api.get<UpdateCheck>("/api/admin/update/check"),
     onError: (err) => toast.error(errMessage(err)),
   });
+}
+
+/** 探活：更新会重启服务，用它判断「服务回来了」（这才是可靠的成功信号） */
+export async function probeHealth(timeoutMs = 3000): Promise<boolean> {
+  try {
+    const r = await fetch("/api/health", { signal: AbortSignal.timeout(timeoutMs) });
+    return r.ok;
+  } catch {
+    return false;
+  }
 }
 
 export function useApplyUpdate() {
@@ -350,6 +393,21 @@ export function useApplyUpdate() {
       } else {
         toast.error(data.message, { duration: 12_000 });
       }
+    },
+    onError: (err) => toast.error(errMessage(err)),
+  });
+}
+
+/* ---------------- 管理员：重置用户口令 ---------------- */
+
+export function useResetUserPassword() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, password }: { userId: string; password: string }) =>
+      api.post(`/api/admin/users/${userId}/password`, { password }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin"] });
+      toast.success("口令已重置，该用户的所有登录态已失效");
     },
     onError: (err) => toast.error(errMessage(err)),
   });

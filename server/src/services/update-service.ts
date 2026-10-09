@@ -58,6 +58,50 @@ export type ApplyResult = {
   log?: string;
 };
 
+/** 更新进度（前端轮询显示用） */
+export type UpdateProgress = {
+  /** 是否正在更新 */
+  running: boolean;
+  /** 更新方式：updater（重建容器）/ local（本地 git pull） */
+  mode: "updater" | "local" | "none";
+  /** 当前进行到哪一步 */
+  step: UpdateStep;
+  /** 人类可读的当前状态 */
+  label: string;
+  /** 最近若干行输出（给用户看细节） */
+  tail: string[];
+  /** 开始/结束时间（ISO） */
+  startedAt: string | null;
+  finishedAt: string | null;
+  /** 结束后才有值 */
+  ok: boolean | null;
+  error: string | null;
+  /** 更新前后提交（updater 模式能拿到） */
+  before: string | null;
+  after: string | null;
+};
+
+export type UpdateStep =
+  | "idle"
+  | "preflight"
+  | "git-pull"
+  | "install"
+  | "build"
+  | "recreate"
+  | "done"
+  | "failed";
+
+const STEP_LABELS: Record<UpdateStep, string> = {
+  idle: "空闲",
+  preflight: "检查环境",
+  "git-pull": "拉取最新代码",
+  install: "安装依赖",
+  build: "构建前端",
+  recreate: "重建并重启容器",
+  done: "更新完成",
+  failed: "更新失败",
+};
+
 export type UpdateServiceDeps = {
   logger: Logger;
   /** GitHub owner/repo，用于查询远端（如 Creator2K/reelax-server） */
@@ -85,10 +129,96 @@ function isGitWorktree(dir: string | null): boolean {
 export class UpdateService {
   private deps: UpdateServiceDeps;
   private log: Logger;
+  /** 本地更新（非 updater 模式）的进度，供 /status 轮询 */
+  private localProgress: UpdateProgress = {
+    running: false,
+    mode: "none",
+    step: "idle",
+    label: STEP_LABELS.idle,
+    tail: [],
+    startedAt: null,
+    finishedAt: null,
+    ok: null,
+    error: null,
+    before: null,
+    after: null,
+  };
 
   constructor(deps: UpdateServiceDeps) {
     this.deps = deps;
     this.log = deps.logger;
+  }
+
+  /**
+   * 查询更新进度。
+   *
+   * 有 updater 时读它的 /status（真正的重建发生在那边）；
+   * 否则返回本地记录（本地 git pull 模式的步骤）。
+   * 拿不到进度时返回 idle，前端不会卡在加载态。
+   */
+  async status(): Promise<UpdateProgress> {
+    if (this.deps.updaterUrl) {
+      const doFetch = this.deps.fetchImpl ?? fetch;
+      try {
+        const r = await doFetch(`${this.deps.updaterUrl.replace(/\/+$/, "")}/status`, {
+          signal: AbortSignal.timeout(4000),
+        });
+        if (r.ok) {
+          const j = (await r.json()) as {
+            running?: boolean;
+            last?: {
+              startedAt?: string;
+              finishedAt?: string;
+              ok?: boolean | null;
+              reason?: string;
+              steps?: { step: string; ok: boolean }[];
+              log?: string[];
+              error?: string;
+              before?: string;
+              after?: string;
+            };
+          };
+          const last = j.last ?? null;
+          // 根据已完成的步骤推断当前处于哪一步
+          const done = new Set((last?.steps ?? []).filter((s) => s.ok).map((s) => s.step));
+          const step: UpdateStep = j.running
+            ? done.has("git-pull")
+              ? "recreate"
+              : "git-pull"
+            : last?.ok === true
+              ? "done"
+              : last?.ok === false
+                ? "failed"
+                : "idle";
+
+          return {
+            running: Boolean(j.running),
+            mode: "updater",
+            step,
+            label: STEP_LABELS[step],
+            tail: (last?.log ?? []).slice(-40),
+            startedAt: last?.startedAt ?? null,
+            finishedAt: last?.finishedAt ?? null,
+            ok: last?.ok ?? null,
+            error: last?.error ?? null,
+            before: last?.before ?? null,
+            after: last?.after ?? null,
+          };
+        }
+      } catch {
+        /* 掉线时退回本地状态 */
+      }
+    }
+    return this.localProgress;
+  }
+
+  private setLocalProgress(patch: Partial<UpdateProgress>): void {
+    this.localProgress = { ...this.localProgress, ...patch };
+  }
+
+  private pushLocalLine(line: string): void {
+    const tail = [...this.localProgress.tail, line].slice(-60);
+    this.setLocalProgress({ tail });
   }
 
   /* ---------------- git 读取 ---------------- */
@@ -336,6 +466,23 @@ export class UpdateService {
 
   private async applyLocally(reason: string): Promise<ApplyResult> {
     const dir = this.deps.workDir!;
+
+    // 首次进入时初始化进度（前端从这一步开始轮询）
+    const before = (await this.git(["rev-parse", "HEAD"]))?.slice(0, 40) ?? null;
+    this.setLocalProgress({
+      running: true,
+      mode: "local",
+      step: "git-pull",
+      label: STEP_LABELS["git-pull"],
+      tail: [`触发原因：${reason}`, `更新前提交：${before ?? "未知"}`],
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      ok: null,
+      error: null,
+      before,
+      after: null,
+    });
+
     const run = async (cmd: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; out: string }> => {
       try {
         const { stdout, stderr } = await execFileAsync(cmd, args, {
@@ -352,37 +499,51 @@ export class UpdateService {
     };
 
     const lines: string[] = [`触发原因：${reason}`];
+    const fail = (message: string): ApplyResult => {
+      this.setLocalProgress({
+        running: false,
+        step: "failed",
+        label: STEP_LABELS.failed,
+        finishedAt: new Date().toISOString(),
+        ok: false,
+        error: message,
+      });
+      return { ok: false, restarting: false, message, log: lines.join("\n") };
+    };
 
     // 1) git pull
     const pull = await run("git", ["pull", "--ff-only"], 120_000);
     lines.push(`\n$ git pull --ff-only\n${pull.out.slice(-4000)}`);
+    this.pushLocalLine(`$ git pull --ff-only`);
+    this.pushLocalLine(pull.out.slice(-1500) || "(无输出)");
     if (!pull.ok) {
-      return {
-        ok: false,
-        restarting: false,
-        message: "git pull 失败（可能有本地改动或需要手动处理冲突），请看下方输出。",
-        log: lines.join("\n"),
-      };
+      return fail("git pull 失败（可能有本地改动或需要手动处理冲突），请看下方输出。");
     }
 
-    // 2) 装依赖（package-lock 变了才需要，但 npm ci 幂等且快）
+    // 2) 装依赖
+    this.setLocalProgress({ step: "install", label: STEP_LABELS.install });
+    this.pushLocalLine("$ npm install");
     const install = await run("npm", ["install", "--no-audit", "--no-fund", "--ignore-scripts"], 600_000);
     lines.push(`\n$ npm install\n${install.out.slice(-2000)}`);
-    if (!install.ok) {
-      return {
-        ok: false,
-        restarting: false,
-        message: "依赖安装失败，请看下方输出。",
-        log: lines.join("\n"),
-      };
-    }
+    this.pushLocalLine(install.out.slice(-800) || "(无输出)");
+    if (!install.ok) return fail("依赖安装失败，请看下方输出。");
 
     // 3) 重建前端
+    this.setLocalProgress({ step: "build", label: STEP_LABELS.build });
+    this.pushLocalLine("$ npm run build");
     const build = await run("npm", ["run", "build"], 600_000);
     lines.push(`\n$ npm run build\n${build.out.slice(-2000)}`);
-    if (!build.ok) {
-      return { ok: false, restarting: false, message: "前端构建失败，请看下方输出。", log: lines.join("\n") };
-    }
+    this.pushLocalLine(build.out.slice(-800) || "(无输出)");
+    if (!build.ok) return fail("前端构建失败，请看下方输出。");
+
+    this.setLocalProgress({
+      running: false,
+      step: "done",
+      label: STEP_LABELS.done,
+      finishedAt: new Date().toISOString(),
+      ok: true,
+      after: (await this.git(["rev-parse", "HEAD"]))?.slice(0, 40) ?? null,
+    });
 
     this.log.info("更新", `本地更新完成：${reason}`);
     return {

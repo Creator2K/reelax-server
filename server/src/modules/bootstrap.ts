@@ -16,7 +16,7 @@ export function bootstrapModules(): void {
   if (done) return;
   done = true;
 
-  // 状态面板：保持在线负责汇总地图 / 经验加成 / 等级资源
+  // 状态面板：保持在线负责汇总地图 / 经验加成 / 等级资源 / 保底进度
   registerStatusPanelBuilder((state, rt) =>
     buildStatusPanel({
       state,
@@ -24,6 +24,10 @@ export function bootstrapModules(): void {
       me: rt.me,
       reincarnation: rt.reincarnation,
       bait: rt.bait,
+      // 保底数据（奇异/奥秘硬保底、奥术宝箱、灯塔神器）
+      statistics: rt.statistics,
+      chests: rt.chests,
+      lighthouse: rt.lighthouse,
     }) as unknown as Record<string, unknown>,
   );
 }

@@ -186,6 +186,49 @@ async function main(): Promise<void> {
   );
   maintenance.unref();
 
+  /* ---------- 部署时的默认管理员 ----------
+   * 为什么在启动时建：服务器部署时「第一个访问站点的人」未必是机主，
+   * 把首注册变管理员等于把后台送给先来的人。这里用已知用户名 + 随机口令，
+   * 并把口令写进数据目录（同时打一条日志），机主登录后自行修改。
+   */
+  if (env.adminUsername) {
+    try {
+      const seeded = await auth.ensureAdminAccount({
+        username: env.adminUsername,
+        ...(env.adminPassword ? { password: env.adminPassword } : {}),
+      });
+
+      if (seeded.created && seeded.password) {
+        // 同时落盘一份：容器日志会滚动，而数据目录会跟卷一起备份
+        const notePath = path.join(path.resolve(env.dataDir), "INITIAL_ADMIN.txt");
+        fs.writeFileSync(
+          notePath,
+          [
+            "初始管理员账户（首次部署自动生成）",
+            "",
+            `登录名：${seeded.username}`,
+            `口  令：${seeded.password}`,
+            "",
+            "请登录后立即在「设置」里修改口令，然后删除本文件。",
+            "",
+          ].join("\n"),
+          { encoding: "utf8", mode: 0o600 },
+        );
+        logger.info("管理员", "━".repeat(52));
+        logger.info("管理员", `已创建默认管理员：${seeded.username}`);
+        logger.info("管理员", `初始口令：${seeded.password}`);
+        logger.info("管理员", `（也已写入 ${notePath}，登录后请尽快修改口令）`);
+        logger.info("管理员", "━".repeat(52));
+      } else if (seeded.created) {
+        logger.info("管理员", `已创建默认管理员：${seeded.username}（口令取自 ADMIN_PASSWORD）`);
+      } else if (seeded.note) {
+        logger.info("管理员", `默认管理员 ${seeded.username}：${seeded.note}`);
+      }
+    } catch (err) {
+      logger.warn("管理员", `创建默认管理员失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /* ---------- 为所有账号建立运行时（不启动） ---------- */
   registry.initAll();
 

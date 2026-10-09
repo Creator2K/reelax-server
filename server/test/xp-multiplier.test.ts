@@ -342,7 +342,31 @@ describe("buildStatusPanel", () => {
       bait: null,
     });
     expect(withoutBait.baitId).toBe("bait_high");
-    expect(withoutBait.baitName).toBeNull();
+    // ★ 名称来自游戏内档位表，而不是接口的 name 字段
+    //   （接口可能给英文名或干脆不给，界面上要显示「高级饵」这种人能看懂的）
+    expect(withoutBait.baitName).toBe("高级饵");
+  });
+
+  it("★ 鱼饵名用中文档位名，忽略接口给的英文名", () => {
+    const panel = buildStatusPanel({
+      state: makeState(),
+      biomesById: biomes,
+      me: makeMe(),
+      reincarnation: null,
+      bait: { id: "bait_high", name: "High Grade Bait", unitPrice: 200 },
+    });
+    expect(panel.baitName).toBe("高级饵");
+  });
+
+  it("未知鱼饵 id 时退回接口给的名字", () => {
+    const panel = buildStatusPanel({
+      state: makeState(),
+      biomesById: biomes,
+      me: makeMe(),
+      reincarnation: null,
+      bait: { id: "bait_unknown_xyz", name: "神秘饵", unitPrice: 999 },
+    });
+    expect(panel.baitName).toBe("神秘饵");
   });
 
   it("带上面板生成时间", () => {
@@ -356,4 +380,118 @@ describe("buildStatusPanel", () => {
     expect(panel.at).toBeTypeOf("number");
     expect(panel.at).toBeLessThanOrEqual(Date.now());
   });
+
+  /* ---------------- 保底进度 ---------------- */
+/**
+ * 保底进度（面板上新增的一块）。
+ *
+ * 这些数字全部由服务端算好（remaining / percent），前端只负责显示 ——
+ * 所以这里要钉住「算得对 + 拿不到的项不出现」，否则界面会显示还差 -3 杆这种。
+ */
+describe("buildStatusPanel · 保底进度", () => {
+  const base = { state: makeState(), biomesById: biomes, me: makeMe(), reincarnation: null, bait: null };
+
+  it("解析奇异 / 奥秘鱼的硬保底", () => {
+    const panel = buildStatusPanel({
+      ...base,
+      statistics: {
+        pity: {
+          exotic: { hardPityCasts: 500, currentDryCasts: 480 },
+          arcane: { hardPityCasts: 1200, currentDryCasts: 1180 },
+        },
+      },
+    });
+    const arcane = panel.pity.find((p) => p.key === "arcane");
+    const exotic = panel.pity.find((p) => p.key === "exotic");
+    expect(arcane).toBeTruthy();
+    expect(arcane?.dry).toBe(1180);
+    expect(arcane?.total).toBe(1200);
+    expect(arcane?.remaining).toBe(20);
+    expect(arcane?.percent).toBe(98);
+    expect(arcane?.ready).toBe(false);
+    expect(arcane?.label).toBe("奥秘鱼");
+    expect(exotic?.remaining).toBe(20);
+  });
+
+  it("奥秘鱼排在奇异鱼之前（更稀有，更该被先看到）", () => {
+    const panel = buildStatusPanel({
+      ...base,
+      statistics: { pity: { exotic: { hardPityCasts: 500, currentDryCasts: 1 }, arcane: { hardPityCasts: 1200, currentDryCasts: 1 } } },
+    });
+    expect(panel.pity[0]?.key).toBe("arcane");
+    expect(panel.pity[1]?.key).toBe("exotic");
+  });
+
+  it("已到保底时 ready=true 且 remaining=0", () => {
+    const panel = buildStatusPanel({
+      ...base,
+      statistics: { pity: { arcane: { hardPityCasts: 100, currentDryCasts: 100 } } },
+    });
+    expect(panel.pity[0]?.ready).toBe(true);
+    expect(panel.pity[0]?.remaining).toBe(0);
+    expect(panel.pity[0]?.percent).toBe(100);
+  });
+
+  it("dry 超过阈值时 remaining 不为负、percent 不超过 100", () => {
+    const panel = buildStatusPanel({
+      ...base,
+      statistics: { pity: { arcane: { hardPityCasts: 100, currentDryCasts: 130 } } },
+    });
+    expect(panel.pity[0]?.remaining).toBe(0);
+    expect(panel.pity[0]?.percent).toBe(100);
+  });
+
+  it("解析奥术宝箱保底", () => {
+    const panel = buildStatusPanel({
+      ...base,
+      chests: {
+        chests: [{ chestId: "c_001", name: "奥术宝箱", pity: { hardPityOpens: 50, currentDryOpens: 47 } }],
+      },
+    });
+    const chest = panel.pity.find((p) => p.key.startsWith("chest:"));
+    expect(chest?.label).toBe("奥术宝箱");
+    expect(chest?.remaining).toBe(3);
+    expect(chest?.percent).toBe(94);
+  });
+
+  it("解析灯塔神器保底（dry + remaining 相加才是阈值）", () => {
+    const panel = buildStatusPanel({
+      ...base,
+      lighthouse: { player: { artifactPityDryDraws: 27, artifactPityRemaining: 3 } },
+    });
+    const lh = panel.pity.find((p) => p.key === "lighthouse");
+    expect(lh?.total).toBe(30);
+    expect(lh?.dry).toBe(27);
+    expect(lh?.remaining).toBe(3);
+    expect(lh?.label).toBe("灯塔神器");
+  });
+
+  it("拿不到任何数据时 pity 是空数组（前端不渲染这一块）", () => {
+    const panel = buildStatusPanel({ ...base });
+    expect(panel.pity).toEqual([]);
+  });
+
+  it("数据缺字段 / 阈值非法时跳过该项，不产生 NaN", () => {
+    const panel = buildStatusPanel({
+      ...base,
+      statistics: { pity: { arcane: {}, exotic: { hardPityCasts: -1, currentDryCasts: 5 } } },
+      chests: { chests: [{ chestId: "x", pity: { hardPityOpens: 0 } }] },
+      lighthouse: { player: {} },
+    });
+    expect(panel.pity).toEqual([]);
+  });
+
+  it("多个宝箱时取第一个有保底的", () => {
+    const panel = buildStatusPanel({
+      ...base,
+      chests: {
+        chests: [
+          { chestId: "a", name: "没保底的箱" },
+          { chestId: "b", name: "有保底的箱", pity: { hardPityOpens: 10, currentDryOpens: 1 } },
+        ],
+      },
+    });
+    expect(panel.pity.find((p) => p.key.startsWith("chest:"))?.label).toBe("有保底的箱");
+  });
+});
 });

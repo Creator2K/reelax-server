@@ -1,16 +1,14 @@
-// 管理页：用户审批 / 角色 / 封禁、邀请码、系统信息
+// 后台管理页：用户管理（角色 / 状态 / 改口令）、邀请码、系统信息、在线更新
 //
-// 仅 role === "admin" 可见（侧边栏按角色过滤，后端也会再拦一次）。
+// 仅 role === "admin" 可见。管理员是**纯后台**角色：这里不出现任何挂机面板，
+// 因为管理员账号本身不挂游戏（挂机是普通用户的事）。
 import { useState } from "react";
 import {
   IconAlertTriangle,
-  IconCheck,
   IconCircleCheck,
   IconCopy,
-  IconDownload,
+  IconKey,
   IconPlus,
-  IconRefresh,
-  IconSearch,
   IconShieldLock,
   IconTrash,
   IconUserCheck,
@@ -28,15 +26,23 @@ import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.tsx";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog.tsx";
+import { UpdatePanel } from "@/components/domain/UpdatePanel.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { api } from "@/lib/api.ts";
 import { useSession, type SessionUser } from "@/lib/session.ts";
 import {
   useApproveUser,
-  useApplyUpdate,
-  useCheckUpdate,
   useCreateInvite,
   useDeleteInvite,
+  useResetUserPassword,
   useSetUserRole,
   useSetUserStatus,
 } from "@/lib/mutations.ts";
@@ -125,6 +131,8 @@ function UsersTab({ myId }: { myId: string }) {
   const approve = useApproveUser();
   const setStatus = useSetUserStatus();
   const setRole = useSetUserRole();
+  /** 正在改口令的目标用户 */
+  const [pwTarget, setPwTarget] = useState<SessionUser | null>(null);
 
   if (isPending) {
     return (
@@ -226,12 +234,101 @@ function UsersTab({ myId }: { myId: string }) {
                     {u.role === "admin" ? "降级" : "设为管理员"}
                   </Button>
                 ) : null}
+                {/* 改口令：部署时生成的随机初始口令只出现一次，忘了得有找回途径 */}
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => setPwTarget(u)}
+                  title="重置该用户的口令"
+                >
+                  <IconKey className="size-3.5" />
+                  改口令
+                </Button>
               </div>
             </div>
           ))}
         </div>
       </Card>
+
+      <ResetPasswordDialog target={pwTarget} onClose={() => setPwTarget(null)} />
     </div>
+  );
+}
+
+/**
+ * 重置口令对话框。
+ *
+ * 注意：重置会让目标用户的**所有登录态立刻失效**（包括他正在用的浏览器），
+ * 所以文案里必须写清楚，避免管理员以为「只是改个密码」。
+ */
+function ResetPasswordDialog({ target, onClose }: { target: SessionUser | null; onClose: () => void }) {
+  const reset = useResetUserPassword();
+  const [pw, setPw] = useState("");
+  const [confirm, setConfirm] = useState("");
+
+  // 关闭时清空，避免下次打开看到上次输入
+  const close = () => {
+    setPw("");
+    setConfirm("");
+    onClose();
+  };
+
+  const tooShort = pw.length > 0 && pw.length < 8;
+  const mismatch = confirm.length > 0 && pw !== confirm;
+  const canSubmit = pw.length >= 8 && pw === confirm;
+
+  return (
+    <Dialog open={Boolean(target)} onOpenChange={(o) => !o && close()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>重置「{target?.displayName}」的口令</DialogTitle>
+          <DialogDescription>
+            设置一个新口令。该用户当前的所有登录会立即失效，需要用新口令重新登录。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <Label htmlFor="rp-new">新口令（至少 8 位）</Label>
+            <Input
+              id="rp-new"
+              type="password"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              autoComplete="new-password"
+            />
+            {tooShort ? <p className="text-[var(--status-error)] text-xs">至少 8 个字符</p> : null}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="rp-confirm">再输一次</Label>
+            <Input
+              id="rp-confirm"
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              autoComplete="new-password"
+            />
+            {mismatch ? <p className="text-[var(--status-error)] text-xs">两次输入不一致</p> : null}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={close}>
+            取消
+          </Button>
+          <Button
+            disabled={!canSubmit || reset.isPending}
+            onClick={async () => {
+              if (!target) return;
+              await reset.mutateAsync({ userId: target.id, password: pw });
+              close();
+            }}
+          >
+            {reset.isPending ? "提交中…" : "重置口令"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -449,109 +546,6 @@ function SystemTab() {
         </Alert>
       </div>
     </div>
-  );
-}
-
-/** 在线更新面板：检查 → 一键更新 */
-function UpdatePanel() {
-  const check = useCheckUpdate();
-  const apply = useApplyUpdate();
-  const r = check.data;
-
-  return (
-    <Card className="gap-4">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <IconRefresh className="size-4" />
-          在线更新
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => check.mutate()} disabled={check.isPending || apply.isPending}>
-            <IconSearch className="size-3.5" />
-            {check.isPending ? "检查中…" : "检查更新"}
-          </Button>
-          {r?.hasUpdate ? (
-            <Button
-              size="sm"
-              onClick={() => apply.mutate()}
-              disabled={apply.isPending || (!r.updaterAvailable && !r.canApplyLocal)}
-            >
-              <IconDownload className="size-3.5" />
-              {apply.isPending ? "更新中…" : "立即更新"}
-            </Button>
-          ) : null}
-        </div>
-
-        {!r && !check.isPending ? (
-          <p className="text-muted-foreground text-xs">点「检查更新」对比当前提交与 GitHub 上的最新提交。</p>
-        ) : null}
-
-        {r ? (
-          <div className="space-y-3 text-xs">
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="bg-muted/40 rounded-md border px-3 py-2">
-                <div className="text-muted-foreground">当前版本</div>
-                <div className="font-mono">{r.current ? r.current.short : "读不到（非 git 工作区）"}</div>
-                {r.current?.message ? <div className="truncate text-[11px]" title={r.current.message}>{r.current.message}</div> : null}
-              </div>
-              <div className="bg-muted/40 rounded-md border px-3 py-2">
-                <div className="text-muted-foreground">GitHub 最新</div>
-                <div className="font-mono">{r.latest ? r.latest.short : "读不到"}</div>
-                {r.latest?.message ? <div className="truncate text-[11px]" title={r.latest.message}>{r.latest.message}</div> : null}
-              </div>
-            </div>
-
-            {r.hasUpdate ? (
-              <Alert variant="warn">
-                <IconAlertTriangle />
-                <AlertDescription>
-                  有新版本
-                  {r.behindBy ? `（落后 ${r.behindBy} 个提交）` : ""}。
-                  {r.updaterAvailable
-                    ? " 点「立即更新」会拉取代码并重建容器，服务约 1 分钟后重启。"
-                    : r.canApplyLocal
-                      ? " 点「立即更新」会拉取代码并重建前端，之后需要重启进程。"
-                      : " 当前部署未开启自动更新，请看下方命令。"}
-                </AlertDescription>
-              </Alert>
-            ) : (
-              <Badge variant="online" className="gap-1">
-                <IconCheck className="size-3" />
-                已是最新
-              </Badge>
-            )}
-
-            {r.note ? <div className="text-muted-foreground">{r.note}</div> : null}
-
-            {/* 更新能力说明：让用户知道为什么按钮不可点 */}
-            <div className="text-muted-foreground space-y-1">
-              <div>
-                旁路更新器：{r.updaterAvailable ? "在线可用" : "未启用"}
-                {!r.updaterAvailable ? "（docker compose --profile update up -d 可开启）" : ""}
-              </div>
-              <div>容器内直接 pull：{r.canApplyLocal ? "允许" : "不允许（Docker 部署下正常）"}</div>
-            </div>
-
-            {r.manualHint ? (
-              <pre className="bg-muted/40 overflow-x-auto rounded-md border px-3 py-2 font-mono text-[11px] whitespace-pre-wrap">
-                {r.manualHint}
-              </pre>
-            ) : null}
-          </div>
-        ) : null}
-
-        {apply.data?.log ? (
-          <details className="text-xs">
-            <summary className="text-muted-foreground cursor-pointer">更新输出</summary>
-            <pre className="bg-muted/40 mt-2 max-h-64 overflow-auto rounded-md border px-3 py-2 font-mono text-[11px] whitespace-pre-wrap">
-              {apply.data.log}
-            </pre>
-          </details>
-        ) : null}
-      </CardContent>
-    </Card>
   );
 }
 

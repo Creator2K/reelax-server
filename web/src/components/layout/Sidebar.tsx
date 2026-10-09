@@ -27,15 +27,32 @@ export type NavItem = {
   end?: boolean;
 };
 
-export const NAV_ITEMS: NavItem[] = [
-  { to: "/", label: "总览", icon: IconLayoutDashboard, end: true },
+/**
+ * 普通用户的导航（挂机控制台）。
+ * 注意「总览」指向 /dashboard 而不是 / —— 根路径是按角色分流的跳板。
+ */
+export const USER_NAV_ITEMS: NavItem[] = [
+  { to: "/dashboard", label: "总览", icon: IconLayoutDashboard, end: true },
   { to: "/accounts", label: "账号", icon: IconUsers },
   { to: "/proxies", label: "代理", icon: IconCloudNetwork },
   { to: "/notify", label: "推送", icon: IconBroadcast },
   { to: "/logs", label: "运行日志", icon: IconListDetails },
   { to: "/settings", label: "设置", icon: IconSettings },
-  { to: "/admin", label: "管理", icon: IconShieldLock, adminOnly: true },
 ];
+
+/**
+ * 管理员的导航（纯后台）。
+ *
+ * ★ 管理员**不出现**挂机相关入口：账号 / 代理 / 推送 / 运行日志都是用户自己的，
+ *   管理员进后台只做用户与系统管理。设置页保留（改自己的口令）。
+ */
+export const ADMIN_NAV_ITEMS: NavItem[] = [
+  { to: "/admin", label: "后台管理", icon: IconShieldLock, end: true },
+  { to: "/settings", label: "设置", icon: IconSettings },
+];
+
+/** @deprecated 保留给测试与旧引用；按角色取用上面的两个数组 */
+export const NAV_ITEMS: NavItem[] = [...USER_NAV_ITEMS, ...ADMIN_NAV_ITEMS];
 
 export function Sidebar({
   isAdmin,
@@ -46,7 +63,8 @@ export function Sidebar({
   wsConnected: boolean;
   footer?: React.ReactNode;
 }) {
-  const items = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
+  // 管理员只看后台导航；普通用户看挂机导航（两者不混）
+  const items = isAdmin ? ADMIN_NAV_ITEMS : USER_NAV_ITEMS;
 
   return (
     <aside className="bg-sidebar text-sidebar-foreground border-sidebar-border flex h-svh w-56 shrink-0 flex-col border-r">
@@ -60,7 +78,7 @@ export function Sidebar({
         </div>
       </div>
 
-      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1">
+      <nav className="scroll-slim flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1">
         {items.map((item) => (
           <NavLink
             key={item.to}

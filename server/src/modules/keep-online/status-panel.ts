@@ -10,6 +10,7 @@
 //   商店 = player_shop / personal_shop
 //   活动 = admin_event / reincarnation_catch_up
 import { bpToMultiplier, weatherMultiplier, weatherName } from "./xp-multiplier.ts";
+import { baitName as baitNameOf } from "../shared/rarity.ts";
 
 /** 八个分区（万分比） */
 export type XpSections = {
@@ -99,6 +100,9 @@ export type StatusPanel = {
   baitName: string | null;
   baitUnitPrice: number | null;
 
+  /** 保底进度（稀有鱼 / 宝箱 / 神器），拿不到的项不出现 */
+  pity: PityProgressView[];
+
   fleet: {
     boatName: string | null;
     boatBiomeId: string | null;
@@ -131,10 +135,99 @@ export type StatusPanelInputs = {
   reincarnation: any;
   /** 当前鱼饵（GET /api/baits 里 isSelected 的那条） */
   bait: any;
+  /** GET /api/statistics 的响应（稀有鱼硬保底） */
+  statistics?: any;
+  /** GET /api/inventory/chests 的响应（奥术宝箱硬保底） */
+  chests?: any;
+  /** GET /api/lighthouse-lottery 的响应（神器保底） */
+  lighthouse?: any;
 };
 
+/**
+ * 保底进度：把「离必出还差多少」统一成同一种形状，面板与推送都能复用。
+ * `remaining` 已经算好（不是让前端各自相减），避免两处口径不一致。
+ */
+export type PityProgressView = {
+  key: string;
+  label: string;
+  /** 已累计多少（杆 / 个） */
+  dry: number;
+  /** 硬保底阈值 */
+  total: number;
+  /** 还差多少 */
+  remaining: number;
+  /** 0~100 */
+  percent: number;
+  /** 是否已到保底（下一杆/下一个必出） */
+  ready: boolean;
+};
+
+/** 从 /api/statistics 的 pity 里取一个稀有度 */
+function pityOf(statistics: any, key: "exotic" | "arcane", label: string): PityProgressView | null {
+  const block = statistics?.pity?.[key];
+  if (!block) return null;
+  const total = num(block.hardPityCasts);
+  if (total <= 0) return null;
+  const dry = Math.max(0, num(block.currentDryCasts));
+  const remaining = Math.max(0, total - dry);
+  return {
+    key,
+    label,
+    dry,
+    total,
+    remaining,
+    percent: Math.min(100, Math.round((dry / total) * 100)),
+    ready: remaining === 0,
+  };
+}
+
+/** 从 /api/inventory/chests 取宝箱保底（可能有多个宝箱，取第一个有保底的） */
+function chestPityOf(chests: any): PityProgressView | null {
+  const list: any[] = chests?.chests ?? chests?.items ?? [];
+  for (const c of list) {
+    const p = c?.pity;
+    if (!p) continue;
+    const total = num(p.hardPityOpens);
+    if (total <= 0) continue;
+    const dry = Math.max(0, num(p.currentDryOpens));
+    const remaining = Math.max(0, total - dry);
+    return {
+      key: `chest:${c.chestId ?? c.id ?? "?"}`,
+      label: String(c.name ?? c.chestName ?? "奥术宝箱"),
+      dry,
+      total,
+      remaining,
+      percent: Math.min(100, Math.round((dry / total) * 100)),
+      ready: remaining === 0,
+    };
+  }
+  return null;
+}
+
+/**
+ * 从 /api/lighthouse-lottery 取神器保底。
+ * 这个接口的字段是 artifactPityDryDraws + artifactPityRemaining（两者相加才是阈值）。
+ */
+function lighthousePityOf(lh: any): PityProgressView | null {
+  const player = lh?.player ?? lh ?? {};
+  const dry = num(player.artifactPityDryDraws);
+  const remainRaw = player.artifactPityRemaining;
+  const remaining = remainRaw === null || remainRaw === undefined ? null : num(remainRaw);
+  const total = remaining === null ? (dry > 0 ? dry + 30 : 0) : dry + remaining;
+  if (total <= 0) return null;
+  return {
+    key: "lighthouse",
+    label: "灯塔神器",
+    dry,
+    total,
+    remaining: remaining ?? Math.max(0, total - dry),
+    percent: Math.min(100, Math.round((dry / total) * 100)),
+    ready: (remaining ?? Math.max(0, total - dry)) === 0,
+  };
+}
+
 export function buildStatusPanel(inputs: StatusPanelInputs): StatusPanel {
-  const { state, biomesById, me, reincarnation, bait } = inputs;
+  const { state, biomesById, me, reincarnation, bait, statistics, chests, lighthouse } = inputs;
 
   const run = state?.run ?? {};
   const fx = run.effects ?? {};
@@ -255,8 +348,17 @@ export function buildStatusPanel(inputs: StatusPanelInputs): StatusPanel {
     reincarnation: reincarnationView,
 
     baitId: bait?.id ?? me?.player?.selectedBaitId ?? null,
-    baitName: bait?.name ?? null,
+    // 用游戏内档位中文名（接口给的 name 可能是英文，也可能缺失）
+    baitName: baitNameOf(bait?.id ?? me?.player?.selectedBaitId) ?? bait?.name ?? null,
     baitUnitPrice: bait?.unitPrice ?? null,
+
+    // 保底进度：稀有鱼（奇异/奥秘）+ 宝箱 + 神器，拿不到的项自动省略
+    pity: [
+      pityOf(statistics, "arcane", "奥秘鱼"),
+      pityOf(statistics, "exotic", "奇异鱼"),
+      chestPityOf(chests),
+      lighthousePityOf(lighthouse),
+    ].filter((p): p is PityProgressView => p !== null),
 
     fleet,
 

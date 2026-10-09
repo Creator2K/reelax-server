@@ -122,7 +122,7 @@ export default function LogsPage() {
         <div
           ref={scrollRef}
           onWheel={() => setFollow(false)}
-          className="border-border bg-card h-full overflow-y-auto rounded-xl border font-mono text-[12px] leading-relaxed"
+          className="border-border bg-card scroll-slim h-full overflow-y-auto rounded-xl border font-mono text-[12px] leading-relaxed"
         >
           {filtered.length === 0 ? (
             <div className="text-muted-foreground p-4">

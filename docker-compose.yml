@@ -67,6 +67,12 @@ services:
       MAX_ACCOUNTS_PER_USER: "${MAX_ACCOUNTS_PER_USER:-5}"
       MAX_RUNNING_ACCOUNTS: "${MAX_RUNNING_ACCOUNTS:-50}"
 
+      # ---- 部署时的默认管理员 ----
+      # 启动时自动确保存在这个管理员账号（纯后台角色，不挂游戏）
+      # 口令留空 = 首次创建时随机生成，并在启动日志与 data/INITIAL_ADMIN.txt 里打印一次
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+
       # ---- 在线更新 ----
       # 仓库地址（查询远端最新提交用）
       REELAX_REPO: "${REELAX_REPO:-Creator2K/reelax-server}"

@@ -417,6 +417,14 @@ export class GameClient {
   baits() {
     return this.request("/api/baits");
   }
+  /** 奥术宝箱列表（含每个宝箱的硬保底进度） */
+  chests() {
+    return this.request("/api/inventory/chests");
+  }
+  /** 灯塔抽奖状态（含神器保底进度） */
+  lighthouseLottery() {
+    return this.request("/api/lighthouse-lottery");
+  }
   /** 购买鱼饵（注意：不是 POST /api/baits，而是 /api/baits/{id}/purchase） */
   purchaseBait(baitId: string, quantity: number) {
     return this.request(`/api/baits/${encodeURIComponent(baitId)}/purchase`, {

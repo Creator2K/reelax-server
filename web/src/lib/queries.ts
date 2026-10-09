@@ -29,6 +29,22 @@ export type ModuleRuntimeState = {
   configIssues: ConfigIssue[];
 };
 
+/** 保底进度（稀有鱼 / 宝箱 / 神器）—— 服务端已算好 remaining 与 percent */
+export type PityProgress = {
+  key: string;
+  label: string;
+  /** 已累计（杆 / 个） */
+  dry: number;
+  /** 硬保底阈值 */
+  total: number;
+  /** 还差多少 */
+  remaining: number;
+  /** 0~100 */
+  percent: number;
+  /** 下一杆/下一个必出 */
+  ready: boolean;
+};
+
 export type StatusPanel = {
   biomeId: string | null;
   biomeName: string | null;
@@ -46,10 +62,20 @@ export type StatusPanel = {
   gold: number | null;
   relics: number | null;
   fragments: number | null;
+  baitId: string | null;
   baitName: string | null;
   baitUnitPrice: number | null;
+  /** 保底进度（拿不到的项不出现） */
+  pity: PityProgress[];
   fleet: { boatName: string | null; boatBiomeName: string | null; sameAsCurrent: boolean } | null;
-  reincarnation: { levelShortfall: number | null; goldShortfall: number | null; eligible: boolean } | null;
+  reincarnation: {
+    requiredLevel: number | null;
+    levelShortfall: number | null;
+    goldCost: number | null;
+    goldShortfall: number | null;
+    awardedPoints: number | null;
+    eligible: boolean;
+  } | null;
   at?: number;
 };
 

@@ -169,6 +169,12 @@ export class AccountRuntime {
   private baitCache = new TtlCache<any>(BAIT_TTL_MS);
   private meCache = new TtlCache<any>(BIOMES_TTL_MS);
   private reincarnationCache = new TtlCache<any>(BIOMES_TTL_MS);
+  /** 稀有鱼硬保底进度（奇异 / 奥秘） */
+  private statisticsCache = new TtlCache<any>(BIOMES_TTL_MS);
+  /** 奥术宝箱硬保底 */
+  private chestsCache = new TtlCache<any>(BIOMES_TTL_MS);
+  /** 灯塔神器保底 */
+  private lighthouseCache = new TtlCache<any>(BIOMES_TTL_MS);
 
   constructor(deps: AccountRuntimeDeps) {
     this.deps = deps;
@@ -429,6 +435,15 @@ export class AccountRuntime {
   get reincarnation(): any {
     return this.reincarnationCache.peek();
   }
+  get statistics(): any {
+    return this.statisticsCache.peek();
+  }
+  get chests(): any {
+    return this.chestsCache.peek();
+  }
+  get lighthouse(): any {
+    return this.lighthouseCache.peek();
+  }
 
   /** 刷新地图表 / 鱼饵 / 玩家资料（供状态面板使用；失败不影响钓鱼） */
   async refreshDisplayData(force = false): Promise<void> {
@@ -449,6 +464,10 @@ export class AccountRuntime {
         .catch(() => this.baitCache.peek()),
       this.meCache.get(() => this.client.me(), force).catch(() => this.meCache.peek()),
       this.reincarnationCache.get(() => this.client.reincarnation(), force).catch(() => this.reincarnationCache.peek()),
+      // 保底类数据：状态面板要显示「还差多少杆 / 多少个」，失败不影响钓鱼
+      this.statisticsCache.get(() => this.client.statistics(), force).catch(() => this.statisticsCache.peek()),
+      this.chestsCache.get(() => this.client.chests(), force).catch(() => this.chestsCache.peek()),
+      this.lighthouseCache.get(() => this.client.lighthouseLottery(), force).catch(() => this.lighthouseCache.peek()),
     ]);
   }
 

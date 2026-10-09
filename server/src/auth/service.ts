@@ -472,6 +472,96 @@ export class AuthService {
   }
 
   /** 生成一个随机初始口令（管理员建号用），返回明文仅此一次 */
+  /**
+   * 确保存在一个管理员账号（部署时自动创建）。
+   *
+   * 为什么要在启动时建而不是「第一个注册的人自动成管理员」：
+   *  · 服务器部署时，先访问站点的人未必是机主；把首注册变管理员等于把后台送给先来的人
+   *  · 机主需要一个**已知用户名 + 部署时随机生成的强口令**的入口
+   *
+   * 行为：
+   *  · 账号不存在 → 创建（role=admin, status=approved）
+   *  · 账号已存在 → 不改口令（除非显式传 password），只确保它是 admin 且未被封禁
+   *
+   * @returns 创建/复用情况 + 生成的口令（仅新建时返回，调用方负责展示一次）
+   */
+  async ensureAdminAccount(input: {
+    /** 登录名（默认 admin）。允许不是邮箱 —— 登录时按同一字段匹配 */
+    username: string;
+    /** 指定口令；不传则随机生成 */
+    password?: string;
+  }): Promise<{ created: boolean; username: string; password: string | null; note: string | null }> {
+    const username = input.username.trim() || "admin";
+
+    const existing = this.repos.users.findByEmail(username);
+    if (existing) {
+      // 已存在：只纠正角色/状态，不碰口令（避免每次重启把管理员自己改的口令冲掉）
+      const fixes: string[] = [];
+      if (existing.role !== "admin") {
+        this.repos.users.setRole(existing.id, "admin");
+        fixes.push("角色修正为管理员");
+      }
+      if (existing.status !== "approved") {
+        this.repos.users.setStatus(existing.id, "approved", null);
+        fixes.push("状态修正为已启用");
+      }
+      if (input.password) {
+        const strength = validatePasswordStrength(input.password);
+        if (!strength.ok) throw badRequest(strength.message, "WEAK_PASSWORD");
+        this.repos.users.updatePasswordHash(existing.id, await hashPassword(input.password));
+        fixes.push("口令已按配置重置");
+      }
+      return {
+        created: false,
+        username,
+        password: null,
+        note: fixes.length ? `已存在，${fixes.join("；")}` : null,
+      };
+    }
+
+    // 生成一个足够强的随机口令：12 字节 base64url = 16 个字符，含大小写与数字
+    const generated = input.password ?? randomBytes(12).toString("base64url");
+    const strength = validatePasswordStrength(generated);
+    if (!strength.ok) throw badRequest(strength.message, "WEAK_PASSWORD");
+
+    this.repos.users.create({
+      email: username,
+      passwordHash: await hashPassword(generated),
+      displayName: "管理员",
+      role: "admin",
+      status: "approved",
+      approvedBy: null,
+    });
+
+    this.repos.audit.record({
+      userId: null,
+      action: "admin.seeded",
+      target: username,
+      detail: { source: input.password ? "env" : "generated" },
+      ip: null,
+    });
+
+    return {
+      created: true,
+      username,
+      // 只有随机生成时才回报口令；用户自己指定的口令不在这里回显
+      password: input.password ? null : generated,
+      note: null,
+    };
+  }
+
+  /** 管理员重置任意用户的口令（含自己）。返回是否成功 */
+  async resetUserPassword(targetUserId: string, newPassword: string): Promise<void> {
+    const strength = validatePasswordStrength(newPassword);
+    if (!strength.ok) throw badRequest(strength.message, "WEAK_PASSWORD");
+    const row = this.repos.users.findById(targetUserId);
+    if (!row) throw badRequest("用户不存在", "USER_NOT_FOUND");
+
+    this.repos.users.updatePasswordHash(targetUserId, await hashPassword(newPassword));
+    // 改口令后强制所有会话失效：否则旧会话（可能已被泄漏）仍然有效
+    this.repos.sessions.deleteForUser(targetUserId);
+  }
+
   async createUserByAdmin(input: {
     email: string;
     displayName: string;

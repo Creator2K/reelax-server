@@ -20,6 +20,9 @@ import type { Env } from "../../env.ts";
 const statusSchema = z.object({ status: z.enum(["pending", "approved", "banned"]) });
 const roleSchema = z.object({ role: z.enum(["user", "admin"]) });
 
+/** 管理员重置口令：长度下限与注册保持一致（8） */
+const resetPasswordSchema = z.object({ password: z.string().min(8).max(200) });
+
 const createUserSchema = z.object({
   email: z.string().email("邮箱格式不正确"),
   displayName: z.string().max(40).optional(),
@@ -125,6 +128,26 @@ export function createAdminRouter(deps: {
     res.status(201).json(result);
   });
 
+  /**
+   * 管理员重置任意用户的口令（含自己）。
+   *
+   * 为什么要「管理员可改」：部署时生成的随机初始口令只出现过一次，
+   * 机主改完忘了就得有找回途径，否则只能去删数据库。
+   * 重置后该用户的所有登录态失效（防止旧会话继续可用）。
+   */
+  router.post("/users/:id/password", body(resetPasswordSchema), async (req, res) => {
+    const admin = currentUser(req);
+    const targetId = req.params.id as string;
+    await deps.auth.resetUserPassword(targetId, req.body.password);
+    deps.audit.record({
+      userId: admin.id,
+      action: "admin.user.password_reset",
+      target: targetId,
+      ip: clientIp(req),
+    });
+    res.json({ ok: true });
+  });
+
   /* ---------- 邀请码 ---------- */
 
   router.get("/invites", (_req, res) => {
@@ -209,6 +232,11 @@ export function createAdminRouter(deps: {
   /** 检查是否有新版本（对比当前提交与远端最新提交） */
   router.get("/update/check", async (_req, res) => {
     res.json(await deps.update.check());
+  });
+
+  /** 更新进度（前端轮询显示） */
+  router.get("/update/status", async (_req, res) => {
+    res.json(await deps.update.status());
   });
 
   /**
