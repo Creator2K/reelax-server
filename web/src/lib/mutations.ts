@@ -497,13 +497,19 @@ export function useChangePassword() {
 
 /* ---------------- 管理 ---------------- */
 
+/**
+ * 通过「待确认」的账号。
+ *
+ * 注意：不再叫「批准」—— 注册早已不需要审批，这个动作只是把
+ * 被管理员临时改成待确认的账号恢复为可用。
+ */
 export function useApproveUser() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.post(`/api/admin/users/${id}/approve`),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["admin", "users"] });
-      toast.success("已批准");
+      toast.success("已恢复为正常");
     },
     onError: (err) => toast.error(errMessage(err)),
   });
