@@ -25,6 +25,9 @@ import { b64urlEncode, parseTime } from "../lib/util.ts";
 /** 免签名白名单 */
 const SIGNED_SKIP = new Set(["/api/auth/login", "/api/me", "/api/meta/frontend-release"]);
 
+/** 登录接口：它的 401 是「凭据被拒」，不是「会话失效」 */
+const LOGIN_PATH = "/api/auth/login";
+
 /** proof 到期前多久就主动续期 */
 const PROOF_REFRESH_MARGIN_MS = 60_000;
 
@@ -275,7 +278,13 @@ export class GameClient {
 
       const message = pickErrorMessage(data) || text.slice(0, 300);
 
-      if (looksLikeSignatureIssue(resp.status, text, message) && !isRetry) {
+      // ★ 除了**登录接口本身**，其余请求的 401/403 都可能是「proof 过期 / Cookie 失效」，
+      //   应当续期或重登后重试。唯独登录接口不签名，它的 401 含义是「邮箱或口令不对」——
+      //   早期把登录也塞进这个分支，最终报成「会话已失效且无法自动重登」，
+      //   用户按提示去修 Cookie，排查方向完全错了。
+      const canRefreshSession = path !== LOGIN_PATH;
+
+      if (canRefreshSession && looksLikeSignatureIssue(resp.status, text, message) && !isRetry) {
         // proof 过期 / Cookie 失效：先续期，续期失败且有账密则重登，然后重试一次
         try {
           await this.refreshProof();
@@ -292,11 +301,19 @@ export class GameClient {
         return attempt(true);
       }
 
-      throw new GameClientError(message || `请求失败（HTTP ${resp.status}）`, {
-        status: resp.status,
-        code: codeForStatus(resp.status, extractServerCode(data)),
-        payload: data,
-      });
+      const loginRejected = path === LOGIN_PATH && (resp.status === 401 || resp.status === 403);
+      throw new GameClientError(
+        loginRejected
+          ? `邮箱或口令不正确${message ? `（${message}）` : ""}`
+          : message || `请求失败（HTTP ${resp.status}）`,
+        {
+          status: resp.status,
+          code: loginRejected
+            ? GAME_ERROR_CODES.BAD_CREDENTIALS
+            : codeForStatus(resp.status, extractServerCode(data)),
+          payload: data,
+        },
+      );
     };
 
     return attempt(false);

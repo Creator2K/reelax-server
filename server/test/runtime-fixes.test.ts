@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildFullApp, type FullApp } from "./helpers/full-app.ts";
 import type { ModuleDefinition } from "../src/modules/types.ts";
 import { statIndex } from "../src/modules/auto-stats/index.ts";
-import { isReportDue, parseReportAt } from "../src/modules/daily-digest/index.ts";
+import { isFreshDay, isReportDue, parseReportAt } from "../src/modules/daily-digest/index.ts";
 import { shouldSnapshot, SNAPSHOT_INTERVAL_MS } from "../src/lib/maintenance.ts";
 
 let app: FullApp;
@@ -217,6 +217,69 @@ describe("数据库快照的时机（曾经永远不备份 / 频繁重启就永�
     expect(shouldSnapshot(now, now - 30 * H, SNAPSHOT_INTERVAL_MS)).toBe(true);
     // 从来没备份过（lastAt = 0）→ 立刻做
     expect(shouldSnapshot(now, 0, SNAPSHOT_INTERVAL_MS)).toBe(true);
+  });
+});
+
+describe("日报的过期状态判定（跨重启恢复时不能拿几天前的当「昨日」）", () => {
+  const now = new Date(2026, 9, 10, 10, 0); // 本地 2026-10-10 10:00
+
+  it("今天 / 昨天算新鲜，更早的要丢掉", () => {
+    expect(isFreshDay("2026-10-10", now)).toBe(true);
+    expect(isFreshDay("2026-10-09", now)).toBe(true);
+    expect(isFreshDay("2026-10-08", now)).toBe(false);
+    expect(isFreshDay("", now)).toBe(false);
+    expect(isFreshDay(undefined, now)).toBe(false);
+  });
+});
+
+describe("模块状态的跨重启保留（日报的「昨日」不再因重启丢失）", () => {
+  /** 一个「每次启动把计数 +1 并落库」的合成模块 */
+  function counterModule(id: string, defaultEnabled: boolean): ModuleDefinition {
+    return {
+      id,
+      name: `计数模块 ${id}`,
+      version: "1.0.0",
+      description: "测试用：累计启动次数并持久化",
+      defaultEnabled,
+      defaultConfig: {},
+      configSchema: [],
+      onStart(ctx) {
+        ctx.state.runs = Number(ctx.state.runs ?? 0) + 1;
+        ctx.persistState?.();
+      },
+    };
+  }
+
+  it("★ persistState 写的状态会在下次启动时装回 ctx.state", async () => {
+    const { id: userId } = app.seedApprovedUser("state@example.com");
+    const accountId = app.seedAccount(userId, "状态测试");
+    const rt = app.registry.require(accountId);
+
+    // 只有已经配置过的模块才会落库状态（见下一条测试）
+    app.repos.modules.upsert(accountId, "t-state", { enabled: true, config: {} });
+
+    const def = counterModule("t-state", false);
+    await rt.startModule(def);
+    await rt.stopModule("t-state");
+    await rt.startModule(def);
+    await rt.stopModule("t-state");
+
+    // 两次启动累计到 2 → 状态确实跨实例活了下来
+    expect(app.repos.modules.getState(accountId, "t-state")).toMatchObject({ runs: 2 });
+  });
+
+  it("★ 没有配置行的模块不会为了存状态而新建行（否则会把默认启用的模块关掉）", async () => {
+    const { id: userId } = app.seedApprovedUser("state2@example.com");
+    const accountId = app.seedAccount(userId, "状态测试2");
+    const rt = app.registry.require(accountId);
+
+    const def = counterModule("t-state2", true); // 默认启用，用户从没配置过 → 库里没有行
+    await rt.startModule(def);
+
+    expect(app.repos.modules.find(accountId, "t-state2")).toBeNull();
+    // 关键：不能因为存状态就凭空插入 enabled=0 的行，把模块关掉
+    expect(rt.isEnabled(def)).toBe(true);
+    await rt.stopModule("t-state2");
   });
 });
 

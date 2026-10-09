@@ -26,6 +26,7 @@ const FROZEN_CHECKSUMS: Record<string, string> = {
   "0003_app_settings": "97a8c43fad13be41",
   "0004_notify_verify_code": "1f7e5d511576b184",
   "0005_user_quota_override": "f6b9aacdc47e5885",
+  "0006_module_state": "12e3c1e79a6b9cd6",
 };
 
 function checksum(sql: string): string {

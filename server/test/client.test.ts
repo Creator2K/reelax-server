@@ -675,3 +675,67 @@ describe("absorb 的其他细节", () => {
     expect(calls[0]?.url).toBe("https://game.example/api/me");
   });
 });
+
+describe("登录被拒 vs 会话失效（曾经把口令错报成「会话已失效」）", () => {
+  it("★ 登录接口返回 401 → 报「邮箱或口令不正确」，且**不会**去刷新会话或重试", async () => {
+    const { impl, calls } = makeFetch(() => ({
+      status: 401,
+      body: { error: { message: "invalid credentials" } },
+    }));
+    const c = newClient(impl);
+
+    await expect(c.login()).rejects.toMatchObject({
+      code: GAME_ERROR_CODES.BAD_CREDENTIALS,
+      status: 401,
+    });
+    // 报错文案要指向真正的排查方向
+    await expect(c.login()).rejects.toThrow(/邮箱或口令不正确/);
+    // 关键：只发了登录请求，没有多余的 /api/me 续期探测
+    expect(calls.every((x) => x.url === "https://game.example/api/auth/login")).toBe(true);
+  });
+
+  it("★ BAD_CREDENTIALS 属于「挂起等待用户处理」，不会无限重试登录", async () => {
+    const { impl } = makeFetch(() => ({ status: 401, body: {} }));
+    const c = newClient(impl);
+    try {
+      await c.login();
+      throw new Error("应当抛错");
+    } catch (err) {
+      const e = err as GameClientError;
+      expect(e.code).toBe(GAME_ERROR_CODES.BAD_CREDENTIALS);
+      expect(e.isSessionFatal).toBe(true);
+      expect(e.isRetryable).toBe(false);
+    }
+  });
+
+  it("带签名的请求遇到 401 仍然会续期/重登后重试一次（这条路径不能被上面改坏）", async () => {
+    const calls: string[] = [];
+    let stateCalls = 0;
+    const impl: typeof fetch = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("/api/fishing/state")) {
+        stateCalls += 1;
+        // 1) 首次调用业务接口 → 401（proof 过期）
+        if (stateCalls === 1) {
+          return new Response(JSON.stringify({ error: { message: "proof expired" } }), { status: 401 });
+        }
+        // 3) 续期后重试 → 成功
+        return new Response(JSON.stringify({ run: { id: "r1" } }), { status: 200 });
+      }
+      // 2) /api/me 续期成功并下发新 proof
+      return new Response(JSON.stringify({ player: { nickname: "x" } }), {
+        status: 200,
+        headers: { "x-arcane-request-proof": PROOF },
+      });
+    };
+    const c = newClient(impl);
+    c.setProof(makeProof(Date.now() + 60_000));
+
+    const out = await c.fishingState();
+    expect(out).toEqual({ run: { id: "r1" } });
+    // 业务接口被调了两次（失败 → 续期 → 重试），中间夹着一次 /api/me
+    expect(stateCalls).toBe(2);
+    expect(calls.some((u) => u.endsWith("/api/me"))).toBe(true);
+  });
+});

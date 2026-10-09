@@ -6,6 +6,13 @@
 export const GAME_ERROR_CODES = {
   /** 缺少登录凭证 */
   NO_CREDENTIALS: "NO_CREDENTIALS",
+  /**
+   * 登录被拒绝（邮箱或口令不对）。
+   *
+   * ★ 必须与 SESSION_EXPIRED 分开：早期所有 401 都被当成「会话失效」，
+   *   于是用户把口令打错时看到的是「会话已失效，请修 Cookie」，排查方向完全错了。
+   */
+  BAD_CREDENTIALS: "BAD_CREDENTIALS",
   /** 网络不可达 */
   NETWORK: "NETWORK",
   /** 会话失效且无法自动重登（Cookie 过期） */
@@ -41,11 +48,15 @@ export class GameClientError extends Error {
    *
    * 注意要同时认 REQUEST_SIGNATURE_INVALID —— 重试已用尽的签名失败就是「这个会话没救了」，
    * 它的 HTTP 状态也是 403（见 client.ts 的重试逻辑）。
+   *
+   * BAD_CREDENTIALS 也归到这里：口令错了重试一万次也没用，
+   * 应该停下来明确告诉用户「口令不对」，而不是无限重试登录接口。
    */
   get isSessionFatal(): boolean {
     return (
       this.code === GAME_ERROR_CODES.SESSION_EXPIRED ||
       this.code === GAME_ERROR_CODES.NO_CREDENTIALS ||
+      this.code === GAME_ERROR_CODES.BAD_CREDENTIALS ||
       this.code === "REQUEST_SIGNATURE_INVALID" ||
       this.status === 401
     );

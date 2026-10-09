@@ -104,12 +104,16 @@ const definition: ModuleDefinition = {
 
   async onStart(ctx) {
     const S = ctx.state as DigestState;
-    S.today = null;
-    S.ended = null;
-    S.lastReport = null;
-    S.prevXpTotal = null;
-    S.prevLevel = null;
+    // ★ 状态跨重启保留（ctx.state 会带上上次持久化的内容）。
+    //   本项目每次在线更新都会重建容器，如果把这些字段清零，
+    //   重启后再发日报就只能显示「今日截至现在」或「无基线」了。
     S.busy = false;
+    // 但过期的状态必须丢掉：进程停了好几天再起来，不能拿几天前的那天当「昨日」报。
+    if (S.today && !isFreshDay(S.today.date)) S.today = null;
+    if (S.ended && !isFreshDay(S.ended.date)) S.ended = null;
+    S.lastReport = S.lastReport ?? null;
+    S.prevXpTotal = S.prevXpTotal ?? null;
+    S.prevLevel = S.prevLevel ?? null;
 
     // 模板写错了要立刻告诉用户，而不是等第二天早上发现推送内容不对
     const template = String(ctx.config.template ?? DEFAULT_DIGEST_TEMPLATE);
@@ -132,6 +136,8 @@ const definition: ModuleDefinition = {
           S.ended = S.today;
         }
         S.today = h;
+        // 落库：这样即使报告前重启，「昨天」也不会丢
+        ctx.persistState?.();
       } catch (err) {
         ctx.log.warn("收益日报", `采集当日数据失败：${err instanceof Error ? err.message : String(err)}`);
       }
@@ -165,8 +171,10 @@ const definition: ModuleDefinition = {
       S.busy = true;
       try {
         await buildReport(ctx, stamp, S);
-        // 成功后才记账：失败（例如游戏接口临时抽风）下一分钟还会再试一次
+        // 成功后才记账：失败（例如游戏接口临时抽风）下一分钟还会再试一次。
+        // 同时落库：否则重启会让「今天已经发过」丢失 → 补发逻辑会重复推送一份。
         S.lastReport = stamp;
+        ctx.persistState?.();
       } catch (err) {
         ctx.log.warn("收益日报", `生成失败（稍后重试）：${err instanceof Error ? err.message : String(err)}`);
       } finally {
@@ -194,6 +202,18 @@ export function parseReportAt(raw: unknown): { hh: number; mm: number } | null {
 /** 是否已经过了今天的发送时刻（含「已经过了」——错过也能补发） */
 export function isReportDue(now: Date, at: { hh: number; mm: number }): boolean {
   return now.getHours() * 60 + now.getMinutes() >= at.hh * 60 + at.mm;
+}
+
+/**
+ * 这个日期是不是「今天或昨天」。
+ *
+ * 用途：状态跨重启恢复时丢弃过期数据 —— 进程停了三天再起来，
+ * 存着的 `ended.date` 是三天前，不能把它当成「昨日」报出去。
+ */
+export function isFreshDay(date: unknown, now = new Date()): boolean {
+  const d = String(date ?? "");
+  if (!d) return false;
+  return d === localDay(now) || d === localDay(new Date(now.getTime() - 86_400_000));
 }
 
 /** 收集一条日报需要的全部数据 */

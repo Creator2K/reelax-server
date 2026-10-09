@@ -82,7 +82,13 @@ export type ModuleContext = {
   readonly moduleId: string;
   /** 本模块在本账号的配置（defaultConfig 与用户配置合并后的结果，已校验） */
   readonly config: ConfigValues;
-  /** 模块私有内存（停止后清空，不持久化） */
+  /**
+   * 模块私有状态。
+   *
+   * 启动时会把**上次持久化的内容**装进来（见 persistState），
+   * 所以不要把「配置」放这里（配置在 config），也不要用它存敏感信息。
+   * 想丢弃上次的状态就在 onStart 里显式重置对应字段。
+   */
   readonly state: Record<string, unknown>;
   /** 带账号与模块标签的日志 */
   readonly log: ChildLogger;
@@ -96,6 +102,15 @@ export type ModuleContext = {
   every: AccountRuntime["every"];
   /** 受管延时任务 */
   schedule: AccountRuntime["schedule"];
+  /**
+   * 把当前 `state` 写库（跨重启保留）。
+   *
+   * ★ 为什么需要：state 原本只在内存里，而本项目每次在线更新都会重建容器，
+   *   于是「日报暂存的昨天数据」「经验基线」这类跨天信息一重启就没了。
+   * 说明：只有该模块已经有配置行（用户配置过）时才会真正落库；
+   *   没有配置行的模块（默认启用、用户没动过）调用它是无副作用的安全操作。
+   */
+  persistState?: () => void;
 };
 
 /* ---------- 模块定义 ---------- */

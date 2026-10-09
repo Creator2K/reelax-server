@@ -521,10 +521,13 @@ export class AccountRuntime {
   }
 
   private buildContext(def: ModuleDefinition, config: Record<string, unknown>): ModuleContext {
+    // 载入上次持久化的运行状态（没有就是空对象）。
+    // 模块想丢弃旧状态就在 onStart 里显式重置对应字段。
+    const state: Record<string, unknown> = { ...this.repos.modules.getState(this.accountId, def.id) };
     return {
       moduleId: def.id,
       config,
-      state: {},
+      state,
       log: this.log.child({ moduleId: def.id }),
       api: this.client,
       account: this,
@@ -539,6 +542,13 @@ export class AccountRuntime {
       },
       every: this.every,
       schedule: this.schedule,
+      persistState: () => {
+        try {
+          this.repos.modules.setState(this.accountId, def.id, state);
+        } catch (err) {
+          this.log.warn("模块", `${def.id} 状态落库失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
     };
   }
 

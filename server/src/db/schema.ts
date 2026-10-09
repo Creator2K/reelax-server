@@ -228,6 +228,19 @@ ALTER TABLE notify_channels ADD COLUMN pending_target_id TEXT;
 ALTER TABLE users ADD COLUMN quota_override INTEGER;
 `,
   },
+
+  // ---------- 模块运行状态（跨重启保留） ----------
+  // 为什么需要：`ctx.state` 原本只在内存里，进程一重启就没了。收益日报因此丢掉
+  // 「刚结束那一天」的暂存数据，重启后再发就只能显示「今日截至现在」或「无基线」，
+  // 而本项目每次在线更新都会重启容器。
+  // 与 config_json 分开存：config 是用户可编辑的配置，state 是引擎自己的进度，
+  // 混在一起会让状态出现在配置界面上、也会被「恢复默认」清掉。
+  {
+    id: "0006_module_state",
+    sql: `
+ALTER TABLE account_modules ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}';
+`,
+  },
 ];
 
 /** 供 migrate.ts 记录已应用版本 */

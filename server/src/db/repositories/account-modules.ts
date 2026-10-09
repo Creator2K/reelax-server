@@ -123,6 +123,39 @@ export class AccountModulesRepo extends BaseRepo {
     );
   }
 
+  /* ---------------- 运行状态（跨重启保留） ---------------- */
+
+  /**
+   * 读取模块自己持久化的运行状态（没有则返回 {}）。
+   * 只读 state_json，不碰 config —— 状态不该出现在配置界面里。
+   */
+  getState(accountId: string, moduleId: string): Record<string, unknown> {
+    const r = this.db.get<{ state_json: string }>(
+      "SELECT state_json FROM account_modules WHERE account_id = ? AND module_id = ?",
+      accountId,
+      moduleId,
+    );
+    return parseJson<Record<string, unknown>>(r?.state_json, {});
+  }
+
+  /**
+   * 写入模块运行状态。
+   *
+   * ★ 只有已存在配置行（用户配置过这个模块）时才写：
+   *   不能为了存状态而 INSERT 一行 —— 新行的 enabled 默认是 0，
+   *   而 isEnabled() 会优先读库里的值，等于顺手把默认启用的模块关掉。
+   */
+  setState(accountId: string, moduleId: string, state: Record<string, unknown>): boolean {
+    const res = this.db.run(
+      "UPDATE account_modules SET state_json = ?, updated_at = ? WHERE account_id = ? AND module_id = ?",
+      JSON.stringify(state ?? {}),
+      now(),
+      accountId,
+      moduleId,
+    );
+    return Number(res.changes) > 0;
+  }
+
   /** 删除某账号的全部模块配置（账号删除时由外键级联，这里供显式调用） */
   deleteForAccount(accountId: string): number {
     return Number(this.db.run("DELETE FROM account_modules WHERE account_id = ?", accountId).changes);
