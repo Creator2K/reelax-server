@@ -15,6 +15,7 @@ import {
   IconUsers,
 } from "@tabler/icons-react";
 import { NavLink } from "react-router-dom";
+import { motion } from "motion/react";
 import { cn } from "@/lib/utils.ts";
 
 export type NavItem = {
@@ -79,14 +80,18 @@ export function Sidebar({
       </div>
 
       <nav className="scroll-slim flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1">
-        {items.map((item) => (
+        {items.map((item, i) => (
           <NavLink
             key={item.to}
             to={item.to}
             end={item.end}
             className="group"
             children={({ isActive }) => (
-              <span
+              // 错峰入场：每项延后 30ms，进页面时是一条从上往下铺开的动效
+              <motion.span
+                initial={{ opacity: 0, x: -8 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.28, delay: 0.04 + i * 0.03, ease: [0.16, 1, 0.3, 1] }}
                 data-slot="sidebar-menu-button"
                 data-active={isActive ? "true" : "false"}
                 className={cn(
@@ -97,7 +102,7 @@ export function Sidebar({
               >
                 <item.icon className="size-4 shrink-0 opacity-80" />
                 <span>{item.label}</span>
-              </span>
+              </motion.span>
             )}
           />
         ))}

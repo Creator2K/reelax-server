@@ -3,6 +3,12 @@
 对标 [LINUX DO CDK](https://github.com/linux-do/cdk)（MIT）。风格是
 **shadcn/ui (new-york) + Tailwind v4 + 中性 zinc 灰阶**：干净、克制、类 GitHub 的社区产品质感。
 
+> **本项目的动效与细节还抄了一个中间实现**：
+> [workbuddy-manager](https://github.com/ithtelab/workbuddy-manager)（它抄的正是 LDC）。
+> 从它搬过来的是：`motion` 动效基础件、`scroll-slim` 细滚动条、
+> 按钮内图标统一 16px、统计卡的 `bg-muted + rounded-[20px]` 范式。
+> 下面 §8 起是这部分规范，**改样式前必读**，否则很容易把观感改回"默认 shadcn"。
+
 样式全部落在 `web/src/styles.css` 与 `web/components.json`。**改任何颜色/圆角前请先读本文**，
 这里的表格是验收基准。
 
@@ -163,3 +169,68 @@ LDC 没有「运行状态」的概念，这里补了一组语义色，**只用�
 - `@tabler/icons-react`（主）+ `lucide-react`
 - React 19 + Vite（**不上 Next.js**：本服务是长驻进程 + SPA，
   Next 只会引入 SSR/RSC 复杂度而无收益；设计系统照搬，框架不照搬）
+- **`motion` v12**（动效基础件，见 §8）+ `tw-animate-css`
+
+---
+
+## 11. 从 workbuddy-manager 搬来的规范
+
+### 11.1 统计卡（StatCard）四条硬规则
+
+`web/src/components/domain/StatCard.tsx`：
+
+1. **用底色分区，不用边框** —— `bg-muted`，不加 `border`
+2. `rounded-[20px]`（比常规卡片的 10px 圆得多，是这套观感的识别点）
+3. 数值大而紧：`text-xl sm:text-2xl font-semibold tracking-[-0.03em]` + `tabular-nums`
+   （`tabular-nums` 很关键：多张卡并排时数字不会抖）
+4. 图标放在 24px 圆形浅底里（`size-6 rounded-full bg-white/70 dark:bg-white/[0.05]`）
+
+语义色调统一在 `StatTone`（`neutral/success/warning/danger/info/accent`）里定义，
+**不要在页面里另写一套颜色**，否则同一个"好/坏"在不同页面会长得不一样。
+
+`ProgressBar` 与 StatCard 同文件，用于经验 / 转生 / 保底 / 更新进度。
+
+### 11.2 动效
+
+移植过来的两个基础件：
+
+| 组件 | 路径 | 用途 |
+| --- | --- | --- |
+| `MotionEffect` | `components/animate-ui/motion-effect.tsx` | 把「滑入+淡入+缩放+模糊」组合成声明式开关；支持 `inView` 懒触发 |
+| `CountingNumber` | `components/animate-ui/counting-number.tsx` | 数值滚动（直接改 textContent，不每帧重渲染 React） |
+
+**用在哪**：
+
+- 页面切换：`AppLayout` 的 `AnimatedOutlet`（key = `pathname`，每次换页播一次淡入位移）
+- 登录/注册：`AuthShell` 品牌与卡片错峰弹簧入场（首屏动效影响最大，给得明显一点）
+- 侧边栏：每项延后 30ms 错峰铺开
+- 统计卡：`delay` 递增错峰；总览的数值用 `CountingNumber` 滚动
+- 更新进度：步骤清单 + 进度条 + `sheen` 流动光带
+
+默认弹簧：`{ type: "spring", stiffness: 200~260, damping: 20~26 }`。
+别用很长的 `ease` 曲线，这套观感偏"利落"。
+
+### 11.3 细滚动条 `.scroll-slim`
+
+默认滚动条偏宽、带可见轨道，嵌在卡片里很突兀。用「透明边框 + `background-clip`」把
+**视觉粗细压到 4px，但保留 10px 的可抓取区域**：
+
+```html
+<main class="scroll-slim overflow-y-auto">…</main>
+```
+
+### 11.4 按钮内图标统一 16px
+
+`styles.css` 的 `@layer components` 把按钮与触发器内的 `svg` 统一成 16px。
+原因：默认规则转义后匹配不上，图标按 lucide 的 24px 渲染，而按钮才 32px 高 —— 显得又大又虚。
+
+**⚠️ 别用 `stroke-width: 3` / `shape-rendering: crispEdges` 去"锐化"**：
+`crispEdges` 关掉弧形描边的抗锯齿，小尺寸曲线图标直接糊成色块。
+小尺寸曲线图标**必须保留抗锯齿**。
+
+选择器带 `$='-trigger'`：Radix 的 `asChild` 会把 `data-slot` 覆盖成
+`alert-dialog-trigger` 之类，只写 `[data-slot='button']` 会漏掉危险操作按钮。
+
+### 11.5 无障碍
+
+`prefers-reduced-motion: reduce` 下关掉：状态点脉冲、进度条填充、`sheen` 光带、toast 倒计时条。

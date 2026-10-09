@@ -1,0 +1,8 @@
+docs: 补上默认管理员、UI 对标与更新进度的说明
+
+- README：默认管理员怎么拿口令（日志 + INITIAL_ADMIN.txt）、忘口令怎么找回、
+  管理员与挂机账号的角色分工表、更新进度的体验说明
+- README 配置表：补 ADMIN_USERNAME / ADMIN_PASSWORD
+- DESIGN-TOKENS：新增 §11「从 workbuddy-manager 搬来的规范」——
+  统计卡四条硬规则、动效基础件与用在哪、scroll-slim、
+  按钮图标 16px（含 crispEdges 那个坑）、reduced-motion
