@@ -201,8 +201,8 @@ describe("微信通道 · 连接失败与重试", () => {
   });
 });
 
-describe("微信通道 · 验证码绑定", () => {
-  it("★ 陌生人发消息不会直接绑定，而是下发 6 位验证码", async () => {
+describe("微信通道 · 验证码绑定（验证码由网页端生成）", () => {
+  it("★ 陌生人发消息不会再拿到验证码（旧实现等于自己批准自己）", async () => {
     const h = makeHarness();
     const { channel: ch } = seedWechat(h.repos, h.dataDir);
     await h.notify.restoreAll();
@@ -211,48 +211,49 @@ describe("微信通道 · 验证码绑定", () => {
     expect(bot.handlers).toHaveLength(1);
 
     // 模拟一条来自陌生人的消息
-    const msg = { userId: "stranger-1", text: "你好" };
-    bot.handlers[0]!(msg);
+    bot.handlers[0]!({ userId: "stranger-1", text: "你好" });
     await new Promise((r) => setTimeout(r, 60));
 
     const after = h.repos.notify.findById(ch.id)!;
-    // 没有直接绑定
     expect(after.target_id).toBeNull();
-    // 但生成了 6 位验证码
-    expect(after.verify_code).toMatch(/^\d{6}$/);
-    expect(after.verify_expires_at).toBeGreaterThan(Date.now());
-    // 回复里含验证码
-    expect(bot.replied.at(-1)?.text).toContain(after.verify_code!);
+    // ★ 关键：不再自动生成验证码 —— 否则任何能给机器人发消息的人都能绑成收件人
+    expect(after.verify_code).toBeNull();
+    // 回复里不含任何验证码，只提示去网页端生成
+    const reply = bot.replied.at(-1)?.text ?? "";
+    expect(reply).toContain("网页端");
+    expect(reply).not.toMatch(/\d{6}/);
   });
 
-  it("★ 把验证码发回来才算绑定成功", async () => {
+  it("★ 机主在网页端生成验证码 → 从微信发回来 → 绑定成功", async () => {
     const h = makeHarness();
-    const { channel: ch } = seedWechat(h.repos, h.dataDir);
+    const { channel: ch, userId } = seedWechat(h.repos, h.dataDir);
     await h.notify.restoreAll();
     const bot = h.bots[h.bots.length - 1]!;
 
-    bot.handlers[0]!({ userId: "owner-1", text: "绑定" });
-    await new Promise((r) => setTimeout(r, 60));
-    const code = h.repos.notify.findById(ch.id)!.verify_code!;
+    // 网页端生成：验证码作为接口返回值给调用方（页面展示）
+    const view = await h.notify.action(ch.id, userId, "bind-code");
+    expect(view.verifyCode).toMatch(/^\d{6}$/);
+    expect(view.awaitingVerify).toBe(true);
+    // 生成过程不会往微信发消息（否则又变成「谁发消息谁拿码」）
+    expect(bot.replied).toHaveLength(0);
 
-    bot.handlers[0]!({ userId: "owner-1", text: code });
+    bot.handlers[0]!({ userId: "owner-1", text: view.verifyCode! });
     await new Promise((r) => setTimeout(r, 60));
 
     const after = h.repos.notify.findById(ch.id)!;
     expect(after.target_id).toBe("owner-1");
     expect(after.status).toBe("bound");
     expect(after.verify_code).toBeNull();
-    expect(bot.replied.at(-1)?.text).toContain("验证成功");
+    expect(bot.replied.at(-1)?.text).toContain("绑定成功");
   });
 
   it("验证码错误会提示还能试几次，且不会绑定", async () => {
     const h = makeHarness();
-    const { channel: ch } = seedWechat(h.repos, h.dataDir);
+    const { channel: ch, userId } = seedWechat(h.repos, h.dataDir);
     await h.notify.restoreAll();
     const bot = h.bots[h.bots.length - 1]!;
 
-    bot.handlers[0]!({ userId: "owner-2", text: "hi" });
-    await new Promise((r) => setTimeout(r, 60));
+    await h.notify.action(ch.id, userId, "bind-code");
 
     bot.handlers[0]!({ userId: "owner-2", text: "000000" });
     await new Promise((r) => setTimeout(r, 60));
@@ -263,33 +264,74 @@ describe("微信通道 · 验证码绑定", () => {
     expect(bot.replied.at(-1)?.text).toContain("验证码不对");
   });
 
-  it("★ 别人拿到验证码也用不了（只认发起验证的会话）", async () => {
+  it("普通闲聊不消耗尝试次数（只有「像验证码」的输入才计数）", async () => {
     const h = makeHarness();
-    const { channel: ch } = seedWechat(h.repos, h.dataDir);
+    const { channel: ch, userId } = seedWechat(h.repos, h.dataDir);
     await h.notify.restoreAll();
     const bot = h.bots[h.bots.length - 1]!;
 
-    bot.handlers[0]!({ userId: "owner-3", text: "绑定" });
+    await h.notify.action(ch.id, userId, "bind-code");
+    bot.handlers[0]!({ userId: "owner-3", text: "在吗" });
     await new Promise((r) => setTimeout(r, 60));
-    const code = h.repos.notify.findById(ch.id)!.verify_code!;
 
-    // 另一个会话把正确的验证码发过来
-    bot.handlers[0]!({ userId: "attacker-1", text: code });
+    const after = h.repos.notify.findById(ch.id)!;
+    expect(after.verify_attempts).toBe(0);
+    expect(bot.replied.at(-1)?.text).toContain("网页端");
+  });
+
+  it("★ 不知道验证码的人绑不上：连猜会被计数，用尽后连正确的码也无效", async () => {
+    const h = makeHarness();
+    const { channel: ch, userId } = seedWechat(h.repos, h.dataDir);
+    await h.notify.restoreAll();
+    const bot = h.bots[h.bots.length - 1]!;
+
+    const view = await h.notify.action(ch.id, userId, "bind-code");
+    for (let i = 0; i < 5; i++) {
+      bot.handlers[0]!({ userId: "attacker-1", text: "000000" });
+      await new Promise((r) => setTimeout(r, 30));
+    }
+
+    const mid = h.repos.notify.findById(ch.id)!;
+    expect(mid.target_id).toBeNull();
+    expect(mid.verify_attempts).toBe(5); // 5 次瞎猜都被计数
+
+    // 第 6 次：次数已用尽 —— 即使这次发的就是正确验证码也不给绑
+    bot.handlers[0]!({ userId: "attacker-1", text: view.verifyCode! });
     await new Promise((r) => setTimeout(r, 60));
 
     const after = h.repos.notify.findById(ch.id)!;
     expect(after.target_id).toBeNull();
-    expect(bot.replied.at(-1)?.text).toContain("不是发给你的");
+    expect(after.verify_code).toBeNull(); // 验证码作废，只能由机主在网页端重新生成
+    expect(bot.replied.at(-1)?.text).toContain("尝试次数过多");
+  });
+
+  it("★ 验证码只返回给通道所有者（换个人查就是 404）", async () => {
+    const h = makeHarness();
+    const { channel: ch, userId } = seedWechat(h.repos, h.dataDir);
+    const other = h.repos.users.create({
+      email: "someone-else@example.com",
+      passwordHash: "scrypt$N=1,r=1,p=1$AA$AA",
+      displayName: "别人",
+      role: "user",
+      status: "approved",
+      approvedBy: null,
+    });
+
+    const view = await h.notify.action(ch.id, userId, "bind-code");
+    expect(view.verifyCode).toMatch(/^\d{6}$/);
+
+    // 别人的查询拿不到这个通道（更拿不到验证码）
+    expect(() => h.notify.getForUser(ch.id, other.id)).toThrow();
+    expect(h.notify.listForUser(other.id)).toHaveLength(0);
   });
 
   it("尝试次数用尽后要求重新获取验证码", async () => {
     const h = makeHarness();
-    const { channel: ch } = seedWechat(h.repos, h.dataDir);
+    const { channel: ch, userId } = seedWechat(h.repos, h.dataDir);
     await h.notify.restoreAll();
     const bot = h.bots[h.bots.length - 1]!;
 
-    bot.handlers[0]!({ userId: "owner-4", text: "绑定" });
-    await new Promise((r) => setTimeout(r, 60));
+    await h.notify.action(ch.id, userId, "bind-code");
 
     for (let i = 0; i < 5; i++) {
       bot.handlers[0]!({ userId: "owner-4", text: "111111" });
@@ -323,10 +365,8 @@ describe("微信通道 · 验证码绑定", () => {
     const h = makeHarness();
     const { channel: ch, userId } = seedWechat(h.repos, h.dataDir);
     await h.notify.restoreAll();
-    const bot = h.bots[h.bots.length - 1]!;
 
-    bot.handlers[0]!({ userId: "owner-6", text: "绑定" });
-    await new Promise((r) => setTimeout(r, 60));
+    await h.notify.action(ch.id, userId, "bind-code");
     expect(h.repos.notify.findById(ch.id)!.verify_code).not.toBeNull();
 
     h.repos.notify.completeVerification(ch.id, "owner-6", null);

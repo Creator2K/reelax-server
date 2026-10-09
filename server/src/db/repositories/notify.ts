@@ -198,10 +198,15 @@ export class NotifyRepo extends BaseRepo {
 
   /* ---------------- 绑定验证码 ---------------- */
 
-  /** 生成验证码：进入「等待用户回发验证码」状态 */
+  /**
+   * 生成验证码：进入「等待用户回发验证码」状态。
+   *
+   * pendingTargetId 现在传 null —— 验证码由**网页端**生成（见 notify-service 的
+   * bind-code 动作），不再绑定「谁先给机器人发消息」，所以没有「待定接收人」。
+   */
   startVerification(
     id: string,
-    input: { code: string; pendingTargetId: string; expiresAt: number; hint: string | null },
+    input: { code: string; pendingTargetId: string | null; expiresAt: number; hint: string | null },
   ): void {
     this.db.run(
       `UPDATE notify_channels

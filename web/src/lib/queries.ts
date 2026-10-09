@@ -227,6 +227,11 @@ export type NotifyChannel = {
   awaitingVerify: boolean;
   /** 微信：验证码还有多久过期（毫秒） */
   verifyExpiresInMs: number | null;
+  /**
+   * 微信：当前有效的 6 位绑定验证码（没有则为 null）。
+   * 只有通道所有者能看到（接口按 user_id 过滤）—— 用户要把它从微信发给机器人核对。
+   */
+  verifyCode: string | null;
 };
 
 export type NotifyAvailability = {

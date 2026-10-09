@@ -212,7 +212,7 @@ function ChannelCard({
   onTest: () => void;
   onToggle: (v: boolean) => void;
   onDelete: () => void;
-  onAction: (a: "login" | "reconnect" | "retry" | "unbind") => void;
+  onAction: (a: "login" | "reconnect" | "retry" | "unbind" | "bind-code") => void;
 }) {
   const isWechat = channel.kind === "wechat";
   const usable = channel.enabled && channel.usable;
@@ -270,34 +270,39 @@ function ChannelCard({
           <div className="text-muted-foreground max-w-56 space-y-1 text-xs">
             <p className="text-foreground font-medium">用微信扫码登录</p>
             <p>扫码后如果手机要求输入数字配对码，按提示输入即可。</p>
-            <p>登录成功后，用微信给这个机器人发一条消息完成绑定。</p>
+            <p>登录成功后，点「生成绑定验证码」，再用微信把这 6 位数字发给机器人。</p>
           </div>
         </div>
       ) : null}
 
-      {/* 等待验证码：把这一步说清楚，否则用户不知道绑定为什么没生效 */}
+      {/* 等待验证码：验证码只在这里显示，用户从自己的微信发回来核对 */}
       {isWechat && channel.awaitingVerify ? (
         <div className="px-4">
           <Alert variant="info">
             <IconShieldCheck />
             <AlertDescription>
-              验证码已下发。<b>请把机器人回复的 6 位数字发回给它</b>才算绑定成功
+              请用微信把下面这 6 位验证码发给机器人，才算绑定成功
               {channel.verifyExpiresInMs != null
                 ? `（还有约 ${Math.max(1, Math.ceil(channel.verifyExpiresInMs / 60000))} 分钟有效）`
                 : ""}
               。
+              {channel.verifyCode ? (
+                <div className="mono-num mt-2 text-2xl font-semibold tracking-[0.35em]">
+                  {channel.verifyCode}
+                </div>
+              ) : null}
               <br />
-              这一步用于确认这个微信是你本人的，避免陌生人误绑定。
+              验证码只在这个页面显示：只有能登录后台的人才知道它，所以「能发微信消息」不再等于「是机主」。
             </AlertDescription>
           </Alert>
         </div>
       ) : null}
 
-      {isWechat && channel.status === "online" && !channel.awaitingVerify ? (
+      {isWechat && channel.status === "online" && !channel.awaitingVerify && !channel.target ? (
         <div className="px-4">
           <Alert variant="info">
             <AlertDescription>
-              已登录，但还没绑定接收人：请用微信给这个机器人发一条消息，然后按它回复的提示把验证码发回去。
+              已登录，但还没绑定接收人：点下面的「生成绑定验证码」，然后用微信把这 6 位数字发给机器人。
             </AlertDescription>
           </Alert>
         </div>
@@ -311,6 +316,13 @@ function ChannelCard({
         </Button>
         {isWechat ? (
           <>
+            {/* 未绑定：生成验证码（只在这里显示，用户从微信发回核对） */}
+            {!channel.target ? (
+              <Button size="xs" onClick={() => onAction("bind-code")} disabled={acting}>
+                <IconShieldCheck className="size-3.5" />
+                {channel.awaitingVerify ? "重新生成验证码" : "生成绑定验证码"}
+              </Button>
+            ) : null}
             {/* 连接失败过用「重新连接」——复用已保存凭证，不必重新扫码 */}
             <Button size="xs" variant="outline" onClick={() => onAction("reconnect")} disabled={acting}>
               <IconRefresh className="size-3.5" />
@@ -320,10 +332,12 @@ function ChannelCard({
               <IconQrcode className="size-3.5" />
               重新扫码登录
             </Button>
-            <Button size="xs" variant="ghost" onClick={() => onAction("unbind")} disabled={acting}>
-              <IconUserCog className="size-3.5" />
-              更换接收人
-            </Button>
+            {channel.target ? (
+              <Button size="xs" variant="ghost" onClick={() => onAction("unbind")} disabled={acting}>
+                <IconUserCog className="size-3.5" />
+                更换接收人
+              </Button>
+            ) : null}
           </>
         ) : null}
       </div>
@@ -411,7 +425,7 @@ function AddChannelDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
           ) : (
             <Alert variant="info">
               <AlertDescription>
-                添加后会立即生成二维码，用微信扫码登录。登录成功后请给机器人发一条消息完成绑定。
+                添加后会立即生成二维码，用微信扫码登录。登录成功后点「生成绑定验证码」，再把它从微信发给机器人。
                 <br />
                 微信机器人支持双向交互：可以直接在微信里发「日报」「状态」「保底」等命令。
                 <br />

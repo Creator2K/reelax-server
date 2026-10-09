@@ -113,12 +113,13 @@ export function createNotifyRouter(deps: {
   /**
    * 通道特有动作：
    *   微信 —— login（重新扫码）/ reconnect（用已保存凭证重连）/ retry / unbind
+   *          / bind-code（生成绑定验证码，在网页端展示，用户从微信发回来核对）
    *
    * 注意：Express 5 用的 path-to-regexp v8 不再支持内联正则参数
    * （`:action(login|unbind|retry)` 会直接抛 "Unexpected ( at index …"），
    * 所以这里用普通参数 + 手工白名单校验。
    */
-  const ALLOWED_ACTIONS = new Set(["login", "reconnect", "retry", "unbind"]);
+  const ALLOWED_ACTIONS = new Set(["login", "reconnect", "retry", "unbind", "bind-code"]);
   router.post("/:id/:action", async (req, res) => {
     const userId = currentUserId(req);
     const { id, action } = req.params as { id: string; action: string };

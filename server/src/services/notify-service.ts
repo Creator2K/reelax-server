@@ -84,10 +84,18 @@ export type NotifyChannelView = {
   createdAt: number;
   /** 配置摘要（不含密钥），给 UI 显示用 */
   configHint: string | null;
-  /** 微信：正在等用户回发验证码 */
+  /** 微信：正在等用户把网页上显示的验证码发回来 */
   awaitingVerify: boolean;
   /** 微信：验证码还有多久过期（毫秒） */
   verifyExpiresInMs: number | null;
+  /**
+   * 微信：当前有效的 6 位绑定验证码（没有则为 null）。
+   *
+   * ★ 这是刻意暴露给「通道所有者」的：验证码必须由已登录的网页端展示，
+   *   用户再从自己的微信发回给机器人核对 —— 这样「能发消息」才不等于「是机主」。
+   *   只有 listForUser / getForUser 这类按 user_id 过滤的接口会返回它。
+   */
+  verifyCode: string | null;
 };
 
 export type NotifyServiceDeps = {
@@ -316,51 +324,53 @@ export class NotifyService {
         return;
       }
 
-      /* ---------- 正在等验证码 ---------- */
+      /* ---------- 正在等验证码（验证码由网页端生成，只有机主能看到） ---------- */
       const waiting = live.verify_code;
       const valid = waiting && (live.verify_expires_at ?? 0) > Date.now();
       if (waiting && valid) {
-        // 只认发起验证的那个会话，避免别人碰巧发对数字
-        if (live.pending_target_id && live.pending_target_id !== userId) {
-          await bot.reply(msg, "这个验证码不是发给你的。").catch(() => {});
-          return;
-        }
         if (live.verify_attempts >= 5) {
-          repos.notify.clearVerification(ch.id, "验证码尝试次数过多，请重新发一条消息获取新验证码");
-          await bot.reply(msg, "尝试次数过多，请重新发送任意消息获取新的验证码。").catch(() => {});
+          repos.notify.clearVerification(ch.id, "验证码尝试次数过多，请重新在网页端生成");
+          await bot.reply(msg, "尝试次数过多：请到网页端重新生成绑定验证码。").catch(() => {});
           return;
         }
         if (text.replace(/\s+/g, "") === waiting) {
           repos.notify.completeVerification(ch.id, userId, String(msg?.senderName ?? "").slice(0, 40) || null);
           log.info("推送", `[${live.label}] 验证码正确，已绑定接收人 ${userId}`, { userId: live.user_id });
           await bot
-            .reply(msg, `验证成功，已绑定「${live.label}」。\n之后收益日报会推送到这里。\n发「帮助」查看可用命令。`)
+            .reply(msg, `绑定成功，已绑定「${live.label}」。\n之后收益日报会推送到这里。\n发「帮助」查看可用命令。`)
             .catch(() => {});
           return;
         }
-        repos.notify.bumpVerifyAttempts(ch.id);
-        const left = Math.max(0, 4 - live.verify_attempts);
-        await bot.reply(msg, `验证码不对，还可以再试 ${left} 次。`).catch(() => {});
+        // 只有「看起来像验证码」的输入才计数：普通闲聊不该把机主的尝试次数耗光，
+        // 而计数是为了挡住暴力猜这 6 位数字
+        if (/^\d{4,8}$/.test(text.replace(/\s+/g, ""))) {
+          repos.notify.bumpVerifyAttempts(ch.id);
+          // 计数用「加上本次之后」的值，避免出现「还可以试 0 次」却还能再试一次的错觉
+          const left = Math.max(0, 5 - (live.verify_attempts + 1));
+          await bot.reply(msg, `验证码不对，还可以再试 ${left} 次。`).catch(() => {});
+          return;
+        }
+        await bot.reply(msg, "请在网页端「推送」里查看 6 位绑定验证码，再把它发给我。").catch(() => {});
         return;
       }
 
-      /* ---------- 新会话（或验证码过期）：生成新验证码 ---------- */
-      const code = randomInt(100000, 1000000).toString();
-      repos.notify.startVerification(ch.id, {
-        code,
-        pendingTargetId: userId,
-        expiresAt: Date.now() + 10 * 60_000,
-        hint: "请把收到的验证码发回给机器人以完成绑定",
-      });
-      log.info("推送", `[${live.label}] 收到新会话消息，已下发绑定验证码（10 分钟内有效）`, {
+      /* ---------- 其它消息：**不再**自动下发验证码 ----------
+       * ★ 早期实现是「谁给机器人发消息，就把验证码回给谁」，等于自己批准自己：
+       *   机主的任何一个微信好友（或任何能给这个机器人发消息的人）都能把自己绑成
+       *   接收人，从此收到收益日报，还能用命令读到机主的挂机数据 —— 而那句
+       *   「用于确认这个微信是你本人的」根本不成立。
+       *   现在验证码只能由**已登录的网页端**生成并展示，微信这边只负责「发回来核对」，
+       *   于是「能发消息」不再等于「是机主」。
+       */
+      log.info("推送", `[${live.label}] 收到未绑定会话的消息，已提示其到网页端生成验证码`, {
         userId: live.user_id,
       });
       await bot
         .reply(
           msg,
-          `你的绑定验证码是：${code}\n\n` +
-            `请在 10 分钟内把这 6 位数字发回来完成绑定。\n` +
-            `（这一步用于确认这个微信是你本人的，避免别人误绑定）`,
+          "这个机器人还没有绑定接收人。\n\n" +
+            "请登录网页端 →「推送」→ 点「生成绑定验证码」，\n" +
+            "然后把收到的 6 位数字从微信发给我。",
         )
         .catch(() => {});
     };
@@ -536,8 +546,8 @@ export class NotifyService {
       configHint: (channel) => {
         if (!fs.existsSync(credsDir(channel.id))) return null;
         if (channel.target_id) return `已绑定 ${channel.target_id}`;
-        if (channel.verify_code != null) return "等待验证码";
-        return "已登录，未绑定";
+        if (channel.verify_code != null) return "等待你从微信发回验证码";
+        return "已登录，未绑定（在网页端生成绑定验证码）";
       },
       async send(channel, msg) {
         if (!channel.target_id) {
@@ -545,8 +555,8 @@ export class NotifyService {
             ok: false,
             error:
               channel.verify_code != null
-                ? "还没完成绑定：请把机器人回复的 6 位验证码发回给它"
-                : "还没绑定接收人：请用微信给机器人发一条消息，按提示完成绑定",
+                ? "还没完成绑定：请把网页上显示的 6 位验证码从微信发给机器人"
+                : "还没绑定接收人：请到网页端「推送」生成绑定验证码，再从微信发回给机器人",
           };
         }
 
@@ -578,6 +588,21 @@ export class NotifyService {
         }
       },
       async action(channel, name) {
+        if (name === "bind-code") {
+          // ★ 绑定验证码只能由「已登录的网页端」生成（返回给调用方展示），
+          //   再从微信发回来核对。这样「能发消息」不再等于「是机主」。
+          const code = randomInt(100000, 1000000).toString();
+          repos.notify.startVerification(channel.id, {
+            code,
+            pendingTargetId: null,
+            expiresAt: Date.now() + 10 * 60_000,
+            hint: "请在 10 分钟内把网页上显示的 6 位验证码发给机器人",
+          });
+          log.info("推送", `[${channel.label}] 已生成绑定验证码（10 分钟内有效，仅网页端可见）`, {
+            userId: channel.user_id,
+          });
+          return;
+        }
         if (name === "login") {
           // 强制重新扫码：清掉旧 bot 与验证状态
           disposeBot2(channel.id);
@@ -599,7 +624,7 @@ export class NotifyService {
         }
         if (name === "unbind") {
           // 解绑同时清掉验证码，避免残留的验证码把旧会话再绑回来
-          repos.notify.clearVerification(channel.id, "已解绑。请用微信给机器人发一条消息，按提示重新绑定");
+          repos.notify.clearVerification(channel.id, "已解绑。请到网页端「推送」重新生成绑定验证码");
           repos.notify.setRuntime(channel.id, { targetId: null, targetLabel: null });
           return;
         }
@@ -657,11 +682,17 @@ export class NotifyService {
       lastError: channel.last_error,
       createdAt: Number(channel.created_at),
       configHint: adapter?.configHint(channel) ?? null,
-      // 验证码状态：前端要显示「等待验证码」并给出倒计时
+      // 验证码状态：前端要显示验证码与倒计时
       awaitingVerify: channel.verify_code != null && (channel.verify_expires_at ?? 0) > Date.now(),
       verifyExpiresInMs:
         channel.verify_code != null && channel.verify_expires_at != null
           ? Math.max(0, Number(channel.verify_expires_at) - Date.now())
+          : null,
+      // 验证码只在「等待期间」返回，且只通过**用户自己的**通道查询接口下发
+      // （listForUser/getForUser 都按 user_id 过滤），所以只有机主能看到。
+      verifyCode:
+        channel.verify_code != null && (channel.verify_expires_at ?? 0) > Date.now()
+          ? String(channel.verify_code)
           : null,
     };
   }
