@@ -84,16 +84,17 @@ describe("模板渲染", () => {
     expect(lines).toEqual(["净收益 +182.4万"]);
   });
 
-  it("★「标签 + 空值」在带冒号时整行消失", () => {
+  it("★ 变量为空时整行消失（有冒号没冒号都一样，不留孤零零的标签）", () => {
     const noRare: DigestData = { ...sample, rareFish: "" };
-    const lines = renderDigestTemplate("高稀有度：{rareFish}\n鱼获 {fishTotal} 条", noRare);
-    expect(lines).toEqual(["鱼获 4,128 条"]);
+    expect(renderDigestTemplate("高稀有度：{rareFish}\n鱼获 {fishTotal} 条", noRare)).toEqual(["鱼获 4,128 条"]);
+    expect(renderDigestTemplate("高稀有度 {rareFish}", noRare)).toEqual([]);
   });
 
-  it("★ 没有冒号时只去掉空出来的尾巴（保留标签，用户能看出这项是空的）", () => {
-    const noRare: DigestData = { ...sample, rareFish: "" };
-    const lines = renderDigestTemplate("高稀有度 {rareFish}", noRare);
-    expect(lines).toEqual(["高稀有度"]);
+  it("★ 同一行里还有别的值时只收掉空出来的尾巴", () => {
+    const noBait: DigestData = { ...sample, baitCost: 0, baitPct: null };
+    const lines = renderDigestTemplate("净收益 {netSigned} · 鱼饵 {baitPct}", noBait);
+    // baitPct 为空 → 收掉尾巴的分隔符，前面的内容保留
+    expect(lines).toEqual(["净收益 +182.4万"]);
   });
 
   it("★ 整行只有一个变量且为空时整行消失", () => {
@@ -128,6 +129,54 @@ describe("模板渲染", () => {
   it("★ 纯中文行不会被误删（用户自己写的标题要保留）", () => {
     const lines = renderDigestTemplate("今日总结\n净收益 {netSigned}", sample);
     expect(lines).toEqual(["今日总结", "净收益 +182.4万"]);
+  });
+
+  it("★ 带 emoji 与固定文字的标签行，缺数据时整行消失（不留「还差 杆」）", () => {
+    const noPity: DigestData = { ...sample, pityArcane: null, pityExotic: null };
+    const lines = renderDigestTemplate("🎯 奥秘保底还差 {pityArcane} 杆\n鱼获 {fishTotal} 条", noPity);
+    expect(lines).toEqual(["鱼获 4,128 条"]);
+  });
+
+  it("★ 用户自己写的长文案即使变量为空也保留（那是他补充的说明）", () => {
+    const noXp: DigestData = { ...sample, xp: null, xpText: "" };
+    const lines = renderDigestTemplate("今天真是丰收的一天 {xpText}", noXp);
+    expect(lines).toEqual(["今天真是丰收的一天"]);
+  });
+
+  it("★ 用户写的完整句子（带句末标点）也保留", () => {
+    const noXp: DigestData = { ...sample, xp: null, xpText: "" };
+    const lines = renderDigestTemplate("今天很顺利。{xpText}", noXp);
+    expect(lines).toEqual(["今天很顺利。"]);
+  });
+
+  it("★ 各种标签行在缺数据时都消失", () => {
+    const empty: DigestData = {
+      ...sample,
+      xp: null,
+      xpText: "",
+      level: null,
+      levelGain: null,
+      levelShortfall: null,
+      rareFish: "",
+      tournament: "",
+      guildTournament: "",
+      worldBoss: "",
+      pityArcane: null,
+      baitPct: null,
+    };
+    const tpl = [
+      "净收益 {netSigned}",
+      "{xpText}",
+      "等级 {level} 升 {levelGain}",
+      "高稀有度 {rareFish}",
+      "{tournament}",
+      "{guildTournament}",
+      "{worldBoss}",
+      "🎯 奥秘保底还差 {pityArcane} 杆",
+      "💰 净收益 {netSigned} · 鱼饵占 {baitPct}",
+    ].join("\n");
+    // 只剩「净收益」两行（一纯变量、一带值）
+    expect(renderDigestTemplate(tpl, empty)).toEqual(["净收益 +182.4万", "💰 净收益 +182.4万"]);
   });
 
   it("缺失的成长数据渲染成空（不是 0 或 NaN）", () => {

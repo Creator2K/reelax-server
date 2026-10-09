@@ -187,9 +187,130 @@ export function digestDataToVars(d: DigestData): Record<string, string> {
 const WHOLE_LINE_VAR = /^\{(\w+)\}$/;
 
 /**
+ * 在模板行里替换变量。
+ *
+ * 记录几个信号，它们是后面收拾空壳行的**唯一可靠依据**：
+ *   · emptyVars   —— 有几个变量渲染成了空（缺数据）
+ *   · filledVars  —— 有几个变量渲染出了内容
+ *   · staticRuns  —— 模板里的静态文字块（去掉变量、空白、标点后的中文/英文片段）
+ *   · text        —— 替换后的文本
+ *
+ * ★ 为什么不能靠比较渲染前后的字符串差异：`📊 {account} 的{label}战报`
+ *   变量都有值，只是空格被压缩了，早期版本因此把它整行删掉（真 bug）。
+ *
+ * ★ 为什么要看 staticRuns：「🎯 奥秘保底还差 {pityArcane} 杆」在缺数据时
+ *   会渲染成「🎯 奥秘保底还差 杆」——光看渲染结果，`还差` 像是有意义的内容；
+ *   但从模板能看出它只是短标签（2 个字），整行应当丢掉。
+ *   而用户自己写的长文案（「今天真是丰收的一天」）不该被删。
+ */
+function interpolate(
+  line: string,
+  vars: Record<string, string>,
+): { text: string; emptyVars: number; filledVars: number; prose: boolean } {
+  let emptyVars = 0;
+  let filledVars = 0;
+  const text = line.replace(/\{(\w+)\}/g, (whole, name: string) => {
+    if (!VAR_NAMES.has(name)) return whole; // 不认识的变量原样保留
+    const v = vars[name] ?? "";
+    if (v === "") emptyVars++;
+    else filledVars++;
+    return v;
+  });
+
+  return { text, emptyVars, filledVars, prose: isUserProse(line) };
+}
+
+/**
+ * 判断这一行是「标签骨架」还是「用户写的文案」。
+ *
+ * 判据（满足其一即视为用户文案，整行要保留）：
+ *   · 模板里出现句末标点（。！？；）—— 说明是完整的句子
+ *   · 最长的中文片段超过 8 个字 —— 说明不是「净收益」「高稀有度」这类标签
+ *
+ * ★ 必须在**模板原文**上判断：句末标点在提取片段时会被丢掉，
+ *   等到渲染结果上再看就晚了。
+ *
+ * 实测边界：
+ *   `等级 {level} 升 {levelGain}`      → 标签（最长 2 字）→ 缺数据时整行丢掉
+ *   `🎯 奥秘保底还差 {pityArcane} 杆`  → 标签（最长 6 字）→ 缺数据时整行丢掉
+ *   `今天真是丰收的一天 {xpText}`      → 文案（10 字）→ 保留，只丢掉空出来的变量
+ *   `今天很顺利。{xpText}`             → 句子 → 保留
+ */
+function isUserProse(templateLine: string): boolean {
+  if (/[。！？；]/.test(templateLine)) return true;
+  const runs = templateLine.replace(/\{\w+\}/g, " ").match(/[\u4e00-\u9fa5]+/g) ?? [];
+  const longest = runs.reduce((a, r) => Math.max(a, r.length), 0);
+  return longest > 8;
+}
+
+
+/**
+ * 收拾「有变量渲染成空」的那一行。
+ *
+ * 直观目标：用户看到的样子应该像「本来就没写这一段」。
+ *
+ * 判据（按顺序）：
+ *   1) 没有空变量 → 用户自己写的静态文案，原样输出
+ *   2) 有空变量，且这一行**没有任何变量渲染出内容**：
+ *      · 没有实义字符（数字/字母/emoji）且静态文字像标签 → 整行丢掉
+ *      · 否则保留，让用户看到「这一项是空的」
+ *   3) 收掉空出来的分隔符与「尾巴上只剩标签」的段
+ *
+ * 效果举例：
+ *   `📊 {account} 的{label}战报`（都有值）→ 保留
+ *   `🎯 奥秘保底还差 {pityArcane} 杆`（无保底数据）→ 丢掉（不会出现「还差 杆」）
+ *   `净收益 {netSigned} · 鱼饵占 {baitPct}`（无比例）→ 保留前半段
+ *   `今天真不错 {xpText}`（无经验数据）→ 保留（长文案是用户自己写的）
+ */
+function cleanupRenderedLine(text: string, emptyVars: number, filledVars: number, prose: boolean): string {
+  // 只收「枚举分隔符」的空尾巴：`·` `、`
+  // ★ 不能把 `。！？；` 放进来 —— 它们是句末标点，属于用户写的正文，收掉就变味了
+  const collapse = (v: string) =>
+    v
+      .replace(/\s{2,}/g, " ")
+      .replace(/\s*([·、])\s*(?=\1)/g, "")
+      .replace(/\s*[·、]\s*$/g, "")
+      .replace(/[（(]\s*[）)]/g, "")
+      .replace(/[：:]\s*(?=[·、]|$)/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+
+  /**
+   * 收掉「尾巴上只剩标签」的段。
+   *
+   * 例：`净收益 +182.4万 · 鱼饵 `（鱼饵占比那个变量是空的）
+   *     → 末尾的「 · 鱼饵」整段没有值，连同分隔符一起去掉
+   * 而 `掉落 装备 86 · 宝箱 14` 不受影响：末尾是「宝箱 14」而不是「宝箱」，不匹配。
+   */
+  const dropDanglingTail = (v: string): string => {
+    let out = v.trim();
+    for (let i = 0; i < 8; i++) {
+      const next = out.replace(/\s*[·、]\s*[\u4e00-\u9fa5A-Za-z]+$/, "").trim();
+      if (next === out) break;
+      out = next;
+    }
+    return out.replace(/\s*[·、]\s*$/, "").trim();
+  };
+
+  const s = dropDanglingTail(collapse(text));
+  if (emptyVars === 0) return s;
+
+  // 判据 2：这一行没有变量渲染出内容
+  if (filledVars === 0) {
+    // 用户写的完整句子/长文案 → 保留（他可能就是想在这行补充说明）
+    if (prose) return s;
+    // 否则是「标签 + 空值」的空壳 → 丢掉
+    // （「🎯 奥秘保底还差 杆」里的 emoji 与「杆」都只是模板骨架，不算内容）
+    return "";
+  }
+
+  return s;
+}
+
+/**
  * 渲染模板。
  *
- * @returns 已按行拆好的结果；「变量为空」造成的空壳行会被丢掉
+ * @returns 已按行拆好的结果；空壳行会被丢掉
  */
 export function renderDigestTemplate(template: string, data: DigestData): string[] {
   const vars = digestDataToVars(data);
@@ -202,67 +323,17 @@ export function renderDigestTemplate(template: string, data: DigestData): string
 
       // 整行只有一个变量：
       //  · 没有值 → 丢掉整行（用户不用写条件语法，没内容就不显示）
-      //  · 有值 → 原样输出，不做任何清理（避免误伤「就绪」这类以分隔符结尾的正文）
+      //  · 有值 → 原样输出，不做清理（避免误伤「就绪」这类以分隔符结尾的正文）
       const sole = raw.match(WHOLE_LINE_VAR);
       if (sole && VAR_NAMES.has(sole[1]!)) {
         return vars[sole[1]!] ?? "";
       }
 
-      return cleanupRenderedLine(interpolate(raw, vars), raw);
+      const { text, emptyVars, filledVars, prose } = interpolate(raw, vars);
+      return cleanupRenderedLine(text, emptyVars, filledVars, prose);
     })
     .filter((l) => l.length > 0);
 }
-
-function interpolate(line: string, vars: Record<string, string>): string {
-  return line.replace(/\{(\w+)\}/g, (whole, name: string) => (VAR_NAMES.has(name) ? (vars[name] ?? "") : whole));
-}
-
-/**
- * 清理「有变量被替换成空」的那一行。
- *
- * 直观目标：用户看到的样子应该像「本来就没写这一段」。
- *
- * 判据（用**模板原文的结构**判断，比看渲染结果可靠）：
- *   模板行里用过了变量，且其中一个渲染成了空 → 这行需要收拾。
- *   收拾完如果「没有数字/字母」且「只剩中文标签」，再按标签段数量决定：
- *     · 单个标签段（如「高稀有度 {x}」）→ 标签本身是有效信息，保留「高稀有度」
- *     · 多个标签段中间夹着变量（如「等级 {a} 升 {b} 还差 {c}」）→ 整行是空壳，丢掉
- *     · 带冒号/分隔符的（如「高稀有度：{x}」）→ 丢整行，因为看上去像「有这一项但没值」
- *
- * ★ 为什么不能只看渲染结果：用户自己写的静态文案（「今日总结」）也是
- *   纯中文无数字，按结果判断会被误删。加上「模板里必须用过变量」这个前提才安全。
- *
- * @param templateLine 这一行在模板里的原文
- */
-function cleanupRenderedLine(line: string, templateLine: string): string {
-  const usedVars = /\{\w+\}/.test(templateLine);
-
-  // 先把空出来的分隔符与多余空格收拾干净
-  const collapse = (v: string) =>
-    v
-      .replace(/\s{2,}/g, " ")
-      .replace(/\s*([·、])\s*(?=\1)/g, "")
-      .replace(/\s*[·、]\s*$/g, "")
-      .replace(/[（(]\s*[）)]/g, "")
-      .replace(/\s{2,}/g, " ")
-      .trim();
-
-  const s = collapse(line);
-  if (!usedVars) return s;
-
-  // 还没有数字/字母 → 说明这一行除了标签什么都没有（变量全空）
-  if (/[0-9A-Za-z]/.test(s)) return s;
-  if (/[·、：:]/.test(collapse(templateLine))) return "";
-
-  // 数一数还剩几个中文标签段：>1 说明原本是好几个标签被空格隔开，整行已无意义
-  const labelRuns = s.match(/[\u4e00-\u9fa5]+/g) ?? [];
-  if (labelRuns.length > 1) return "";
-
-  return s;
-}
-
-/* ---------- 预览 ---------- */
-
 /**
  * 预览用的示例数据。
  *
