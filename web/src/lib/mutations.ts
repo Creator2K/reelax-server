@@ -302,16 +302,21 @@ export function useTestNotify() {
   });
 }
 
-/** 微信通道动作：login（重新扫码）/ unbind（换接收人）/ retry（重试登录） */
+/** 微信通道动作：login（重新扫码）/ reconnect（用已保存凭证重连）/ unbind（换接收人）/ retry */
 export function useNotifyAction() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, action }: { id: string; action: "login" | "unbind" | "retry" }) =>
+    mutationFn: ({ id, action }: { id: string; action: "login" | "reconnect" | "retry" | "unbind" }) =>
       api.post(`/api/notify/${id}/${action}`),
     onSuccess: (_d, vars) => {
       void qc.invalidateQueries({ queryKey: NOTIFY_QUERY_KEY });
       void qc.invalidateQueries({ queryKey: NOTIFY_AVAILABILITY_KEY });
-      const label = { login: "已开始重新登录，请扫码", unbind: "已解绑，请重新给机器人发一条消息", retry: "正在重试登录" }[vars.action];
+      const label = {
+        login: "已重新开始扫码登录",
+        reconnect: "正在用已保存的登录状态重连",
+        retry: "正在重连",
+        unbind: "已解绑，请重新给机器人发一条消息完成绑定",
+      }[vars.action];
       toast.success(label);
     },
     onError: (err) => toast.error(errMessage(err)),

@@ -10,8 +10,10 @@ import {
   IconCheck,
   IconDeviceMobile,
   IconPlus,
+  IconQrcode,
   IconRefresh,
   IconSend,
+  IconShieldCheck,
   IconTrash,
   IconUserCog,
 } from "@tabler/icons-react";
@@ -210,7 +212,7 @@ function ChannelCard({
   onTest: () => void;
   onToggle: (v: boolean) => void;
   onDelete: () => void;
-  onAction: (a: "login" | "unbind" | "retry") => void;
+  onAction: (a: "login" | "reconnect" | "retry" | "unbind") => void;
 }) {
   const isWechat = channel.kind === "wechat";
   const usable = channel.enabled && channel.usable;
@@ -273,10 +275,30 @@ function ChannelCard({
         </div>
       ) : null}
 
-      {isWechat && channel.status === "online" ? (
+      {/* 等待验证码：把这一步说清楚，否则用户不知道绑定为什么没生效 */}
+      {isWechat && channel.awaitingVerify ? (
         <div className="px-4">
           <Alert variant="info">
-            <AlertDescription>已登录，但还没绑定接收人：请用微信给这个机器人发一条任意消息。</AlertDescription>
+            <IconShieldCheck />
+            <AlertDescription>
+              验证码已下发。<b>请把机器人回复的 6 位数字发回给它</b>才算绑定成功
+              {channel.verifyExpiresInMs != null
+                ? `（还有约 ${Math.max(1, Math.ceil(channel.verifyExpiresInMs / 60000))} 分钟有效）`
+                : ""}
+              。
+              <br />
+              这一步用于确认这个微信是你本人的，避免陌生人误绑定。
+            </AlertDescription>
+          </Alert>
+        </div>
+      ) : null}
+
+      {isWechat && channel.status === "online" && !channel.awaitingVerify ? (
+        <div className="px-4">
+          <Alert variant="info">
+            <AlertDescription>
+              已登录，但还没绑定接收人：请用微信给这个机器人发一条消息，然后按它回复的提示把验证码发回去。
+            </AlertDescription>
           </Alert>
         </div>
       ) : null}
@@ -289,8 +311,13 @@ function ChannelCard({
         </Button>
         {isWechat ? (
           <>
-            <Button size="xs" variant="outline" onClick={() => onAction("login")} disabled={acting}>
+            {/* 连接失败过用「重新连接」——复用已保存凭证，不必重新扫码 */}
+            <Button size="xs" variant="outline" onClick={() => onAction("reconnect")} disabled={acting}>
               <IconRefresh className="size-3.5" />
+              重新连接
+            </Button>
+            <Button size="xs" variant="outline" onClick={() => onAction("login")} disabled={acting}>
+              <IconQrcode className="size-3.5" />
               重新扫码登录
             </Button>
             <Button size="xs" variant="ghost" onClick={() => onAction("unbind")} disabled={acting}>

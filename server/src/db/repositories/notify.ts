@@ -25,6 +25,12 @@ export type NotifyRow = {
   last_error: string | null;
   created_at: number;
   updated_at: number;
+  /** 绑定验证码（微信：等待用户回发以确认绑定） */
+  verify_code: string | null;
+  verify_expires_at: number | null;
+  verify_attempts: number;
+  /** 验证期间的临时接收人（通过后才写入 target_id） */
+  pending_target_id: string | null;
 };
 
 export class NotifyRepo extends BaseRepo {
@@ -185,6 +191,61 @@ export class NotifyRepo extends BaseRepo {
     this.db.run(
       "UPDATE notify_channels SET sent_count = sent_count + 1, last_sent_at = ?, updated_at = ? WHERE id = ?",
       now(),
+      now(),
+      id,
+    );
+  }
+
+  /* ---------------- 绑定验证码 ---------------- */
+
+  /** 生成验证码：进入「等待用户回发验证码」状态 */
+  startVerification(
+    id: string,
+    input: { code: string; pendingTargetId: string; expiresAt: number; hint: string | null },
+  ): void {
+    this.db.run(
+      `UPDATE notify_channels
+         SET verify_code = ?, verify_expires_at = ?, verify_attempts = 0,
+             pending_target_id = ?, status = 'online', status_detail = ?, qr_text = NULL,
+             last_error = NULL, updated_at = ?
+       WHERE id = ?`,
+      input.code,
+      input.expiresAt,
+      input.pendingTargetId,
+      input.hint,
+      now(),
+      id,
+    );
+  }
+
+  /** 验证码输错：计数 +1（用于限制猜测次数） */
+  bumpVerifyAttempts(id: string): void {
+    this.db.run("UPDATE notify_channels SET verify_attempts = verify_attempts + 1 WHERE id = ?", id);
+  }
+
+  /** 验证通过：清掉验证码，正式写入接收人 */
+  completeVerification(id: string, targetId: string, targetLabel: string | null): void {
+    this.db.run(
+      `UPDATE notify_channels
+         SET target_id = ?, target_label = ?, status = 'bound', status_detail = NULL,
+             verify_code = NULL, verify_expires_at = NULL, verify_attempts = 0,
+             pending_target_id = NULL, last_error = NULL, updated_at = ?
+       WHERE id = ?`,
+      targetId,
+      targetLabel,
+      now(),
+      id,
+    );
+  }
+
+  /** 取消验证（解绑或重新登录时调用） */
+  clearVerification(id: string, statusDetail: string | null = null): void {
+    this.db.run(
+      `UPDATE notify_channels
+         SET verify_code = NULL, verify_expires_at = NULL, verify_attempts = 0,
+             pending_target_id = NULL, status_detail = ?, updated_at = ?
+       WHERE id = ?`,
+      statusDetail,
       now(),
       id,
     );

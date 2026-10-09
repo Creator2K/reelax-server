@@ -202,6 +202,22 @@ CREATE TABLE app_settings (
 );
 `,
   },
+
+  // ---------- 微信绑定的验证码 ----------
+  // 为什么需要：任何给机器人发消息的人都会「首次绑定成为接收人」，
+  // 陌生人误发一条消息就能把别人的推送收走。改成两步：
+  //   1) 收到消息 → 生成 6 位验证码并回复
+  //   2) 用户把验证码发回来 → 才算绑定成功
+  {
+    id: "0004_notify_verify_code",
+    sql: `
+ALTER TABLE notify_channels ADD COLUMN verify_code TEXT;
+ALTER TABLE notify_channels ADD COLUMN verify_expires_at INTEGER;
+ALTER TABLE notify_channels ADD COLUMN verify_attempts INTEGER NOT NULL DEFAULT 0;
+-- 等待验证码的临时接收人（验证通过后才落到 target_id）
+ALTER TABLE notify_channels ADD COLUMN pending_target_id TEXT;
+`,
+  },
 ];
 
 /** 供 migrate.ts 记录已应用版本 */

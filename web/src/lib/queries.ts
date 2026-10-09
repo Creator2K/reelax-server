@@ -199,6 +199,10 @@ export type NotifyChannel = {
   lastError: string | null;
   createdAt: number;
   configHint: string | null;
+  /** 微信：正在等用户把验证码发回给机器人 */
+  awaitingVerify: boolean;
+  /** 微信：验证码还有多久过期（毫秒） */
+  verifyExpiresInMs: number | null;
 };
 
 export type NotifyAvailability = {

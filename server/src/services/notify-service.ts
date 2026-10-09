@@ -9,11 +9,17 @@
 // 两个适配器都实现同一个 NotifyAdapter 接口，新增通道只需再写一个适配器。
 import fs from "node:fs";
 import path from "node:path";
+import { randomInt } from "node:crypto";
 import type { Repos } from "../db/repositories/index.ts";
 import type { NotifyKind, NotifyRow, NotifyStatus } from "../db/repositories/notify.ts";
 import type { CredentialVault } from "../security/vault.ts";
 import type { Logger } from "../lib/logger.ts";
 import { HttpError } from "../api/server.ts";
+
+/** 简单等待（重连退避用） */
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 export type NotifyMessage = {
   title: string;
@@ -42,6 +48,10 @@ export type NotifyChannelView = {
   createdAt: number;
   /** 配置摘要（不含密钥），给 UI 显示用 */
   configHint: string | null;
+  /** 微信：正在等用户回发验证码 */
+  awaitingVerify: boolean;
+  /** 微信：验证码还有多久过期（毫秒） */
+  verifyExpiresInMs: number | null;
 };
 
 export type NotifyServiceDeps = {
@@ -197,8 +207,8 @@ export class NotifyService {
 
     const credsDir = (id: string) => path.join(this.deps.dataDir, "wechat-creds", id);
 
-    /** 停掉并移除某通道的 bot */
-    const disposeBot = (channelId: string): void => {
+    /** 停掉并移除某通道的 bot（重连/重新扫码/解绑都走这里） */
+    const disposeBot2 = (channelId: string): void => {
       const bot = bots.get(channelId);
       bots.delete(channelId);
       if (!bot) return;
@@ -227,173 +237,292 @@ export class NotifyService {
       }
     };
 
-    /** 启动（或复用）一个通道的 bot */
-    const startBot = async (channel: NotifyRow): Promise<void> => {
-      if (bots.has(channel.id) || starting.has(channel.id)) return;
-      starting.add(channel.id);
-      setRuntime(channel.id, { status: "starting", statusDetail: "正在登录微信…", lastError: null });
+    const factory = deps.botFactory ?? defaultBotFactory;
 
-      const factory = deps.botFactory ?? defaultBotFactory;
-      const loginCallbacks = {
-        onQrUrl: (url: string) => {
-          // 只存原始内容，前端自己渲染二维码（登录串不离开本机）
-          setRuntime(channel.id, { status: "qrcode", qrText: String(url), statusDetail: "请用微信扫码" });
-          log.info("推送", `[${channel.label}] 二维码已生成，请用微信扫码`, { userId: channel.user_id });
-        },
-        onScanned: () => {
-          setRuntime(channel.id, { status: "scanned", qrText: null, statusDetail: "已扫码，请在手机上确认" });
-        },
-        onExpired: () => {
-          setRuntime(channel.id, { statusDetail: "二维码已过期，正在重新获取" });
-        },
-      };
+    /** 已保存凭证的文件（决定能否"自己连回来"） */
+    const hasCredentials = (id: string) => fs.existsSync(path.join(credsDir(id), "credentials.json"));
 
-      try {
-        const bot = await factory({
-          storageDir: credsDir(channel.id),
-          loginCallbacks,
-          log: (m: string) => log.info("推送", `[${channel.label}] ${m}`),
-        });
+    /** 生成一次性的登录回调集合（每个通道绑自己的 id） */
+    const callbacksFor = (id: string, label: string, userId: string) => ({
+      onQrUrl: (url: string) => {
+        // 只存原始内容，前端自己渲染二维码（登录串不离开本机）
+        setRuntime(id, { status: "qrcode", qrText: String(url), statusDetail: "请用微信扫码" });
+        log.info("推送", `[${label}] 二维码已生成，请用微信扫码`, { userId });
+      },
+      onScanned: () => {
+        setRuntime(id, { status: "scanned", qrText: null, statusDetail: "已扫码，请在手机上确认" });
+      },
+      onExpired: () => {
+        setRuntime(id, { statusDetail: "二维码已过期，正在重新获取" });
+      },
+    });
 
-        bot.onMessage(async (msg: any) => {
-          const userId = String(msg?.userId ?? "");
-          if (!userId) return;
-          const text = String(msg?.text ?? "").trim();
-          const live = repos.notify.findById(channel.id);
-          if (!live) return;
+    /** 处理一条来自微信的消息：命令、验证码、或新会话 */
+    const handleMessage = async (bot: any, ch: NotifyRow, msg: any) => {
+      const userId = String(msg?.userId ?? "");
+      if (!userId) return;
+      const text = String(msg?.text ?? "").trim();
+      const live = repos.notify.findById(ch.id);
+      if (!live) return;
 
-          // 第一次收到消息的人成为绑定目标（与桌面端行为一致）
-          if (!live.target_id || live.target_id !== userId) {
-            repos.notify.setRuntime(channel.id, {
-              targetId: userId,
-              targetLabel: text.slice(0, 40) || null,
-              status: "bound",
-              statusDetail: null,
-              lastError: null,
-            });
-            log.info("推送", `[${live.label}] 已绑定接收人 ${userId}`, { userId: live.user_id });
+      /* ---------- 已绑定的接收人：当命令处理 ---------- */
+      if (live.target_id && live.target_id === userId) {
+        try {
+          const answer = this.deps.onCommand ? await this.deps.onCommand(live.user_id, text) : null;
+          await bot.reply(msg, answer ?? "收到。发「帮助」看看我能做什么。");
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          log.warn("推送", `[${live.label}] 命令处理失败：${m}`);
+          await bot.reply(msg, `命令执行失败：${m}`).catch(() => {});
+        }
+        return;
+      }
+
+      /* ---------- 正在等验证码 ---------- */
+      const waiting = live.verify_code;
+      const valid = waiting && (live.verify_expires_at ?? 0) > Date.now();
+      if (waiting && valid) {
+        // 只认发起验证的那个会话，避免别人碰巧发对数字
+        if (live.pending_target_id && live.pending_target_id !== userId) {
+          await bot.reply(msg, "这个验证码不是发给你的。").catch(() => {});
+          return;
+        }
+        if (live.verify_attempts >= 5) {
+          repos.notify.clearVerification(ch.id, "验证码尝试次数过多，请重新发一条消息获取新验证码");
+          await bot.reply(msg, "尝试次数过多，请重新发送任意消息获取新的验证码。").catch(() => {});
+          return;
+        }
+        if (text.replace(/\s+/g, "") === waiting) {
+          repos.notify.completeVerification(ch.id, userId, String(msg?.senderName ?? "").slice(0, 40) || null);
+          log.info("推送", `[${live.label}] 验证码正确，已绑定接收人 ${userId}`, { userId: live.user_id });
+          await bot
+            .reply(msg, `验证成功，已绑定「${live.label}」。\n之后收益日报会推送到这里。\n发「帮助」查看可用命令。`)
+            .catch(() => {});
+          return;
+        }
+        repos.notify.bumpVerifyAttempts(ch.id);
+        const left = Math.max(0, 4 - live.verify_attempts);
+        await bot.reply(msg, `验证码不对，还可以再试 ${left} 次。`).catch(() => {});
+        return;
+      }
+
+      /* ---------- 新会话（或验证码过期）：生成新验证码 ---------- */
+      const code = randomInt(100000, 1000000).toString();
+      repos.notify.startVerification(ch.id, {
+        code,
+        pendingTargetId: userId,
+        expiresAt: Date.now() + 10 * 60_000,
+        hint: "请把收到的验证码发回给机器人以完成绑定",
+      });
+      log.info("推送", `[${live.label}] 收到新会话消息，已下发绑定验证码（10 分钟内有效）`, {
+        userId: live.user_id,
+      });
+      await bot
+        .reply(
+          msg,
+          `你的绑定验证码是：${code}\n\n` +
+            `请在 10 分钟内把这 6 位数字发回来完成绑定。\n` +
+            `（这一步用于确认这个微信是你本人的，避免别人误绑定）`,
+        )
+        .catch(() => {});
+    };
+
+    /**
+     * 启动 bot 并在必要时重试。
+     *
+     * ★ 为什么要重试、为什么失败必须写状态：
+     *   早期实现只试一次，一次网络抖动（实测出现过 "The operation was aborted
+     *   due to timeout"）就让实例没建起来，而数据库里仍是"已绑定" ——
+     *   界面于是自相矛盾：显示「可用」，一发消息却报「微信未登录」。
+     *   有已保存凭证的通道必须能自己缓过来，且失败要如实反映到状态上。
+     */
+    const startBot = async (ch: NotifyRow, opts: { attempts?: number; force?: boolean } = {}): Promise<boolean> => {
+      if (starting.has(ch.id)) return false;
+      if (bots.has(ch.id) && !opts.force) return true;
+      starting.add(ch.id);
+
+      const maxAttempts = opts.attempts ?? 3;
+      const credsExist = hasCredentials(ch.id);
+      setRuntime(ch.id, {
+        status: "starting",
+        statusDetail: credsExist ? "正在用已保存的登录状态连接…" : "正在登录微信…",
+        lastError: null,
+      });
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const bot = await factory({
+            storageDir: credsDir(ch.id),
+            loginCallbacks: callbacksFor(ch.id, ch.label, ch.user_id),
+            log: (m: string) => log.info("推送", `[${ch.label}] ${m}`),
+          });
+
+          bot.onMessage((msg: any) => void handleMessage(bot, ch, msg));
+
+          // run() 会自动复用已保存的凭证；没有凭证时走扫码
+          await bot.run({ callbacks: callbacksFor(ch.id, ch.label, ch.user_id) });
+
+          const live = repos.notify.findById(ch.id);
+          if (!live) {
+            // 启动期间通道被删了
             try {
-              await bot.reply(msg, `已绑定「${live.label}」，之后收益日报会推送到这里。\n发「帮助」查看可用命令。`);
-            } catch {
-              /* 回复失败不影响绑定 */
-            }
-            return;
-          }
-
-          // 已绑定的接收人：交给命令处理器
-          try {
-            const answer = this.deps.onCommand
-              ? await this.deps.onCommand(live.user_id, text)
-              : null;
-            await bot.reply(msg, answer ?? "收到。发「帮助」看看我能做什么。");
-          } catch (err) {
-            const m = err instanceof Error ? err.message : String(err);
-            log.warn("推送", `[${live.label}] 命令处理失败：${m}`);
-            try {
-              await bot.reply(msg, `命令执行失败：${m}`);
+              bot.stop();
             } catch {
               /* 忽略 */
             }
+            starting.delete(ch.id);
+            return false;
           }
-        });
 
-        // run() 会自动复用已保存的凭证；没有凭证时走扫码
-        await bot.run({ callbacks: loginCallbacks });
+          bots.set(ch.id, bot);
+          setRuntime(ch.id, {
+            status: live.target_id ? "bound" : "online",
+            qrText: null,
+            statusDetail: live.target_id ? null : "已登录。请用微信给机器人发一条消息，按提示完成绑定",
+            lastError: null,
+          });
+          log.info(
+            "推送",
+            `[${ch.label}] 微信已连接${live.target_id ? "，接收人已绑定" : "（等待绑定接收人）"}` +
+              (attempt > 1 ? `（第 ${attempt} 次尝试成功）` : ""),
+            { userId: live.user_id },
+          );
+          starting.delete(ch.id);
+          return true;
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          const isLast = attempt === maxAttempts;
 
-        const live = repos.notify.findById(channel.id);
-        if (!live) {
-          try {
-            bot.stop();
-          } catch {
-            /* 忽略 */
-          }
-          return;
+          // ★ 失败必须落到状态里，不能出现「显示可用但发不出去」
+          setRuntime(ch.id, {
+            status: isLast ? "error" : "starting",
+            statusDetail: isLast
+              ? credsExist
+                ? "连接微信失败，可点「重新连接」重试"
+                : "登录失败，请点「重新扫码登录」"
+              : `连接失败，正在重试（${attempt}/${maxAttempts}）…`,
+            lastError: `微信连接失败：${m}`,
+            qrText: null,
+          });
+          log.warn("推送", `[${ch.label}] 微信连接失败（第 ${attempt}/${maxAttempts} 次）：${m}`, {
+            userId: ch.user_id,
+          });
+
+          if (!isLast) await sleep(1500 * attempt);
         }
-        bots.set(channel.id, bot);
-        setRuntime(channel.id, {
-          status: live.target_id ? "bound" : "online",
-          qrText: null,
-          statusDetail: live.target_id ? null : "已登录，请用微信给机器人发一条消息完成绑定",
-          lastError: null,
-        });
-        log.info(
-          "推送",
-          `[${live.label}] 微信已登录${live.target_id ? `，接收人 ${live.target_id}` : "，等待绑定接收人"}`,
-          { userId: live.user_id },
-        );
-      } catch (err) {
-        const m = err instanceof Error ? err.message : String(err);
-        bots.delete(channel.id);
-        setRuntime(channel.id, { status: "error", lastError: m, qrText: null });
-        log.warn("推送", `[${channel.label}] 微信登录失败：${m}`, { userId: channel.user_id });
-      } finally {
-        starting.delete(channel.id);
       }
+
+      starting.delete(ch.id);
+      return false;
+    };
+
+    /**
+     * 该通道是否需要/能够被拉起。
+     *
+     * ★ 注意这里**不能**用 isUsable 判断：isUsable 要求「已登录 + 已绑定」，
+     *   而「还没绑定的微信通道」正是最需要拉起来（才可能收到用户消息去绑定）的状态。
+     *   早期实现用 isUsable 过滤 restoreAll，导致重启后未绑定的微信通道
+     *   永远不再尝试登录，界面卡在「未登录」。
+     *
+     * 规则：
+     *  · 有已保存登录凭证 → 应该拉起（能自己连回来）
+     *  · 没有凭证但状态是"等待扫码"（qrcode/starting/scanned/idle）→ 也该拉起（继续扫码流程）
+     *  · 已经明确失败（error）→ 不自动拉起，等用户点「重新连接」，避免无限重试
+     */
+    const shouldInit = (channel: NotifyRow): boolean => {
+      if (!channel.enabled) return false;
+      if (channel.status === "error") return false;
+      return true;
     };
 
     return {
       kind: "wechat",
       async init(channel) {
-        if (!channel.enabled) return;
+        if (!shouldInit(channel)) return;
         await startBot(channel);
       },
       isUsable: (channel) => {
-        // 已登录 + 已绑定接收人 才算可用
+        // 已登录（实例还在，或凭证还在、随时能自己连回来）+ 已绑定接收人 才算可用
         const hasBot = bots.has(channel.id);
-        const hasCreds = fs.existsSync(path.join(credsDir(channel.id), "credentials.json"));
+        const hasCreds = hasCredentials(channel.id);
         return Boolean(channel.target_id) && (hasBot || hasCreds);
       },
       configHint: (channel) => {
         if (!fs.existsSync(credsDir(channel.id))) return null;
-        return channel.target_id ? `已绑定 ${channel.target_id}` : "已登录，未绑定";
+        if (channel.target_id) return `已绑定 ${channel.target_id}`;
+        if (channel.verify_code != null) return "等待验证码";
+        return "已登录，未绑定";
       },
       async send(channel, msg) {
-        const bot = bots.get(channel.id);
-        if (!bot) return { ok: false, error: "微信未登录（请先在推送设置里扫码登录）" };
-        if (!channel.target_id) return { ok: false, error: "还没绑定接收人：请用微信给机器人发一条消息" };
+        if (!channel.target_id) {
+          return {
+            ok: false,
+            error:
+              channel.verify_code != null
+                ? "还没完成绑定：请把机器人回复的 6 位验证码发回给它"
+                : "还没绑定接收人：请用微信给机器人发一条消息，按提示完成绑定",
+          };
+        }
+
+        // 实例不在（进程重启过、或上次连接失败）→ 用已保存凭证现场拉一次，
+        // 而不是直接报「未登录」把问题丢给用户
+        let bot = bots.get(channel.id);
+        if (!bot) {
+          if (!hasCredentials(channel.id)) {
+            return { ok: false, error: "微信登录状态已失效，请在推送设置里点「重新扫码登录」" };
+          }
+          const ok = await startBot(channel, { attempts: 2 });
+          bot = bots.get(channel.id);
+          if (!ok || !bot) {
+            const live = repos.notify.findById(channel.id);
+            return { ok: false, error: live?.last_error ?? "微信连接失败，请稍后重试或点「重新连接」" };
+          }
+        }
+
         try {
           await bot.send(channel.target_id, { text: msg.body });
           return { ok: true };
         } catch (err) {
           const m = err instanceof Error ? err.message : String(err);
-          return { ok: false, error: m };
+          // 发送失败可能是实例已经掉了：停掉它，下次会自动重建
+          if (/not\s*login|未登录|unauthor|401|token/i.test(m)) {
+            disposeBot2(channel.id);
+          }
+          return { ok: false, error: `发送失败：${m}` };
         }
       },
       async action(channel, name) {
         if (name === "login") {
-          // 强制重新登录：先停旧的再起新的
-          disposeBot(channel.id);
-          repos.notify.setRuntime(channel.id, { status: "idle", qrText: null, lastError: null, statusDetail: null });
-          await startBot(channel);
+          // 强制重新扫码：清掉旧 bot 与验证状态
+          disposeBot2(channel.id);
+          repos.notify.clearVerification(channel.id, null);
+          repos.notify.setRuntime(channel.id, {
+            status: "idle",
+            qrText: null,
+            lastError: null,
+            statusDetail: null,
+          });
+          await startBot(channel, { force: true, attempts: 1 });
+          return;
+        }
+        if (name === "reconnect" || name === "retry") {
+          // 用已保存凭证重连（不重新扫码）
+          disposeBot2(channel.id);
+          await startBot(channel, { force: true });
           return;
         }
         if (name === "unbind") {
-          repos.notify.setRuntime(channel.id, { targetId: null, targetLabel: null, statusDetail: "已解绑，请重新给机器人发一条消息" });
-          return;
-        }
-        if (name === "retry") {
-          disposeBot(channel.id);
-          await startBot({ ...channel, status: "idle" });
+          // 解绑同时清掉验证码，避免残留的验证码把旧会话再绑回来
+          repos.notify.clearVerification(channel.id, "已解绑。请用微信给机器人发一条消息，按提示重新绑定");
+          repos.notify.setRuntime(channel.id, { targetId: null, targetLabel: null });
           return;
         }
         throw new HttpError(400, "UNKNOWN_ACTION", `不支持的微信操作：${name}`);
       },
       async dispose(channelId) {
-        disposeBot(channelId);
+        disposeBot2(channelId);
       },
     };
-  }
-
-  /** 内部：停掉并移除某通道的 bot */
-  private async disposeChannel(bots: Map<string, any>, channelId: string): Promise<void> {
-    const bot = bots.get(channelId);
-    bots.delete(channelId);
-    if (!bot) return;
-    try {
-      bot.stop();
-    } catch {
-      /* 忽略 */
-    }
   }
 
   /* ---------------- 对外 API ---------------- */
@@ -403,7 +532,9 @@ export class NotifyService {
     for (const kind of this.adapters.keys()) {
       for (const channel of this.deps.repos.notify.listEnabledByKind(kind)) {
         const adapter = this.adapters.get(kind);
-        if (!adapter?.isUsable(channel)) continue;
+        if (!adapter) continue;
+        // 交给适配器自己判断「该不该拉起」——
+        // 不要在这里用 isUsable 过滤：未绑定的微信通道正是需要拉起的
         try {
           await adapter.init(channel);
         } catch (err) {
@@ -440,6 +571,12 @@ export class NotifyService {
       lastError: channel.last_error,
       createdAt: Number(channel.created_at),
       configHint: adapter?.configHint(channel) ?? null,
+      // 验证码状态：前端要显示「等待验证码」并给出倒计时
+      awaitingVerify: channel.verify_code != null && (channel.verify_expires_at ?? 0) > Date.now(),
+      verifyExpiresInMs:
+        channel.verify_code != null && channel.verify_expires_at != null
+          ? Math.max(0, Number(channel.verify_expires_at) - Date.now())
+          : null,
     };
   }
 
