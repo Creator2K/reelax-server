@@ -1,0 +1,25 @@
+{
+  "name": "reelax-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reelax 多用户挂机平台 — 服务器版（Docker 部署 + 每账号代理）",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,magenta \"npm:dev -w server\" \"npm:dev -w web\"",
+    "build": "npm run build -w web",
+    "start": "npm run start -w server",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "test": "npm run test -w server",
+    "lint": "npm run lint -w server && npm run lint -w web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

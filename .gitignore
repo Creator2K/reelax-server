@@ -1,0 +1,27 @@
+# 依赖与构建产物
+node_modules/
+dist/
+web/dist/
+desktop/dist/
+
+# 运行时数据（数据库、日志、微信登录凭证）—— 绝不入库
+data/
+server/data/
+*.log
+
+# 环境变量（含 MASTER_KEY，绝不能提交）
+.env
+.env.*
+!.env.example
+
+# 编辑器与系统
+.DS_Store
+Thumbs.db
+*.tsbuildinfo
+.idea/
+.vscode/
+
+# 测试产物
+.playwright/
+test-results/
+coverage/

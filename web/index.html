@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>摸鱼大师智能助手</title>
+    <script>
+      // 首帧前定好主题，避免刷新时闪白/闪黑。
+      // 与 src/lib/theme.tsx 使用同一个 storage key，改一处要改两处。
+      (function () {
+        try {
+          var stored = localStorage.getItem("reelax-theme");
+          var theme =
+            stored === "dark" || stored === "light"
+              ? stored
+              : window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light";
+          document.documentElement.classList.toggle("dark", theme === "dark");
+          document.documentElement.dataset.theme = theme;
+        } catch (e) {
+          /* localStorage 不可用时按亮色渲染 */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# 只读权限：CI 不需要写仓库
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: 类型检查 / Lint / 测试 / 构建
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 必须是 Node 24：服务端用了内置的 node:sqlite，并依赖原生 TS 类型剥离直接运行 .ts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      # --ignore-scripts：esbuild / 原生模块的 postinstall 在 CI 里不需要
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # 含越权矩阵、真实 CONNECT 隧道的代理端到端、WS 用户隔离、签名手算对账
+      - name: 测试
+        run: npm test
+
+      - name: 构建前端
+        run: npm run build
+
+      # 冒烟：用生产模式起一遍完整服务，确认能启动、能建库、SPA 可访问
+      - name: 冒烟启动（生产模式）
+        env:
+          MASTER_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          DATA_DIR: /tmp/reelax-ci-data
+          PORT: "18580"
+          HOST: "127.0.0.1"
+          NODE_ENV: production
+          COOKIE_SECURE: "0"
+          LOG_LEVEL: error
+        run: |
+          set -euo pipefail
+          node server/src/index.ts &
+          SERVER_PID=$!
+          # 等健康检查就绪（最多 30 秒）
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18580/api/health > /dev/null 2>&1; then
+              echo "健康检查通过（第 ${i} 次尝试）"
+              break
+            fi
+            if [ "$i" = "30" ]; then
+              echo "服务未在 30 秒内就绪"
+              kill $SERVER_PID || true
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "--- /api/health ---"
+          curl -fsS http://127.0.0.1:18580/api/health
+          echo ""
+          echo "--- SPA 首页（应含 #root 与主题引导脚本） ---"
+          curl -fsS http://127.0.0.1:18580/ | grep -q 'id="root"' && echo "SPA OK"
+          echo "--- 未登录访问业务接口应为 401 ---"
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18580/api/accounts)
+          test "$code" = "401" && echo "鉴权 OK (401)"
+          kill $SERVER_PID || true
+          wait $SERVER_PID 2>/dev/null || true
+
+      - name: 上传失败时的冒烟日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-artifacts
+          path: |
+            /tmp/reelax-ci-data
+          if-no-files-found: ignore
+          retention-days: 3
