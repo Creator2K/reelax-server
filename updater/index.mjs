@@ -156,13 +156,23 @@ async function doUpdate(reason) {
 
   // 3) 重建并重启
   //
-  // ★ 关键：这一步会重启我们自己所在的 app 容器，但**不会**重启 updater
-  //   （updater 是独立的 service），所以这里可以放心等待。
+  // ★ 关键：这一步会重启 app 容器，但**不会**重启 updater
+  //   （updater 是独立的 service 且用了 --no-deps），所以这里可以放心等待。
+  //
+  // ★ 同时把刚拉到的提交作为 APP_COMMIT 传给构建：
+  //   镜像里没有 .git，只能靠构建时烧进去才能在界面上显示"当前版本"。
+  //   早先没传这个变量，导致更新后「当前版本」变成读不到。
   const composeArgs = ["compose", "-f", COMPOSE_FILE, "up", "-d", "--no-deps"];
   if (REBUILD) composeArgs.splice(4, 0, "--build");
 
-  const up = await run("docker", [...composeArgs, SERVICE], 1_800_000);
-  lastResult.steps.push({ step: "compose-up", ok: up.ok, rebuild: REBUILD });
+  const buildEnv = {
+    ...process.env,
+    ...(lastResult.after ? { APP_COMMIT: lastResult.after } : {}),
+    APP_BUILD_TIME: new Date().toISOString(),
+  };
+
+  const up = await run("docker", [...composeArgs, SERVICE], 1_800_000, buildEnv);
+  lastResult.steps.push({ step: "compose-up", ok: up.ok, rebuild: REBUILD, commit: lastResult.after ?? null });
   if (!up.ok) {
     lastResult.ok = false;
     lastResult.error = "docker compose up 失败，请看日志";

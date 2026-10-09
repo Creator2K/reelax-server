@@ -1,0 +1,9 @@
+﻿fix: updater 把提交号传给构建，修复更新后「当前版本」读不到
+
+实测一键更新成功重启了 app，但之后界面上「当前版本」变成读不到。
+原因：updater 执行 docker compose up --build 时没有传 APP_COMMIT，
+构建参数落到默认值 unknown；而镜像里没有 .git，于是无版本可显示。
+
+修复：updater 在 pull 之后已经知道确切提交（lastResult.after），
+把它连同构建时间一起放进 compose 命令的环境里传给 Dockerfile 的 ARG。
+这样每次更新后「当前版本」都能正确显示，也就能继续判断「有无新版本」。
