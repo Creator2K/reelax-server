@@ -77,7 +77,7 @@ const ACTION_TEXT: Record<string, string> = {
   "user.password_changed": "修改口令",
   "user.profile_updated": "修改资料",
   "admin.seeded": "创建初始管理员",
-  "admin.user.approved": "批准用户",
+  "admin.user.approved": "启用用户",
   "admin.user.rejected": "拒绝用户",
   "admin.user.status_changed": "调整用户状态",
   "admin.user.role_changed": "调整用户角色",
@@ -294,7 +294,7 @@ function NeedsAttention({
   if ((counts?.pending ?? 0) > 0) {
     items.push({
       icon: <IconUserCheck className="size-3.5" />,
-      text: `有 ${counts?.pending} 个账号在等待审批`,
+      text: `有 ${counts?.pending} 个账号在等待确认`,
       action: onGoUsers,
       actionLabel: "去处理",
     });

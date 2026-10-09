@@ -2,7 +2,7 @@
 //
 // 鉴权状态由 session.ts 的 useSession 提供；未登录时由 RequireAuth 重定向，
 // 因此这里假定 user 一定存在。
-// 「等待审批」提示在这里统一渲染（每页都有，不重复写）。
+// 「待确认」提示在这里统一渲染（每页都有，不重复写）。
 //
 // 内容区带**按路由的淡入位移**（对标 workbuddy-manager 的页面切换观感）：
 // key 用 location.pathname，所以每次换页都会重新播一次入场。
@@ -19,15 +19,15 @@ import { useRealtime } from "@/lib/realtime.tsx";
 function PendingNotice() {
   const { data: user } = useSession();
   // 注册即用（邀请码即门槛），所以正常流程下不会有 pending 状态。
-  // 保留这条提示是为了覆盖「被管理员临时改为待审批」这类边界情况。
+  // 保留这条提示是为了覆盖「被管理员临时改为待确认」这类边界情况。
   if (!user || user.status !== "pending") return null;
   return (
     <div className="px-6 pt-5">
       <Alert variant="warn">
         <IconClockHour4 />
-        <AlertTitle>账号处于待审批状态</AlertTitle>
+        <AlertTitle>账号处于待确认状态</AlertTitle>
         <AlertDescription>
-          管理员已把你的账号设为待审批，暂时无法添加游戏账号。请联系管理员处理。
+          管理员已把你的账号设为待确认，暂时无法添加游戏账号。请联系管理员处理。
         </AlertDescription>
       </Alert>
     </div>

@@ -45,9 +45,13 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
-              <Row label="邮箱" value={user?.email ?? "—"} />
+              <Row label="登录名" value={user?.email ?? "—"} />
               <Row label="角色" value={user?.role === "admin" ? "管理员" : "普通用户"} />
-              <Row label="状态" value={user?.status === "approved" ? "已审批" : user?.status === "pending" ? "等待审批" : "已封禁"} />
+              {/* 状态文案与后台保持一致：用户只关心「正不正常」 */}
+              <Row
+                label="状态"
+                value={user?.status === "approved" ? "正常" : user?.status === "pending" ? "待确认" : "已封禁"}
+              />
               <Row label="注册时间" value={user?.createdAt ? fmtDateTime(user.createdAt) : "—"} />
               <Row label="最近登录" value={user?.lastLoginAt ? fmtDateTime(user.lastLoginAt) : "—"} />
               <Row label="账号配额" value={user ? `${user.accountCount} / ${user.accountLimit}` : "—"} />
