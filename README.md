@@ -301,6 +301,7 @@ reelax-server/
 ├── scripts/                   # 宿主机一键更新脚本
 ├── docs/ARCHITECTURE.md       # 架构 + 怎么加新功能
 ├── docs/DEPLOY.md             # 运维细则 + 故障排查
+├── docs/KNOWN-ISSUES.md       # 已知问题与取舍（哪些问题确认存在但暂不修）
 ├── docs/DESIGN-TOKENS.md      # 视觉规范（改样式前先看）
 └── docs/PROTOCOL.md           # 游戏协议备忘（排查「游戏更新后失效」）
 ```
