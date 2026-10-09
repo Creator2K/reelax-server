@@ -114,6 +114,8 @@ services:
       UPDATER_REBUILD: "1"
       # 可选：额外一道令牌（app 侧用 REELAX_UPDATER_TOKEN 提供）
       UPDATER_TOKEN: "${UPDATER_TOKEN:-}"
+      # 私有仓库拉取凭据（public 仓库可留空）
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
 
     volumes:
       # 宿主机仓库目录（改这里要同步改 .env 的 REELAX_PROJECT_DIR）

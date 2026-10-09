@@ -1,0 +1,17 @@
+fix: updater 支持私有仓库拉取
+
+首次实测一键更新时，链路整体通了（按钮 → updater → git），
+但最后一步 git pull 失败：
+
+  fatal: could not read Username for 'https://github.com': No such device or address
+
+原因是私有仓库在容器里没有凭据。修复：
+
+- updater 读取 GITHUB_TOKEN，通过 GIT_CONFIG_COUNT / http.extraheader
+  注入一次性凭据环境。刻意**不把 token 写进 remote URL**，
+  否则会留在挂载进容器的 .git/config 里。
+- 日志输出对 token 做遮蔽（兜底），并设置 GIT_TERMINAL_PROMPT=0
+  避免容器里卡在交互式索要用户名。
+- preflight 增加检查：远端是 github.com 且没有 token 时，
+  直接给出可操作的提示，而不是等到 git pull 才报一句难懂的错。
+- compose 把 GITHUB_TOKEN 传给 updater。

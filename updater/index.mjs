@@ -24,6 +24,8 @@ const SERVICE = process.env.UPDATER_SERVICE || "app";
 const TOKEN = process.env.UPDATER_TOKEN || "";
 /** 拉取后是否重建镜像（纯代码更新可省，但通常都要） */
 const REBUILD = process.env.UPDATER_REBUILD !== "0";
+/** 私有仓库拉取凭据（同一 token 也可用于读 commit 信息） */
+const GITHUB_TOKEN = (process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "").trim();
 
 const startedAt = Date.now();
 
@@ -40,15 +42,39 @@ const log = (msg) => {
   }
 };
 
-function run(cmd, args, timeoutMs = 900_000) {
+/**
+ * 构造执行 git 时的环境变量。
+ *
+ * ★ 为什么用 GIT_CONFIG_* 而不是把 token 写进 remote URL：
+ *   写进 URL 会把 token 留在 .git/config 里（裸机挂载的仓库会被人看到）。
+ *   用 http.extraheader 只在这一次命令的环境里生效，不落盘。
+ *
+ *   basic 认证的用户名可以是任意非空值（GitHub 只认 token），这里用 x-access-token。
+ */
+function gitEnv() {
+  if (!GITHUB_TOKEN) return process.env;
+  const basic = Buffer.from(`x-access-token:${GITHUB_TOKEN}`, "utf8").toString("base64");
+  return {
+    ...process.env,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+    // 避免凭据助手（容器里也没有）交互式索要用户名
+    GIT_TERMINAL_PROMPT: "0",
+  };
+}
+
+function run(cmd, args, timeoutMs = 900_000, env = process.env) {
   return new Promise((resolve) => {
+    // 输出里绝不能带 token，这里做一层兜底遮蔽
+    const redact = (s) => (GITHUB_TOKEN ? String(s).replaceAll(GITHUB_TOKEN, "***") : String(s));
     log(`$ ${cmd} ${args.join(" ")}`);
     execFile(
       cmd,
       args,
-      { cwd: PROJECT_DIR, timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      { cwd: PROJECT_DIR, timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024, env },
       (err, stdout, stderr) => {
-        const out = `${stdout ?? ""}${stderr ?? ""}`.trim();
+        const out = redact(`${stdout ?? ""}${stderr ?? ""}`).trim();
         if (out) {
           for (const line of out.split("\n").slice(-40)) log(`  ${line}`);
         }
@@ -70,6 +96,20 @@ function preflight() {
   }
   if (!fs.existsSync("/var/run/docker.sock")) {
     problems.push("没有挂载 docker.sock（需要 /var/run/docker.sock:/var/run/docker.sock）");
+  }
+  // 私有仓库必须给 token，否则 git pull 会卡在要用户名
+  const remote = (() => {
+    try {
+      return fs.readFileSync(path.join(PROJECT_DIR, ".git", "config"), "utf8");
+    } catch {
+      return "";
+    }
+  })();
+  if (/github\.com/.test(remote) && !GITHUB_TOKEN) {
+    problems.push(
+      "仓库是 GitHub 上的但没提供 GITHUB_TOKEN：私有仓库拉取会失败（public 仓库不需要）。" +
+        "在 .env 里设置 GITHUB_TOKEN 后重启 updater。",
+    );
   }
   return problems;
 }
@@ -93,8 +133,8 @@ async function doUpdate(reason) {
   const before = await run("git", ["rev-parse", "HEAD"], 30_000);
   lastResult.before = before.out.slice(0, 40);
 
-  // 2) 拉代码
-  const pull = await run("git", ["pull", "--ff-only"], 300_000);
+  // 2) 拉代码（带凭据环境；token 不会落盘也不会出现在日志里）
+  const pull = await run("git", ["pull", "--ff-only"], 300_000, gitEnv());
   lastResult.steps.push({ step: "git-pull", ok: pull.ok });
   if (!pull.ok) {
     lastResult.ok = false;
