@@ -13,6 +13,15 @@
 # ★ MASTER_KEY 必须长期保存：它就是凭证加密主密钥。弄丢之后数据库里的游戏密码 /
 #   Cookie / 推送 SendKey 全部无法解密（表现为「账号突然登不上」）。
 
+# ★ 显式固定 compose 项目名。
+#   不写这一行时，项目名会从**目录名**推导：宿主机上跑是 reelax-server，
+#   而 updater 容器里仓库挂在 /project → 项目名变成 project。
+#   两个项目名不同会导致：
+#     · 网络/卷被重新创建（project_default / project_reelax-data，数据卷对不上）
+#     · container_name 冲突（Container name "/reelax-server" is already in use）
+#   所以必须在这里写死，updater 也用同一个名字。
+name: reelax-server
+
 services:
   app:
     build:
@@ -112,6 +121,9 @@ services:
       UPDATER_COMPOSE_FILE: docker-compose.yml
       UPDATER_SERVICE: app
       UPDATER_REBUILD: "1"
+      # ★ 与上面 name: 保持一致：updater 必须操作**同一个** compose 项目，
+      #   否则它会新建一套容器/网络/卷，并在 container_name 上撞车。
+      COMPOSE_PROJECT_NAME: reelax-server
       # 可选：额外一道令牌（app 侧用 REELAX_UPDATER_TOKEN 提供）
       UPDATER_TOKEN: "${UPDATER_TOKEN:-}"
       # 私有仓库拉取凭据（public 仓库可留空）
