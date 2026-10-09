@@ -12,6 +12,7 @@ import { Switch } from "@/components/ui/switch.tsx";
 import { Textarea } from "@/components/ui/input.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
+import { ModulePreview } from "@/components/domain/ModulePreview.tsx";
 import { cn } from "@/lib/utils.ts";
 
 export type ModuleFormProps = {
@@ -23,6 +24,11 @@ export type ModuleFormProps = {
   disabled?: boolean;
   onSave: (patch: Record<string, unknown>) => Promise<void> | void;
   onReset: () => Promise<void> | void;
+  /**
+   * 模块 id。给了就显示「配置预览」（由服务端按当前草稿算出最终效果）。
+   * 不是所有模块都支持，不支持的会安静地不显示。
+   */
+  moduleId?: string;
 };
 
 /** 把单个字段的原始值转成输入控件可用的字符串 */
@@ -31,7 +37,15 @@ function toInputString(v: unknown): string {
   return String(v);
 }
 
-export function ModuleForm({ fields, values, configIssues = [], disabled, onSave, onReset }: ModuleFormProps) {
+export function ModuleForm({
+  fields,
+  values,
+  configIssues = [],
+  disabled,
+  onSave,
+  onReset,
+  moduleId,
+}: ModuleFormProps) {
   // 本地草稿：用户改完点保存才提交，避免每敲一个字符打一次接口
   const [draft, setDraft] = useState<Record<string, unknown>>(values);
   const [saving, setSaving] = useState(false);
@@ -79,6 +93,9 @@ export function ModuleForm({ fields, values, configIssues = [], disabled, onSave
           另有 {staleKeys.length} 项旧版本遗留配置（{staleKeys.join("、")}）已保留但当前不使用。
         </div>
       ) : null}
+
+      {/* 配置预览：服务端按当前草稿算出最终效果（改一项就能看到变化） */}
+      {moduleId ? <ModulePreview moduleId={moduleId} values={draft} /> : null}
 
       <div className="flex items-center gap-2 pt-1">
         <Button size="sm" onClick={() => void save()} disabled={disabled || saving || !dirty}>
@@ -191,6 +208,72 @@ function Field({
           </Select>
         </div>
       );
+
+    case "multi-select": {
+      const selected = new Set(Array.isArray(value) ? value.map((x) => String(x)) : []);
+      const toggle = (id2: string) => {
+        const next = new Set(selected);
+        if (next.has(id2)) next.delete(id2);
+        else next.add(id2);
+        // 按定义顺序回写，避免不同勾选顺序产生不同的配置（便于对比与排查）
+        onChange(field.options.map((o) => o.value).filter((v) => next.has(v)));
+      };
+      const allOn = field.options.every((o) => selected.has(o.value));
+
+      return (
+        <div className="space-y-2">
+          {labelRow}
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              disabled={disabled}
+              onClick={() => onChange(field.options.map((o) => o.value))}
+            >
+              全选
+            </Button>
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              disabled={disabled}
+              onClick={() => onChange([])}
+            >
+              全不选
+            </Button>
+            <span className="text-muted-foreground text-[11px]">
+              已选 {selected.size} / {field.options.length}
+              {allOn ? "（全部）" : ""}
+            </span>
+          </div>
+
+          <div className="divide-border divide-y rounded-lg border">
+            {field.options.map((o) => {
+              const on = selected.has(o.value);
+              return (
+                <label
+                  key={o.value}
+                  className="hover:bg-accent/40 flex cursor-pointer items-start gap-3 px-3 py-2.5 transition-colors"
+                >
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    disabled={disabled}
+                    onChange={() => toggle(o.value)}
+                    className="mt-0.5 size-4 shrink-0 accent-foreground"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-xs font-medium">{o.label}</span>
+                    {o.hint ? <span className="text-muted-foreground block text-[11px]">{o.hint}</span> : null}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
 
     case "string":
       return (

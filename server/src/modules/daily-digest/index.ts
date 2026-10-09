@@ -18,6 +18,7 @@
 import { type ModuleContext, type ModuleDefinition } from "../types.ts";
 import { RARITIES, RARITY_LABELS, HIGH_RARITIES } from "../shared/rarity.ts";
 import { fmtNum, fmtSigned, localDay } from "../shared/format.ts";
+import { applyDigestVars, defaultDigestSections, digestSectionOptions, normalizeDigestSections } from "./sections.ts";
 
 type DailyHarvest = {
   date?: string;
@@ -55,8 +56,9 @@ const definition: ModuleDefinition = {
   requiresNotification: true,
   defaultConfig: {
     reportAt: "09:00",
-    showRarities: false,
-    includeCompetitions: true,
+    sections: defaultDigestSections(),
+    title: "",
+    footer: "",
     checkEveryMin: 5,
   },
   configSchema: [
@@ -69,22 +71,34 @@ const definition: ModuleDefinition = {
       placeholder: "09:00",
     },
     {
-      key: "showRarities",
-      type: "boolean",
-      label: "列出全部 9 档稀有度",
-      hint: "默认只列传说及以上；打开后每一档都列出，消息会明显变长。",
-      default: false,
+      key: "sections",
+      type: "multi-select",
+      label: "日报里要包含哪些内容",
+      hint: "勾选你关心的项。顺序固定（按这里的排列），不必手动调整。",
+      default: defaultDigestSections(),
+      options: digestSectionOptions(),
     },
     {
-      key: "includeCompetitions",
-      type: "boolean",
-      label: "包含比赛与围猎战果",
-      default: true,
+      key: "title",
+      type: "string",
+      label: "日报标题（可选）",
+      hint: "留空用默认标题。支持变量：{date} 日期、{label} 昨日/今日、{account} 账号名。",
+      default: "",
+      placeholder: "例如：{account} {date} 战报",
+    },
+    {
+      key: "footer",
+      type: "string",
+      label: "结尾附言（可选）",
+      hint: "加在日报最后一行。支持同样变量：{date} {label} {account} {net} 净收益。",
+      default: "",
+      placeholder: "例如：今天也辛苦了，净收益 {net}",
     },
     {
       key: "checkEveryMin",
       type: "number",
       label: "数据采集间隔（分钟）",
+      hint: "隔多久抓一次游戏数据用于统计。默认 5 分钟足够。",
       default: 5,
       min: 1,
       max: 60,
@@ -189,35 +203,46 @@ async function buildReport(ctx: ModuleContext, stamp: string, S: DigestState): P
   const net = Number(harvest.netGold) || income - bait;
   const fishTotal = Object.values(harvest.fishByRarity ?? {}).reduce<number>((a, b) => a + (Number(b) || 0), 0);
 
-  const lines: string[] = [
-    `${label} · ${harvest.date ?? stamp}`,
-    `净收益 ${fmtSigned(net)}（收入 ${fmtNum(income)} − 鱼饵 ${fmtNum(bait)}${
-      income > 0 ? `，鱼饵占 ${Math.round((bait / income) * 100)}%` : ""
-    }）`,
-    xpText,
-  ];
-  if (levelText) lines.push(`等级 ${levelText}`);
-  lines.push(`鱼获 ${fmtNum(fishTotal)} 条`);
+  /* ---------- 用户选中的分区（默认用模块默认值） ---------- */
+  const chosen = normalizeDigestSections(ctx.config.sections);
+  const on = (id: (typeof chosen)[number]) => chosen.includes(id);
+
+  const lines: string[] = [];
+
+  if (on("income")) {
+    lines.push(
+      `净收益 ${fmtSigned(net)}（收入 ${fmtNum(income)} − 鱼饵 ${fmtNum(bait)}${
+        income > 0 ? `，鱼饵占 ${Math.round((bait / income) * 100)}%` : ""
+      }）`,
+    );
+  }
+  if (on("experience")) lines.push(xpText);
+  if (on("level") && levelText) lines.push(`等级 ${levelText}`);
+  if (on("fish")) lines.push(`鱼获 ${fmtNum(fishTotal)} 条`);
 
   // 高稀有度单独一行（这是最有价值的产出；9 档全列会显得很乱）
-  const rare = HIGH_RARITIES.map((r) => ({ r, n: Number(harvest.fishByRarity?.[r]) || 0 })).filter((x) => x.n > 0);
-  if (rare.length) {
-    lines.push(`高稀有度 ${rare.map((x) => `${RARITY_LABELS[x.r]} ${x.n}`).join(" · ")}`);
+  if (on("rareFish")) {
+    const rare = HIGH_RARITIES.map((r) => ({ r, n: Number(harvest.fishByRarity?.[r]) || 0 })).filter((x) => x.n > 0);
+    if (rare.length) {
+      lines.push(`高稀有度 ${rare.map((x) => `${RARITY_LABELS[x.r]} ${x.n}`).join(" · ")}`);
+    }
   }
 
-  lines.push(
-    `掉落 装备 ${harvest.gear ?? 0} · 宝箱 ${harvest.chests ?? 0} · 遗物 ${harvest.relics ?? 0} · 神器 +${
-      harvest.artifactLevels ?? 0
-    }`,
-  );
+  if (on("drops")) {
+    lines.push(
+      `掉落 装备 ${harvest.gear ?? 0} · 宝箱 ${harvest.chests ?? 0} · 遗物 ${harvest.relics ?? 0} · 神器 +${
+        harvest.artifactLevels ?? 0
+      }`,
+    );
+  }
 
-  if (ctx.config.showRarities) {
+  if (on("allRarities")) {
     const all = RARITIES.map((r) => ({ r, n: Number(harvest.fishByRarity?.[r]) || 0 })).filter((x) => x.n > 0);
     if (all.length) lines.push(`全部稀有度 ${all.map((x) => `${RARITY_LABELS[x.r]} ${x.n}`).join(" / ")}`);
   }
 
   /* ---------- 比赛与围猎 ---------- */
-  if (ctx.config.includeCompetitions !== false) {
+  if (on("competitions")) {
     const [th, gh, wb] = await Promise.all([
       ctx.api.request("/api/tournaments/history").catch(() => null),
       ctx.api.request("/api/guild-tournaments/history").catch(() => null),
@@ -238,14 +263,48 @@ async function buildReport(ctx: ModuleContext, stamp: string, S: DigestState): P
     }
   }
 
+  /* ---------- 保底进度 ---------- */
+  if (on("pity")) {
+    const pity = stats?.pity;
+    const bits: string[] = [];
+    for (const [key, name] of [
+      ["exotic", "奇异鱼"],
+      ["arcane", "奥秘鱼"],
+    ] as const) {
+      const block = pity?.[key];
+      const total = Number(block?.hardPityCasts);
+      if (!Number.isFinite(total) || total <= 0) continue;
+      const dry = Number(block?.currentDryCasts) || 0;
+      bits.push(`${name} 还差 ${Math.max(0, total - dry)} 杆`);
+    }
+    if (bits.length) lines.push(`保底进度 ${bits.join(" · ")}`);
+  }
+
+  /* ---------- 自定义标题与结尾（支持变量） ---------- */
+  const accountName = ctx.account.label ?? "账号";
+  const vars = {
+    date: harvest.date ?? stamp,
+    label,
+    account: accountName,
+    net: fmtSigned(net),
+    fish: fmtNum(fishTotal),
+    xp: xpText,
+  };
+  const titleTpl = String(ctx.config.title ?? "").trim();
+  const footerTpl = String(ctx.config.footer ?? "").trim();
+
+  const head = titleTpl ? applyDigestVars(titleTpl, vars) : `${label} · ${vars.date}`;
+  const body = [head, ...lines];
+  if (footerTpl) body.push(applyDigestVars(footerTpl, vars));
+
   // 写日志（运行日志页可见，历史查询也能翻到）
-  ctx.log.info("收益日报", lines.join("\n"));
+  ctx.log.info("收益日报", body.join("\n"));
 
   // ★ 抛出结构化事件：消费方（通知推送等）读字段，不做字符串匹配
   ctx.account.emit("digest", {
-    date: harvest.date ?? stamp,
+    date: vars.date,
     label,
-    lines,
+    lines: body,
     netGold: net,
     income,
     baitCost: bait,
@@ -254,5 +313,15 @@ async function buildReport(ctx: ModuleContext, stamp: string, S: DigestState): P
     levelText,
   });
 }
+
+/** 日报变量：把这些占位符替换成实际值 */
+export type DigestVars = {
+  date: string;
+  label: string;
+  account: string;
+  net: string;
+  fish: string;
+  xp: string;
+};
 
 export default definition;

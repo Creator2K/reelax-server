@@ -24,15 +24,36 @@ export type NumberField = ConfigFieldBase & {
   max?: number;
   step?: number;
 };
-export type StringField = ConfigFieldBase & { type: "string"; default: string; placeholder?: string };
+export type StringField = ConfigFieldBase & {
+  type: "string";
+  default: string;
+  placeholder?: string;
+  /** true = 界面上按密码框渲染（不回显已存值） */
+  secret?: boolean;
+};
 export type TextareaField = ConfigFieldBase & { type: "textarea"; default: string; placeholder?: string };
 export type SelectField = ConfigFieldBase & {
   type: "select";
   default: string;
-  options: { value: string; label: string }[];
+  options: { value: string; label: string; hint?: string }[];
+};
+/**
+ * 多选：值是一组字符串 id。
+ * 用于「从固定清单里挑几项」的配置（例如日报要包含哪些内容）。
+ */
+export type MultiSelectField = ConfigFieldBase & {
+  type: "multi-select";
+  default: string[];
+  options: { value: string; label: string; hint?: string }[];
 };
 
-export type ConfigField = BooleanField | NumberField | StringField | TextareaField | SelectField;
+export type ConfigField =
+  | BooleanField
+  | NumberField
+  | StringField
+  | TextareaField
+  | SelectField
+  | MultiSelectField;
 
 export type ConfigValues = Record<string, unknown>;
 
@@ -151,6 +172,32 @@ export function resolveModuleConfig(
         }
         break;
       }
+      case "multi-select": {
+        // 兼容「数组」与「逗号分隔的字符串」两种历史写法；
+        // 不认识的 id 会被剔除（选项改名后旧值自动失效，而不是让界面显示空白项）
+        const list = Array.isArray(raw)
+          ? raw.map((x) => String(x))
+          : typeof raw === "string"
+            ? raw.split(/[,，\s]+/).filter(Boolean)
+            : null;
+        if (list === null) {
+          issues.push({ key: field.key, message: "应为多选项列表", value: raw });
+          merged[field.key] = field.default;
+          break;
+        }
+        const allowedValues = new Set(field.options.map((o) => o.value));
+        const kept = list.filter((x) => allowedValues.has(x));
+        const dropped = list.filter((x) => !allowedValues.has(x));
+        if (dropped.length) {
+          issues.push({
+            key: field.key,
+            message: `已忽略不再支持的选项：${dropped.join("、")}`,
+            value: dropped,
+          });
+        }
+        merged[field.key] = kept;
+        break;
+      }
     }
   }
 
@@ -219,6 +266,22 @@ export function validateConfigPatch(
           out[k] = v;
         }
         break;
+      case "multi-select": {
+        if (!Array.isArray(v)) {
+          errors.push({ key: k, message: "应为多选项列表", value: v });
+          break;
+        }
+        const allowedValues = new Set(field.options.map((o) => o.value));
+        const list = v.map((x) => String(x));
+        const bad = list.filter((x) => !allowedValues.has(x));
+        if (bad.length) {
+          errors.push({ key: k, message: `不支持的选项：${bad.join("、")}`, value: bad });
+        } else {
+          // 去重后按定义顺序排列，避免出现同一项被勾两次
+          out[k] = field.options.map((o) => o.value).filter((id) => list.includes(id));
+        }
+        break;
+      }
     }
   }
 

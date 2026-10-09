@@ -11,7 +11,7 @@
 //  · 发版时在数组最前面追加一项
 
 /** 当前版本（与 package.json 的 version 同步维护） */
-export const VERSION = "1.0.0";
+export const VERSION = "1.1.0";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -26,6 +26,32 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.1.0",
+    date: "2026-10-10",
+    title: "日报可自定义、微信绑定更安全、支持手机",
+    notice: "微信推送通道改用「验证码确认」绑定：如果你之前已绑定，需要重新用微信给机器人发一条消息并按提示回发验证码。",
+    changes: [
+      {
+        kind: "feature",
+        text: "日报内容可自定义：自己勾选要包含哪几块（净收益、经验增量、等级与转生、鱼获、高稀有度、掉落、比赛与围猎、保底进度）",
+      },
+      { kind: "feature", text: "日报支持自定义标题与结尾，可用变量：{date} {label} {account} {net} {fish} {xp}" },
+      { kind: "feature", text: "日报支持实时预览：在配置里改一项就能看到推送出来长什么样" },
+      {
+        kind: "feature",
+        text: "微信绑定加验证码：给机器人发消息后会收到 6 位验证码，把验证码发回去才算绑定成功，防止别人误绑定",
+      },
+      { kind: "feature", text: "支持手机浏览器访问：侧边栏改为抽屉式，页面与按钮针对触屏做了适配" },
+      {
+        kind: "fix",
+        text: "修复微信推送重启后再也连不上的问题（重启后不会自动重新登录，界面显示已绑定但发消息报未登录）",
+      },
+      { kind: "fix", text: "修复微信连接卡死：登录无超时时会永久停在「正在连接」，现在会超时重试并在失败时说明原因" },
+      { kind: "improve", text: "推送设置里新增「重新连接」，可以在不重新扫码的情况下恢复连接" },
+      { kind: "improve", text: "发送失败时显示真实原因，不再是笼统的「未登录」" },
+    ],
+  },
   {
     version: "1.0.0",
     date: "2026-10-09",

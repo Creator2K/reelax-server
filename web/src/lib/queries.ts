@@ -151,7 +151,16 @@ export type ConfigField =
       label: string;
       hint?: string;
       default?: string;
-      options: { value: string; label: string }[];
+      options: { value: string; label: string; hint?: string }[];
+    }
+  | {
+      /** 从固定清单里挑几项（值是一组 id） */
+      key: string;
+      type: "multi-select";
+      label: string;
+      hint?: string;
+      default?: string[];
+      options: { value: string; label: string; hint?: string }[];
     };
 
 export type ModuleDefinition = {

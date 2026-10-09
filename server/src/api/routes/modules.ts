@@ -6,6 +6,7 @@
 //   `unavailable` 原因，前端据此禁用开关并显示提示。
 import { Router } from "express";
 import { moduleCatalog } from "../../modules/registry.ts";
+import { buildModulePreview, hasPreview } from "../../modules/preview.ts";
 import { currentUserId, requireUser } from "../../auth/middleware.ts";
 import type { NotifyService } from "../../services/notify-service.ts";
 
@@ -47,6 +48,23 @@ export function createModulesRouter(deps: {
       return;
     }
     res.json(found);
+  });
+
+  /**
+   * 配置预览。
+   *
+   * 有些配置光看文字想象不出效果（日报包含哪些内容、标题里加变量），
+   * 所以让模块自己在服务端算出预览文本，前端在表单旁边实时显示。
+   *
+   * POST 而不是 GET：配置对象可能不小，放 query 里不合适。
+   * 这里**不校验配置合法性** —— 预览要能一边编辑一边看，
+   * 非法值由保存时的校验拦（预览对垃圾输入会优雅地返回 null）。
+   */
+  router.post("/:id/preview", (req, res) => {
+    const moduleId = req.params.id as string;
+    const config = (req.body ?? {}) as Record<string, unknown>;
+    const preview = buildModulePreview(moduleId, config);
+    res.json({ preview, supported: hasPreview(moduleId) });
   });
 
   return router;

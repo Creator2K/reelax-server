@@ -255,6 +255,7 @@ function ModuleCard({
               fields={schema}
               values={state.config}
               configIssues={state.configIssues}
+              moduleId={state.id}
               onSave={async (draft) => {
                 await update.mutateAsync({ moduleId: state.id, patch: { config: draft } });
               }}
