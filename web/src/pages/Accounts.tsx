@@ -229,7 +229,6 @@ function CreateAccountDialog({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [cookie, setCookie] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
   const [proxyId, setProxyId] = useState<string>("");
   const [autoStart, setAutoStart] = useState(true);
 
@@ -238,7 +237,6 @@ function CreateAccountDialog({
     setEmail("");
     setPassword("");
     setCookie("");
-    setBaseUrl("");
     setProxyId("");
     setAutoStart(true);
     setAuthType("credentials");
@@ -249,7 +247,6 @@ function CreateAccountDialog({
       label: label.trim() || undefined,
       authType,
       ...(authType === "credentials" ? { email: email.trim(), password } : { cookie: cookie.trim() }),
-      ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
       proxyId: proxyId || null,
       autoStart,
     });
@@ -368,15 +365,7 @@ function CreateAccountDialog({
           <details className="text-xs">
             <summary className="text-muted-foreground cursor-pointer">高级设置</summary>
             <div className="mt-3 space-y-3">
-              <div className="space-y-2">
-                <Label htmlFor="acc-base">游戏地址</Label>
-                <Input
-                  id="acc-base"
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  placeholder="留空使用服务默认（https://reelax.cn）"
-                />
-              </div>
+              {/* 游戏地址固定用服务端配置（默认 https://reelax.cn），不给用户改也不显示 */}
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <Label htmlFor="acc-autostart">添加后自动启动</Label>

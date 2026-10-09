@@ -152,7 +152,6 @@ function AccountMetaCard({ account }: { account: Account }) {
       <CardContent className="space-y-2 text-xs">
         <Row label="凭证方式" value={account.authType === "cookie" ? "Cookie 导入" : "账号密码"} />
         <Row label="游戏邮箱" value={account.email || "—"} />
-        <Row label="游戏地址" value={account.baseUrl} />
         <Row label="出口代理" value={account.proxyLabel ?? "直连"} />
         <Row label="自动启动" value={account.autoStart ? "是" : "否"} />
         <Row

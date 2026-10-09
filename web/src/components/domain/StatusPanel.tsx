@@ -24,7 +24,7 @@ import { Badge } from "@/components/ui/badge.tsx";
 import { Separator } from "@/components/ui/separator.tsx";
 import { StatCard, ProgressBar } from "@/components/domain/StatCard.tsx";
 import type { PityProgress, StatusPanel } from "@/lib/queries.ts";
-import { fmtNum, fmtPct, fmtRelative } from "@/lib/utils.ts";
+import { fmtCompact, fmtExact, fmtNum, fmtPct, fmtRelative } from "@/lib/utils.ts";
 
 /** 等级上限（游戏内满级）。用于等级进度条。 */
 const MAX_LEVEL = 20_000;
@@ -148,26 +148,32 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
           </div>
         </div>
 
-        {/* ---------- 资源卡：金币 / 遗物 / 碎片（鱼饵已在顶部徽章里） ---------- */}
+        {/* ---------- 资源卡：金币 / 遗物 / 碎片（鱼饵已在顶部徽章里） ----------
+            数值走 fmtCompact：窄卡一行只放得下 4 个字符左右，
+            fmtNum(16427000) 会得到 "1642.7 万" 而挤到第二行；
+            fmtCompact 压成 "1643万"，精确值放 title（悬停可看）。 */}
         <div className="grid grid-cols-3 gap-2.5">
           <StatCard
             label="金币"
             icon={<IconCoins className="size-3.5" />}
             tone="warning"
-            value={panel.gold != null ? fmtNum(panel.gold) : "—"}
+            value={panel.gold != null ? fmtCompact(panel.gold) : "—"}
+            title={panel.gold != null ? `金币 ${fmtExact(panel.gold)}` : undefined}
           />
           <StatCard
             label="遗物"
             icon={<IconSparkles className="size-3.5" />}
             tone="accent"
-            value={panel.relics != null ? fmtNum(panel.relics) : "—"}
+            value={panel.relics != null ? fmtCompact(panel.relics) : "—"}
+            title={panel.relics != null ? `遗物 ${fmtExact(panel.relics)}` : undefined}
             delay={0.04}
           />
           <StatCard
             label="碎片"
             icon={<IconStar className="size-3.5" />}
             tone="accent"
-            value={panel.fragments != null ? fmtNum(panel.fragments) : "—"}
+            value={panel.fragments != null ? fmtCompact(panel.fragments) : "—"}
+            title={panel.fragments != null ? `碎片 ${fmtExact(panel.fragments)}` : undefined}
             delay={0.08}
           />
         </div>

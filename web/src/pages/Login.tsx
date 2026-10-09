@@ -12,8 +12,11 @@ import { AuthShell } from "@/components/layout/AuthShell.tsx";
 import { useAuthActions } from "@/lib/session.ts";
 import { ApiError } from "@/lib/api.ts";
 
+// 登录标识允许两种：邮箱（普通用户）或登录名（管理员默认是 admin）。
+// 早期这里写死 .email() 校验，导致内置管理员用 admin 登录时被前端拦下报
+// 「邮箱格式不正确」—— 后端本来是按同一个字段匹配的，前端的限制纯属多余。
 const schema = z.object({
-  email: z.string().min(1, "请输入邮箱").email("邮箱格式不正确"),
+  identity: z.string().min(1, "请输入邮箱或登录名"),
   password: z.string().min(1, "请输入口令"),
 });
 
@@ -29,12 +32,12 @@ export default function LoginPage() {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
-  } = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: { email: "", password: "" } });
+  } = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: { identity: "", password: "" } });
 
   const onSubmit = async (values: FormValues) => {
     setFormError(null);
     try {
-      await login(values.email, values.password);
+      await login(values.identity, values.password);
       const from = (location.state as { from?: string } | null)?.from;
       navigate(from && from !== "/login" ? from : "/", { replace: true });
     } catch (err) {
@@ -52,9 +55,16 @@ export default function LoginPage() {
         ) : null}
 
         <div className="space-y-2">
-          <Label htmlFor="email">邮箱</Label>
-          <Input id="email" type="email" autoComplete="username" placeholder="you@example.com" {...register("email")} />
-          {errors.email ? <p className="text-destructive text-xs">{errors.email.message}</p> : null}
+          {/* 用 text 而不是 email：管理员登录名是 admin，不是邮箱 */}
+          <Label htmlFor="identity">邮箱或登录名</Label>
+          <Input
+            id="identity"
+            type="text"
+            autoComplete="username"
+            placeholder="you@example.com 或 admin"
+            {...register("identity")}
+          />
+          {errors.identity ? <p className="text-destructive text-xs">{errors.identity.message}</p> : null}
         </div>
 
         <div className="space-y-2">

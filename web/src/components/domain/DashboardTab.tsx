@@ -224,7 +224,6 @@ export function DashboardTab({ myId, onGoUsers }: { myId: string; onGoUsers: () 
 
             <Row label="运行时长" value={sys ? fmtDuration(sys.uptime) : "—"} />
             <Row label="版本" value={sys?.version ?? "—"} />
-            <Row label="游戏地址" value={sys?.baseUrl ?? "—"} mono />
             <Row label="单用户账号上限" value={String(sys?.limits.maxAccountsPerUser ?? "—")} />
             <Row label="自助注册" value={sys?.limits.allowRegistration ? "已开启" : "已关闭"} />
             <Row label="日志条数" value={String(sys?.storage.logs ?? 0)} />

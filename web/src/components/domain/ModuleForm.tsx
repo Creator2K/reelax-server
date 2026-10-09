@@ -267,7 +267,7 @@ export function ModuleHeader({
             <Badge variant="idle">已关闭</Badge>
           )}
         </div>
-        <code className="text-muted-foreground font-mono text-[11px]">{state.id}</code>
+        {/* 这里原本显示 state.id（keep-online 这类内部标识）—— 用户不需要看它 */}
       </div>
       <Switch
         checked={state.enabled}

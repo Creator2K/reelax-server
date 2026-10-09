@@ -515,7 +515,6 @@ function SystemTab() {
         <CardContent className="space-y-2 text-xs">
           <Row label="版本" value={data.version} />
           <Row label="已运行" value={fmtDuration(data.uptime)} />
-          <Row label="游戏地址" value={data.baseUrl} />
           <Row label="账号总数" value={String(data.runtime.totalAccounts)} />
           <Row
             label="正在运行"

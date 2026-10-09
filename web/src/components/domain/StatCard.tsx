@@ -40,6 +40,7 @@ export function StatCard({
   tone = "neutral",
   hintTone,
   delay = 0,
+  title,
   className,
 }: {
   label: string;
@@ -51,6 +52,8 @@ export function StatCard({
   tone?: StatTone;
   hintTone?: StatTone;
   delay?: number;
+  /** 悬停提示。放精确值用（卡片里的大数是紧凑显示，会丢精度） */
+  title?: string;
   className?: string;
 }) {
   const footer = hint ?? sub;
@@ -59,6 +62,7 @@ export function StatCard({
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35, delay }}
+      title={title}
       className={cn("bg-muted min-h-[88px] rounded-[20px] px-3.5 py-3 sm:min-h-[96px] sm:px-4", className)}
     >
       <div className="flex items-start justify-between gap-2">
@@ -75,7 +79,17 @@ export function StatCard({
         ) : null}
       </div>
 
-      <div className={cn("mono-num mt-3 text-xl font-semibold tracking-[-0.03em] tabular-nums sm:text-2xl", TONE_VALUE[tone])}>
+      {/*
+        数值容器：overflow-hidden + break-all 是必要的 ——
+        窄卡一行大约只放得下 4 个字符，万一数值比预期更长（例如 8 位纯数字），
+        让它断在卡内，而不是把卡片撑宽或挤到卡外。
+      */}
+      <div
+        className={cn(
+          "mono-num mt-3 overflow-hidden text-xl font-semibold tracking-[-0.03em] break-all tabular-nums sm:text-2xl",
+          TONE_VALUE[tone],
+        )}
+      >
         {value}
       </div>
 
