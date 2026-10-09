@@ -21,6 +21,33 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * 给一个 Promise 套超时。
+ *
+ * ★ 为什么必须要有：微信 SDK 内部的 HTTP 请求**没有超时**。实测出现过
+ *   bot.run() 一直不返回，通道就永远卡在「正在连接…」——
+ *   界面转圈、用户干等，而且 our 的重试逻辑根本没机会执行。
+ *   宁可超时失败再重试，也不要无限等待。
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}超时（${Math.round(ms / 1000)} 秒未响应）`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** 登录/连接阶段的超时（扫码等待不算在内，那是 onQrUrl 回调） */
+const CONNECT_TIMEOUT_MS = 45_000;
+
 export type NotifyMessage = {
   title: string;
   /** 正文（支持 Markdown，Server酱与微信都按纯文本/Markdown 处理） */
@@ -350,17 +377,29 @@ export class NotifyService {
       });
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        let bot: any = null;
         try {
-          const bot = await factory({
-            storageDir: credsDir(ch.id),
-            loginCallbacks: callbacksFor(ch.id, ch.label, ch.user_id),
-            log: (m: string) => log.info("推送", `[${ch.label}] ${m}`),
-          });
+          bot = await withTimeout(
+            factory({
+              storageDir: credsDir(ch.id),
+              loginCallbacks: callbacksFor(ch.id, ch.label, ch.user_id),
+              log: (m: string) => log.info("推送", `[${ch.label}] ${m}`),
+            }),
+            15_000,
+            "创建微信客户端",
+          );
 
           bot.onMessage((msg: any) => void handleMessage(bot, ch, msg));
 
-          // run() 会自动复用已保存的凭证；没有凭证时走扫码
-          await bot.run({ callbacks: callbacksFor(ch.id, ch.label, ch.user_id) });
+          /*
+           * 分两步（而不是 bot.run()）：run() = login() + start()。
+           * 分开调用才能给"连接/校验凭证"这一步单独加超时 ——
+           * SDK 内部的 HTTP 没有超时，实测会永远挂住。
+           * 扫码等待发生在 login() 期间，由 onQrUrl 回调驱动；
+           * 已保存凭证时 login() 只做一次校验请求，应当很快返回。
+           */
+          await withTimeout(bot.login({ callbacks: callbacksFor(ch.id, ch.label, ch.user_id) }), CONNECT_TIMEOUT_MS, "连接微信");
+          await withTimeout(bot.start(), 15_000, "启动微信机器人");
 
           const live = repos.notify.findById(ch.id);
           if (!live) {
@@ -392,6 +431,15 @@ export class NotifyService {
         } catch (err) {
           const m = err instanceof Error ? err.message : String(err);
           const isLast = attempt === maxAttempts;
+
+          // 失败要把半成品客户端关掉，否则它的轮询可能还在后台跑
+          if (bot) {
+            try {
+              bot.stop();
+            } catch {
+              /* 忽略 */
+            }
+          }
 
           // ★ 失败必须落到状态里，不能出现「显示可用但发不出去」
           setRuntime(ch.id, {

@@ -250,6 +250,7 @@ function InvitesTab() {
                     disabled={del.isPending}
                     title="删除"
                     aria-label="删除邀请码"
+                    className="row-actions sm:ml-auto"
                   >
                     <IconTrash className="size-4" />
                   </Button>

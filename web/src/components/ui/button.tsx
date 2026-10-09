@@ -34,7 +34,15 @@ export type ButtonProps = ComponentProps<"button"> &
 
 export function Button({ className, variant, size, asChild = false, ...props }: ButtonProps) {
   const Comp = asChild ? Slot : "button";
-  return <Comp data-slot="button" className={cn(buttonVariants({ variant, size, className }))} {...props} />;
+  // data-size 供移动端样式定位（小按钮在触屏上要放大到可点尺寸）
+  return (
+    <Comp
+      data-slot="button"
+      data-size={size ?? "default"}
+      className={cn(buttonVariants({ variant, size, className }))}
+      {...props}
+    />
+  );
 }
 
 export { buttonVariants };

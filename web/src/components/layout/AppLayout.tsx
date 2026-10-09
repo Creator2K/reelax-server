@@ -6,6 +6,7 @@
 //
 // 内容区带**按路由的淡入位移**（对标 workbuddy-manager 的页面切换观感）：
 // key 用 location.pathname，所以每次换页都会重新播一次入场。
+import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { motion } from "motion/react";
 import { IconClockHour4 } from "@tabler/icons-react";
@@ -54,12 +55,22 @@ function Shell() {
   const { data: user } = useSession();
   const { logout } = useAuthActions();
   const { connected } = useRealtime();
+  /** 移动端抽屉开关（桌面不显示抽屉，此状态无副作用） */
+  const [menuOpen, setMenuOpen] = useState(false);
+  const location = useLocation();
+
+  // 换页时自动收起抽屉（桌面端本来就不显示，无影响）
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [location.pathname]);
 
   return (
     <div className="flex h-svh w-full overflow-hidden">
       <Sidebar
         isAdmin={user?.role === "admin"}
         wsConnected={connected}
+        mobileOpen={menuOpen}
+        onCloseMobile={() => setMenuOpen(false)}
         footer={
           user?.accountLimit ? (
             <div className="text-muted-foreground text-[11px]">
@@ -75,6 +86,7 @@ function Shell() {
           user={user}
           onLogout={() => void logout()}
           actions={header.actions}
+          onOpenMenu={() => setMenuOpen(true)}
         />
         {/* scroll-slim：细滚动条，嵌在卡片里的长列表观感更好 */}
         <main className="scroll-slim min-h-0 flex-1 overflow-y-auto">

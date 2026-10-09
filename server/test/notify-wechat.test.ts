@@ -24,11 +24,14 @@ type FakeBot = {
   send: (to: string, content: unknown) => Promise<void>;
   reply: (msg: unknown, content: unknown) => Promise<void>;
   onMessage: (fn: (msg: unknown) => void) => void;
+  /** 服务现在是分两步调用 login() + start()（而不是 run()），好给连接阶段单独加超时 */
+  login: (opts?: unknown) => Promise<void>;
+  start: () => Promise<void>;
   run: (opts?: unknown) => Promise<void>;
   stop: () => void;
 };
 
-function makeHarness(opts: { failRuns?: number } = {}) {
+function makeHarness(opts: { failRuns?: number; failMode?: "login" | "start" } = {}) {
   const db = openDb(":memory:");
   db.migrate();
   const repos: Repos = createRepos(db);
@@ -52,9 +55,23 @@ function makeHarness(opts: { failRuns?: number } = {}) {
       onMessage(fn) {
         bot.handlers.push(fn);
       },
-      async run() {
+      // 服务把 run() 拆成了 login() + start()，好给连接阶段单独加超时
+      async login() {
         runAttempts++;
-        if (opts.failRuns && runAttempts <= opts.failRuns) throw new Error("The operation was aborted due to timeout");
+        const shouldFail = opts.failRuns && runAttempts <= opts.failRuns;
+        if (shouldFail && (opts.failMode ?? "login") === "login") {
+          throw new Error("The operation was aborted due to timeout");
+        }
+      },
+      async start() {
+        const shouldFail = opts.failRuns && runAttempts <= opts.failRuns;
+        if (shouldFail && opts.failMode === "start") {
+          throw new Error("start 阶段超时");
+        }
+      },
+      async run() {
+        await bot.login();
+        await bot.start();
       },
       stop() {},
     };

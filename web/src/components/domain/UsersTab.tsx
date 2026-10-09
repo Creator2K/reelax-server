@@ -277,7 +277,7 @@ export function UsersTab() {
                     </div>
                   </div>
 
-                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                  <div className="row-actions flex shrink-0 flex-wrap items-center gap-1.5">
                     {u.status === "pending" ? (
                       <Button size="xs" onClick={() => approve.mutate(u.id)} disabled={approve.isPending}>
                         <IconCheck className="size-3.5" />

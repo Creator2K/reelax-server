@@ -413,3 +413,83 @@ button {
   }
 }
 
+/* ================================================================
+ * 移动端适配
+ * ================================================================ */
+
+/*
+ * 1) 动态视口高度
+ *
+ * 症状：手机上用 100vh 时，地址栏收起/展开会让内容被截断或出现多余滚动条。
+ * 处理：布局用 h-svh（small viewport height，最保守的可见高度），
+ *      这里再给 dvh 兜底 —— 支持的浏览器会自动跟随地址栏变化。
+ */
+@supports (height: 100dvh) {
+  .h-svh {
+    height: 100dvh;
+  }
+}
+
+/*
+ * 2) 输入控件字号至少 16px
+ *
+ * iOS Safari 在输入框字号 < 16px 时会在聚焦瞬间**自动放大页面**，
+ * 用户点一下输入框就整页放大，非常难受。
+ * 只在移动端强制 16px（桌面保持设计稿的 14px 观感）。
+ */
+@media (max-width: 1023px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/*
+ * 3) 触控目标尺寸
+ *
+ * 小按钮（xs / icon-sm）在桌面是紧凑的 24~28px，手指点起来容易误触。
+ * 移动端给到至少 36px，并保证可点区域尽量大。
+ */
+@media (max-width: 1023px) and (pointer: coarse) {
+  [data-slot="button"] {
+    min-height: 2.25rem;
+  }
+  /* 图标按钮保持方形，避免被拉成胶囊 */
+  [data-slot="button"][data-size="icon"],
+  [data-slot="button"][data-size="icon-sm"] {
+    min-width: 2.25rem;
+  }
+  /* 开关也是常用触控目标 */
+  [data-slot="switch"] {
+    min-height: 1.5rem;
+  }
+}
+
+/*
+ * 4) 表格型布局在窄屏不横向溢出
+ *
+ * 后台用户列表这类「左侧信息 + 右侧按钮组」的行，按钮多时会把行撑宽。
+ * 让按钮组可换行、并允许整行横向滚动兜底。
+ */
+@media (max-width: 639px) {
+  .row-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+/*
+ * 5) 移动端不要"hover 才出现"的交互
+ *
+ * 触屏没有 hover，依赖它显示的操作会变得点不到。
+ * 统一让这类元素在移动端始终可见（用 md:hover 之类的类控制更精确，
+ * 这里只是兜底：去掉仅 hover 才显示的操作按钮的透明度）。
+ */
+@media (hover: none) {
+  .hover-only {
+    opacity: 1 !important;
+  }
+}
+
+

@@ -152,13 +152,14 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
             数值走 fmtCompact：窄卡一行只放得下 4 个字符左右，
             fmtNum(16427000) 会得到 "1642.7 万" 而挤到第二行；
             fmtCompact 压成 "1643万"，精确值放 title（悬停可看）。 */}
-        <div className="grid grid-cols-3 gap-2.5">
+        <div className="grid grid-cols-3 gap-2">
           <StatCard
             label="金币"
             icon={<IconCoins className="size-3.5" />}
             tone="warning"
             value={panel.gold != null ? fmtCompact(panel.gold) : "—"}
             title={panel.gold != null ? `金币 ${fmtExact(panel.gold)}` : undefined}
+            className="min-h-[80px] px-2.5 sm:min-h-[96px] sm:px-4"
           />
           <StatCard
             label="遗物"
@@ -167,6 +168,7 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
             value={panel.relics != null ? fmtCompact(panel.relics) : "—"}
             title={panel.relics != null ? `遗物 ${fmtExact(panel.relics)}` : undefined}
             delay={0.04}
+            className="min-h-[80px] px-2.5 sm:min-h-[96px] sm:px-4"
           />
           <StatCard
             label="碎片"
@@ -175,6 +177,7 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
             value={panel.fragments != null ? fmtCompact(panel.fragments) : "—"}
             title={panel.fragments != null ? `碎片 ${fmtExact(panel.fragments)}` : undefined}
             delay={0.08}
+            className="min-h-[80px] px-2.5 sm:min-h-[96px] sm:px-4"
           />
         </div>
 

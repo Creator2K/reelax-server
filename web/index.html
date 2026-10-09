@@ -2,8 +2,16 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      viewport-fit=cover：让页面延伸到 iPhone 刘海/圆角区域，
+      再由 CSS 的 env(safe-area-inset-*) 决定内容避让，避免顶栏被刘海压住。
+      maximum-scale 不限制：用户放大查看内容应当允许（无障碍要求）。
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
+    <!-- 移动端浏览器地址栏跟随主题色，观感更整体 -->
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
     <title>摸鱼大师智能助手</title>
     <script>
       // 首帧前定好主题，避免刷新时闪白/闪黑。
