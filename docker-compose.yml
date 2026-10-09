@@ -33,6 +33,9 @@ services:
     image: reelax-server:latest
     container_name: reelax-server
     restart: unless-stopped
+    # 关停给足时间：停引擎 + 关推送 + 关 HTTP + 落最后一批日志 + WAL checkpoint。
+    # Docker 默认只给 10 秒，账号多的时候会被 SIGKILL 掉（丢状态、丢日志）。
+    stop_grace_period: 30s
 
     ports:
       - "${PORT:-8580}:8580"
@@ -108,10 +111,13 @@ services:
       - reelax-data:/app/data
 
     # 容器内资源上限（按机器调整）。挂机本身很轻，主要是并发登录的瞬时开销。
+    # ★ 实测 2 个账号约 58MB；scrypt 每次哈希瞬时约 32MB。
+    #   按默认 MAX_RUNNING_ACCOUNTS=50 估计峰值 300~500MB，512M 会贴边触发 OOM
+    #   （OOM = 整体重启 + 所有账号重连），所以默认给 1G。
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 1G
 
     logging:
       driver: json-file

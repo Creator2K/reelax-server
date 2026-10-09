@@ -95,7 +95,7 @@ const definition: ModuleDefinition = {
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
       S.lastIdle = msg;
-      ctx.log.info("自动换饵", msg);
+      ctx.log.debug("自动换饵", msg);
     };
 
     /** 判断当前该用哪个场景 */

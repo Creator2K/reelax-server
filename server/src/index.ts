@@ -219,6 +219,7 @@ async function main(): Promise<void> {
   logFlushTimer.unref();
 
   /* ---------- 定期维护 ---------- */
+  let lastBackupDay = "";
   const maintenance = setInterval(
     () => {
       try {
@@ -231,6 +232,16 @@ async function main(): Promise<void> {
           if (userId) repos.logs.trimForUser(userId);
         }
         repos.audit.deleteOlderThan(Date.now() - 180 * 86_400_000);
+        // 每天一份数据库快照（VACUUM INTO，保留最近 3 份）。
+        // ★ 以前只有「有待执行迁移」时才备份，正常重启和日常运行从不备份，
+        //   而 docs/DEPLOY.md 却写着「启动时会做一次快照」。
+        //   注意：快照和数据在**同一个卷**里，卷丢了会一起丢 —— 见 DEPLOY.md 的异地备份建议。
+        const today = new Date().toISOString().slice(0, 10);
+        if (lastBackupDay !== today) {
+          lastBackupDay = today;
+          const snapshot = db.backupNow();
+          if (snapshot) logger.info("数据库", `已生成每日快照：${path.basename(snapshot)}`);
+        }
       } catch (err) {
         logger.warn("维护", `清理任务失败：${err instanceof Error ? err.message : String(err)}`);
       }
@@ -334,10 +345,17 @@ async function main(): Promise<void> {
       });
   });
 
-  /* ---------- 恢复推送通道（微信需要重新登录复用凭证） ---------- */
-  await notify.restoreAll().catch((err) => {
-    logger.warn("推送", `恢复推送通道失败：${err instanceof Error ? err.message : String(err)}`);
-  });
+  /* ---------- 恢复推送通道（微信需要重新登录复用凭证） ----------
+   * ★ 必须放在 listen 之后、且不阻塞启动：
+   *   微信初始化每个通道最多重试 3 次（每次登录超时 60 秒），一个坏通道最坏能拖 3 分钟。
+   *   早期实现是在 listen 之前 await，于是容器重建后「接口和健康检查都是死的」，
+   *   耗时超过 Docker 的 start-period 还会被标成 unhealthy。
+   */
+  const restoreNotify = (): void => {
+    void notify.restoreAll().catch((err) => {
+      logger.warn("推送", `恢复推送通道失败：${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
 
   const startedAt = Date.now();
   const app = createApp({
@@ -427,22 +445,23 @@ async function main(): Promise<void> {
     });
   });
 
-  /* ---------- 恢复自动启动的账号（错峰，且等全部完成） ---------- */
-  const resumed = await registry.startAutoStartAccounts();
-  if (resumed.started || resumed.failed) {
-    logger.info("引擎", `自动启动完成：成功 ${resumed.started}，失败 ${resumed.failed}`);
-  }
-
-  /* ---------- 优雅关闭 ---------- */
+  /* ---------- 优雅关闭 ----------
+   * ★ 定义与注册都放在「自动启动账号」之前：那一步会错峰启动（每账号 2.5 秒）
+   *   并等全部完成，几十个账号要几十秒到几分钟。这段窗口里如果没装 SIGTERM 处理器，
+   *   进程会走 Node 默认动作直接终止（状态写不回、WAL 不做 checkpoint）。
+   */
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info("服务", `收到 ${signal}，正在关闭…`);
+    // ★ 预算要大于「停引擎 + 关推送 + 关 HTTP」的真实耗时：
+    //   stopAll 现在是并发停，但每个账号最坏仍要 ~2 秒、微信通道 stop 也可能慢。
+    //   预算给到 25 秒，同时 compose 配 stop_grace_period: 30s 配合。
     const force = setTimeout(() => {
       logger.warn("服务", "关闭超时，强制退出");
       process.exit(1);
-    }, 10_000);
+    }, 25_000);
     force.unref();
 
     try {
@@ -467,6 +486,15 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+
+  /* ---------- 恢复推送通道：后台进行，不阻塞接口 ---------- */
+  restoreNotify();
+
+  /* ---------- 恢复自动启动的账号（错峰，且等全部完成） ---------- */
+  const resumed = await registry.startAutoStartAccounts();
+  if (resumed.started || resumed.failed) {
+    logger.info("引擎", `自动启动完成：成功 ${resumed.started}，失败 ${resumed.failed}`);
+  }
 }
 
 main().catch((err) => {

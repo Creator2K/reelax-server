@@ -120,7 +120,7 @@ const definition: ModuleDefinition = {
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
       S.lastIdle = msg;
-      ctx.log.info("保底切图", msg);
+      ctx.log.debug("保底切图", msg);
     };
 
     const rarity = ctx.config.rarity === "exotic" ? "exotic" : "arcane";

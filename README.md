@@ -193,10 +193,11 @@ npm run build        # 构建前端产物到 web/dist（由后端直接托管）
 | `PORT` | `8580` | 监听端口。Docker 内固定 8580，对外用 compose 的 `ports` 映射 |
 | `HOST` | `127.0.0.1` | 监听地址。Docker 内为 `0.0.0.0`；本地裸跑建议保持 127.0.0.1 |
 | `DATA_DIR` | `./data` | 数据库、日志与备份目录 |
+| `TZ` | `Asia/Shanghai`（compose 固定） | 容器时区。日报的「本地时间 HH:MM」、统计按天分桶都跟着它；容器默认 UTC，不加会在北京时间 17:00 发日报 |
 | `REELAX_BASE_URL` | `https://reelax.cn` | 游戏地址（测试服 `https://test.reelax.cn`） |
 | `REELAX_GLOBAL_PROXY` | 空 | 未绑定代理的账号使用的兜底出口 |
 | `PROXY_ECHO_URL` | `https://api.ipify.org?format=json` | 代理测试时探测出口 IP 的地址 |
-| `TRUST_PROXY` | 非生产 `0` / 生产 `1` | 反代后设为 1，用于限流取真实 IP |
+| `TRUST_PROXY` | `0` | **只有**在 Nginx/Caddy 之后才设 1，且必须让反代覆盖 `X-Forwarded-For`（否则客户端可伪造 IP 绕过限流）。直连暴露时必须保持 0 |
 | `COOKIE_SECURE` | 空（自动） | `1` 强制 Secure、`0` 强制不加、**留空=按请求协议自动判断（推荐）** |
 | `ALLOW_REGISTRATION` | `1` | 关闭后只能由管理员建号 |
 | `ADMIN_USERNAME` | `admin` | 启动时自动确保存在的管理员登录名。留空 = 不自动创建（改为首个注册者成管理员） |
@@ -204,8 +205,9 @@ npm run build        # 构建前端产物到 web/dist（由后端直接托管）
 | `MAX_ACCOUNTS_PER_USER` | `5` | 单用户游戏账号上限 |
 | `MAX_RUNNING_ACCOUNTS` | `50` | 全局同时运行账号上限 |
 | `REELAX_REPO` | `Creator2K/reelax-server` | 检查更新时查询的仓库 |
-| `GITHUB_TOKEN` | 空 | 私有仓库读 commit 信息 / updater 拉代码需要 |
+| `GITHUB_TOKEN` | 空 | 只有**私有**仓库才需要（读 commit 信息 / updater 拉代码）。公开仓库可留空 |
 | `REELAX_UPDATER_URL` | 空 | 旁路更新器地址（如 `http://updater:9000`） |
+| `REELAX_UPDATER_TOKEN` | 空 | 与 updater 的 `UPDATER_TOKEN` 一致（compose 里两者都取自 `.env` 的 `UPDATER_TOKEN`） |
 | `ALLOW_LOCAL_UPDATE` | `0` | 是否允许本进程直接 git pull（Docker 下保持 0） |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `LOG_RETENTION_DAYS` | `14` | 数据库日志保留天数 |

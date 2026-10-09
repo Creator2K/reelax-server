@@ -242,7 +242,7 @@ const definition: ModuleDefinition = {
     const skipOnce = (msg: string) => {
       if (S.lastIdle === msg) return;
       S.lastIdle = msg;
-      ctx.log.info("自动加点", msg);
+      ctx.log.debug("自动加点", msg);
     };
 
     const detail = (amounts: number[]) =>

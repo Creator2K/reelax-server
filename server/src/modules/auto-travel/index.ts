@@ -201,7 +201,9 @@ const definition: ModuleDefinition = {
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
       S.lastIdle = msg;
-      ctx.log.info("自动切图", msg);
+      // 「本轮没动作」的说明：降到 debug。信息级日志会落库并占用每用户 2 万条的额度，
+      // 这类每轮都变（带数量）的说明会把额度几小时就冲掉，让真正的事件无处留存。
+      ctx.log.debug("自动切图", msg);
     };
 
     /** 比赛地图：个人赛要已报名，公会赛要公会已报名 */

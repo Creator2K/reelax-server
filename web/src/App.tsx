@@ -9,24 +9,31 @@
 //
 // 为什么这么分：管理员账号是给机主管服务器用的，它自己不该有游戏账号，
 // 「登录后台却先看到挂机面板」既混乱也容易误操作。
-import { createElement, type ReactNode, type ReactElement } from "react";
+import { createElement, lazy, Suspense, type ReactNode, type ReactElement } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { IconLoader2 } from "@tabler/icons-react";
 import { AppLayout } from "./components/layout/AppLayout.tsx";
 import { useSession } from "./lib/session.ts";
 import { RealtimeProvider } from "./lib/realtime.tsx";
-import LoginPage from "./pages/Login.tsx";
-import RegisterPage from "./pages/Register.tsx";
-import DashboardPage from "./pages/Dashboard.tsx";
-import AccountsPage from "./pages/Accounts.tsx";
-import AccountDetailPage from "./pages/AccountDetail.tsx";
-import ProxiesPage from "./pages/Proxies.tsx";
-import NotifyPage from "./pages/Notify.tsx";
-import LogsPage from "./pages/Logs.tsx";
-import SettingsPage from "./pages/Settings.tsx";
-import ChangelogPage from "./pages/Changelog.tsx";
-import AdminPage from "./pages/Admin.tsx";
-import NotFoundPage from "./pages/NotFound.tsx";
+
+/**
+ * ★ 页面按路由懒加载。
+ *   原先 12 个页面全部静态导入，打进一个 895KB 的包（gzip 282KB），
+ *   手机上首屏必须等整包下载完（含只有管理员才用到的后台页）。
+ *   拆开后首屏只加载外壳与登录页，各页面在进入时才拉取。
+ */
+const LoginPage = lazy(() => import("./pages/Login.tsx"));
+const RegisterPage = lazy(() => import("./pages/Register.tsx"));
+const DashboardPage = lazy(() => import("./pages/Dashboard.tsx"));
+const AccountsPage = lazy(() => import("./pages/Accounts.tsx"));
+const AccountDetailPage = lazy(() => import("./pages/AccountDetail.tsx"));
+const ProxiesPage = lazy(() => import("./pages/Proxies.tsx"));
+const NotifyPage = lazy(() => import("./pages/Notify.tsx"));
+const LogsPage = lazy(() => import("./pages/Logs.tsx"));
+const SettingsPage = lazy(() => import("./pages/Settings.tsx"));
+const ChangelogPage = lazy(() => import("./pages/Changelog.tsx"));
+const AdminPage = lazy(() => import("./pages/Admin.tsx"));
+const NotFoundPage = lazy(() => import("./pages/NotFound.tsx"));
 
 function FullPageLoader({ label = "载入中" }: { label?: string }) {
   return (
@@ -35,6 +42,16 @@ function FullPageLoader({ label = "载入中" }: { label?: string }) {
         <IconLoader2 className="size-4 animate-spin" />
         {label}…
       </div>
+    </div>
+  );
+}
+
+/** 外壳内的页面加载占位：不能再用 h-svh（那会把内容区撑破） */
+function PageFallback() {
+  return (
+    <div className="text-muted-foreground flex items-center justify-center gap-2 py-20 text-sm">
+      <IconLoader2 className="size-4 animate-spin" />
+      载入中…
     </div>
   );
 }
@@ -67,36 +84,38 @@ const userOnly = (el: ReactElement) => <RoleGate role="user">{el}</RoleGate>;
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/register" element={<RegisterPage />} />
+    <Suspense fallback={<PageFallback />}>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
 
-      <Route element={<RequireAuth />}>
-        {/*
-          根路径按角色分流：
-            管理员 → /admin（后台）
-            普通用户 → 挂机总览
-        */}
-        <Route path="/" element={<HomeRedirect />} />
+        <Route element={<RequireAuth />}>
+          {/*
+            根路径按角色分流：
+              管理员 → /admin（后台）
+              普通用户 → 挂机总览
+          */}
+          <Route path="/" element={<HomeRedirect />} />
 
-        {/* 挂机控制台：仅普通用户 */}
-        <Route path="/dashboard" element={userOnly(createElement(DashboardPage))} />
-        <Route path="/accounts" element={userOnly(createElement(AccountsPage))} />
-        <Route path="/accounts/:id" element={userOnly(createElement(AccountDetailPage))} />
-        <Route path="/proxies" element={userOnly(createElement(ProxiesPage))} />
-        <Route path="/notify" element={userOnly(createElement(NotifyPage))} />
-        <Route path="/logs" element={userOnly(createElement(LogsPage))} />
+          {/* 挂机控制台：仅普通用户 */}
+          <Route path="/dashboard" element={userOnly(createElement(DashboardPage))} />
+          <Route path="/accounts" element={userOnly(createElement(AccountsPage))} />
+          <Route path="/accounts/:id" element={userOnly(createElement(AccountDetailPage))} />
+          <Route path="/proxies" element={userOnly(createElement(ProxiesPage))} />
+          <Route path="/notify" element={userOnly(createElement(NotifyPage))} />
+          <Route path="/logs" element={userOnly(createElement(LogsPage))} />
 
-        {/* 两者都能访问 */}
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/changelog" element={<ChangelogPage />} />
+          {/* 两者都能访问 */}
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/changelog" element={<ChangelogPage />} />
 
-        {/* 纯后台：仅管理员 */}
-        <Route path="/admin" element={adminOnly(createElement(AdminPage))} />
+          {/* 纯后台：仅管理员 */}
+          <Route path="/admin" element={adminOnly(createElement(AdminPage))} />
 
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-    </Routes>
+          <Route path="*" element={<NotFoundPage />} />
+        </Route>
+      </Routes>
+    </Suspense>
   );
 }
 

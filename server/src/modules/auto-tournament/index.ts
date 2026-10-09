@@ -90,7 +90,7 @@ const definition: ModuleDefinition = {
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
       S.lastIdle = msg;
-      ctx.log.info("报名赛事", msg);
+      ctx.log.debug("报名赛事", msg);
     };
 
     /** 查公会职位（缓存 10 分钟） */

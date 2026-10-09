@@ -187,11 +187,15 @@ export class RunnerRegistry {
     return { started, failed };
   }
 
-  /** 优雅关闭：停掉所有账号 */
+  /**
+   * 优雅关闭：停掉所有账号。
+   *
+   * ★ 并发停而不是串行：单个 stop 最多等 2 秒（等在飞的请求退出），
+   *   串行时 50 个账号就要 100 秒 —— 远超关闭预算，会被 SIGKILL 掉，
+   *   于是状态写不回、日志落不了库、WAL 也不做 checkpoint。
+   */
   async stopAll(): Promise<void> {
-    for (const rt of this.list()) {
-      await rt.stop("服务关闭").catch(() => {});
-    }
+    await Promise.allSettled(this.list().map((rt) => rt.stop("服务关闭")));
   }
 
   /**

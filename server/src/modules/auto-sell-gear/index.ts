@@ -141,7 +141,7 @@ const definition: ModuleDefinition = {
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
       S.lastIdle = msg;
-      ctx.log.info("卖装备", msg);
+      ctx.log.debug("卖装备", msg);
     };
 
     const label = (r: unknown) => rarityLabel(r);

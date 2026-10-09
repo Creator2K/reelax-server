@@ -205,7 +205,7 @@ const definition: ModuleDefinition = {
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
       S.lastIdle = msg;
-      ctx.log.info("自动Buff", msg);
+      ctx.log.debug("自动Buff", msg);
     };
     const warnOnce = (key: string, msg: string) => {
       if (S.warned.has(key)) return;

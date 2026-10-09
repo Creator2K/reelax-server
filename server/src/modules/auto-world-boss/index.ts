@@ -54,7 +54,7 @@ const definition: ModuleDefinition = {
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
       S.lastIdle = msg;
-      ctx.log.info("围猎参战", msg);
+      ctx.log.debug("围猎参战", msg);
     };
 
     const run = async (trigger: string) => {
