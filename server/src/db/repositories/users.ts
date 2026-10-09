@@ -40,6 +40,21 @@ export class UsersRepo extends BaseRepo {
     return Number(r?.c ?? 0);
   }
 
+  /**
+   * 最近活跃人数（有登录记录且晚于 since）。
+   *
+   * ★ 为什么要在数据库里数：管理概览的用户列表接口是分页的（默认 100 条），
+   *   前端拿这 ≤100 行去 filter，用户超过 100 之后「近 7 天活跃」会静默少算，
+   *   和同一屏上「用户总数」对不上。
+   */
+  countActiveSince(since: number): number {
+    const r = this.db.get<{ c: number }>(
+      "SELECT count(*) AS c FROM users WHERE last_login_at IS NOT NULL AND last_login_at > ?",
+      since,
+    );
+    return Number(r?.c ?? 0);
+  }
+
   findById(id: string): UserRow | undefined {
     return this.db.get<UserRow>("SELECT * FROM users WHERE id = ?", id);
   }

@@ -38,7 +38,7 @@ type AdminUsersResponse = {
     lastLoginAt: number | null;
     accountCount?: number;
   }[];
-  counts: { total: number; pending: number; approved: number; banned: number };
+  counts: { total: number; pending: number; approved: number; banned: number; admins: number; activeRecently: number };
 };
 
 type InviteRow = {
@@ -148,15 +148,17 @@ export function DashboardTab({
   const sys = sysQ.data;
   const audit = auditQ.data ?? [];
 
-  const admins = users.filter((u) => u.role === "admin");
-  const normalUsers = users.filter((u) => u.role !== "admin");
+  // ★ 「管理员」「近 7 天活跃」必须用后端的 COUNT 结果：
+  //   用户列表接口是分页的（默认 100 条），拿返回行去 filter 会在用户超过 100 之后
+  //   静默少算，同一屏上就会出现「用户总数 137 / 管理员 0」这种自相矛盾的数字。
+  const admins = counts?.admins ?? users.filter((u) => u.role === "admin").length;
+  const normalUsers = Math.max(0, (counts?.total ?? users.length) - admins);
   const totalAccounts = sys?.runtime.totalAccounts ?? 0;
   const usableInvites = invites.filter(
     (i) => i.used_count < i.max_uses && (i.expires_at == null || i.expires_at > Date.now()),
   );
-  // 最近 7 天内的活跃（有登录记录）
-  const weekAgo = Date.now() - 7 * 86_400_000;
-  const activeRecently = users.filter((u) => (u.lastLoginAt ?? 0) > weekAgo).length;
+  const activeRecently =
+    counts?.activeRecently ?? users.filter((u) => (u.lastLoginAt ?? 0) > Date.now() - 7 * 86_400_000).length;
 
   return (
     <div className="space-y-4">
@@ -193,8 +195,8 @@ export function DashboardTab({
           label="管理员"
           icon={<IconKey className="size-3.5" />}
           tone="accent"
-          value={<CountingNumber number={admins.length} />}
-          hint={`普通用户 ${normalUsers.length} 人`}
+          value={<CountingNumber number={admins} />}
+          hint={`普通用户 ${normalUsers} 人`}
           delay={0.12}
         />
       </div>

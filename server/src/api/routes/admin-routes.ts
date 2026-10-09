@@ -107,6 +107,9 @@ export function createAdminRouter(deps: {
         pending: deps.repos.users.countByStatus("pending"),
         approved: deps.repos.users.countByStatus("approved"),
         banned: deps.repos.users.countByStatus("banned"),
+        // 供概览直接展示：不能靠分页返回的 ≤100 行去数（会静默少算）
+        admins: deps.repos.users.countAdmins(),
+        activeRecently: deps.repos.users.countActiveSince(Date.now() - 7 * 86_400_000),
       },
     });
   });

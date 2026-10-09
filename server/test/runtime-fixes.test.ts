@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildFullApp, type FullApp } from "./helpers/full-app.ts";
 import type { ModuleDefinition } from "../src/modules/types.ts";
 import { statIndex } from "../src/modules/auto-stats/index.ts";
+import { isReportDue, parseReportAt } from "../src/modules/daily-digest/index.ts";
 
 let app: FullApp;
 let admin: ReturnType<FullApp["seedApprovedUser"]>;
@@ -176,6 +177,27 @@ describe("登录限流不能被伪造的 X-Forwarded-For 绕过", () => {
     } finally {
       await proxyApp.close();
     }
+  });
+});
+
+describe("日报发送时刻（曾经「错过那一分钟就整天不发」）", () => {
+  it("非法时间返回 null，而不是静默变成 00:00（半夜发）", () => {
+    expect(parseReportAt("09:00")).toEqual({ hh: 9, mm: 0 });
+    expect(parseReportAt("9:05")).toEqual({ hh: 9, mm: 5 });
+    expect(parseReportAt("23:59")).toEqual({ hh: 23, mm: 59 });
+    expect(parseReportAt("24:00")).toBeNull();
+    expect(parseReportAt("09:60")).toBeNull();
+    expect(parseReportAt("9点")).toBeNull();
+    expect(parseReportAt("")).toBeNull();
+    expect(parseReportAt(undefined)).toBeNull();
+  });
+
+  it("★ 过了设定时刻也算「到点」（重启/卡顿错过后当天仍会补发）", () => {
+    const at = { hh: 9, mm: 0 };
+    expect(isReportDue(new Date(2026, 9, 10, 8, 59), at)).toBe(false);
+    expect(isReportDue(new Date(2026, 9, 10, 9, 0), at)).toBe(true);
+    expect(isReportDue(new Date(2026, 9, 10, 9, 31), at)).toBe(true);
+    expect(isReportDue(new Date(2026, 9, 10, 23, 59), at)).toBe(true);
   });
 });
 

@@ -142,29 +142,59 @@ const definition: ModuleDefinition = {
     ctx.schedule(40_000, () => poll());
 
     /* ---------- 每天到点产出日报 ---------- */
+    const reportAt = parseReportAt(ctx.config.reportAt);
+    if (!reportAt) {
+      ctx.log.warn(
+        "收益日报",
+        `发送时间「${String(ctx.config.reportAt ?? "")}」不是 HH:MM 格式，暂时按 09:00 处理`,
+      );
+    }
+    const at = reportAt ?? { hh: 9, mm: 0 };
+
     ctx.every(60_000, async () => {
       if (S.busy) return;
       const now = new Date();
-      const [hh, mm] = String(ctx.config.reportAt ?? "09:00")
-        .split(":")
-        .map((x) => parseInt(x, 10) || 0);
-      if (now.getHours() !== hh || now.getMinutes() !== mm) return;
+      // ★ 判据是「已经到点且今天还没发」，不是「分钟数正好等于设定值」。
+      //   严格相等时，如果报告那一分钟正好在重启（每次部署都会重启）/事件循环卡顿，
+      //   这一天就整天不发了，而且没有任何提示 —— 现在最晚当天 23:59 前都会补发。
+      if (!isReportDue(now, at)) return;
 
       const stamp = localDay(now);
       if (S.lastReport === stamp) return;
-      S.lastReport = stamp;
 
       S.busy = true;
       try {
         await buildReport(ctx, stamp, S);
+        // 成功后才记账：失败（例如游戏接口临时抽风）下一分钟还会再试一次
+        S.lastReport = stamp;
       } catch (err) {
-        ctx.log.warn("收益日报", `生成失败：${err instanceof Error ? err.message : String(err)}`);
+        ctx.log.warn("收益日报", `生成失败（稍后重试）：${err instanceof Error ? err.message : String(err)}`);
       } finally {
         S.busy = false;
       }
     });
   },
 };
+
+/**
+ * 解析「每天几点发」（HH:MM）。
+ *
+ * 非法值返回 null 而不是静默变成 0：早期用 `parseInt(x) || 0`，
+ * 于是把「9点」这种输入当成 00:00，日报会在半夜发且没有任何提示。
+ */
+export function parseReportAt(raw: unknown): { hh: number; mm: number } | null {
+  const m = /^(\d{1,2}):(\d{1,2})$/.exec(String(raw ?? "").trim());
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isInteger(hh) || !Number.isInteger(mm) || hh > 23 || mm > 59) return null;
+  return { hh, mm };
+}
+
+/** 是否已经过了今天的发送时刻（含「已经过了」——错过也能补发） */
+export function isReportDue(now: Date, at: { hh: number; mm: number }): boolean {
+  return now.getHours() * 60 + now.getMinutes() >= at.hh * 60 + at.mm;
+}
 
 /** 收集一条日报需要的全部数据 */
 async function collectDigestData(ctx: ModuleContext, stamp: string, S: DigestState): Promise<DigestData> {
