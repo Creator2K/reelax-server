@@ -76,10 +76,6 @@ curl -s http://127.0.0.1:8580/api/health
 # 重启（账号会按 autoStart 自动恢复）
 docker compose restart app
 
-# 升级
-git pull
-docker compose up -d --build
-
 # 进容器排查
 docker compose exec app sh
 docker compose exec app node -e "
@@ -91,15 +87,55 @@ docker compose exec app node -e "
 "
 ```
 
+### 在线更新
+
+两种方式：
+
+**A. 界面一键更新（需要 updater）**
+
+```bash
+# 1) .env 里配好（私有仓库必需 token）
+#    GITHUB_TOKEN=ghp_xxx
+#    REELAX_UPDATER_URL=http://updater:9000
+#    REELAX_PROJECT_DIR=/绝对路径/到/reelax-server
+
+# 2) 带 profile 起服务
+docker compose --profile update up -d --build
+```
+
+之后在「管理 → 系统 → 在线更新」点按钮。updater 会执行：
+`git pull --ff-only` → `docker compose up -d --build app`（把新提交烧进镜像）→ app 重启。
+
+**B. 宿主机脚本**：`./scripts/update.sh` 或 `.\scripts\update.ps1`
+
+**实现要点（排障时会用到）**：
+
+- updater 是唯一挂了 `docker.sock` 的容器；app 本身不具备改代码的能力
+- **compose 项目名必须一致**：`docker-compose.yml` 顶部用 `name: reelax-server` 固定，
+  updater 也注入同名 `COMPOSE_PROJECT_NAME`。否则 updater 会从 `/project` 推导出
+  项目名 `project`，去新建一套容器/网络/卷，并在 `container_name` 上撞车
+  （症状：`Container name "/reelax-server" is already in use`）
+- 私有仓库的 `git pull` 靠 `GITHUB_TOKEN`，通过一次性 `http.extraheader` 注入
+  （**不写进 remote URL**，否则 token 会留在挂载进容器的 `.git/config` 里）
+- 版本显示靠构建参数：镜像里没有 `.git`，所以把提交号用
+  `ARG APP_COMMIT` 烧进镜像；updater 在 pull 之后把确切提交传给构建
+
+### 推送通道
+
+- **Server酱**：填 SendKey 即可（添加时会先发一条测试消息验证，填错会拒绝保存）
+- **微信机器人**：添加后扫码登录 → 用微信给机器人发一条消息完成绑定
+- 微信凭证存放在 `DATA_DIR/wechat-creds/<通道id>/`，**跟着数据卷一起备份**
+- 同一个微信号同时只能有一个机器人在轮询（否则消息游标互相覆盖、两边都丢消息）
+
 **服务自动做的维护**（不需要你配 cron）：
 
 - 每 5 分钟 `wal_checkpoint(TRUNCATE)`，防 WAL 无界增长
 - 每小时清理过期登录会话、超过 `LOG_RETENTION_DAYS` 的日志、180 天前的审计事件
 - 每用户日志上限 2 万条（超出删最旧）
-- 启动时对数据库做一次 `VACUUM INTO` 快照，保留最近 3 份
+- 启动时对数据库做一次 `VACUUM INTO` 快照，保留最近 3 份（**迁移前也会备份**）
 
 **优雅关闭**：容器用 `tini` 作 PID 1 转发信号，收到 `SIGTERM` 后会
-先停全部引擎（把状态与统计写回数据库），再关 HTTP 与数据库。
+先停全部引擎（把状态与统计写回数据库），再关推送、WS 与数据库。
 `docker stop` 默认给 10 秒，超时会强杀 —— 本服务的关闭流程远快于此。
 
 ---
