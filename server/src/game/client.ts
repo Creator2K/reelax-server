@@ -88,8 +88,6 @@ export class GameClient {
   serverTimeOffset = 0;
   player: PlayerSnapshot | null = null;
   publicIdentity: { publicId?: string } | null = null;
-  lastRequestAt = 0;
-  consecutiveErrors = 0;
 
   private dispatcher: Dispatcher | undefined;
   private onLog: GameClientOptions["onLog"];
@@ -262,17 +260,14 @@ export class GameClient {
       try {
         resp = await this.raw(path, { method, headers, body: opts.body !== undefined ? bodyStr : undefined });
       } catch (err) {
-        this.consecutiveErrors++;
         throw this.toNetworkError(err, opts.timeoutMs);
       }
 
       const text = await resp.text().catch(() => "");
       const data = parseJsonLoose(text);
       this.absorb(resp, data);
-      this.lastRequestAt = Date.now();
 
       if (resp.ok) {
-        this.consecutiveErrors = 0;
         return data;
       }
 

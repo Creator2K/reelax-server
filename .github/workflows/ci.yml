@@ -40,6 +40,42 @@ jobs:
       - name: 构建前端
         run: npm run build
 
+      # ★ 之前 CI 完全不碰 Docker：Dockerfile / compose 改坏了只有部署时才会发现。
+      #   这里真的构建镜像并让它跑起来探一次健康检查。
+      - name: 构建生产镜像
+        run: docker build --build-arg APP_COMMIT="${GITHUB_SHA}" -t reelax-ci-check .
+
+      - name: 校验 compose 配置
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          sed -i 's|^MASTER_KEY=$|MASTER_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef|' .env
+          docker compose -f docker-compose.yml config -q
+          rm -f .env
+
+      - name: 镜像冒烟运行（健康检查 + 鉴权）
+        run: |
+          set -euo pipefail
+          docker run -d --name reelax-ci -e MASTER_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef -p 18581:8580 reelax-ci-check
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18581/api/health > /dev/null 2>&1; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then
+            echo "镜像未在 60 秒内通过健康检查："
+            docker logs reelax-ci
+            docker rm -f reelax-ci
+            exit 1
+          fi
+          echo "--- /api/health ---"
+          curl -fsS http://127.0.0.1:18581/api/health
+          echo ""
+          echo "--- 未登录访问业务接口应为 401 ---"
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18581/api/accounts)
+          test "$code" = "401" && echo "鉴权 OK (401)"
+          docker rm -f reelax-ci
+
       # 冒烟：用生产模式起一遍完整服务，确认能启动、能建库、SPA 可访问
       - name: 冒烟启动（生产模式）
         env:

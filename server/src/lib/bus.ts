@@ -68,8 +68,6 @@ export const EVENTS = {
   MODULE_ERROR: "module:error",
   /** 结构化日报（daily-digest 触发），供通知渠道消费 */
   DIGEST: "digest",
-  /** 快照需要刷新（账号列表展示数据变化） */
-  SNAPSHOT_DIRTY: "snapshot:dirty",
 } as const;
 
 export type EventName = (typeof EVENTS)[keyof typeof EVENTS];

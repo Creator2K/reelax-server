@@ -35,7 +35,6 @@ import type { ChildLogger } from "../lib/logger.ts";
 import type { Bus } from "../lib/bus.ts";
 import { EVENTS } from "../lib/bus.ts";
 import { TimerPool, TtlCache } from "../lib/timers.ts";
-import { SerialRunner } from "../lib/timers.ts";
 import { clamp, jitter, parseTime, sleepUntil } from "../lib/util.ts";
 import { GameClient } from "./client.ts";
 import { GAME_ERROR_CODES, GameClientError } from "./errors.ts";
@@ -169,11 +168,16 @@ export class AccountRuntime {
   private moduleUnsubs = new Map<string, Array<() => void>>();
   private startErrors = new Map<string, string>();
   private abortRequested = false;
+  /**
+   * 启动代次：每次 start() +1，stop() 也 +1。
+   * 用来识别「启动过程中被停止」—— 否则启动流程会在停止之后继续跑下去：
+   * 把状态写成 online、把模块定时器挂到已经被清空的池子上、用已经关掉的代理连接。
+   */
+  private startEpoch = 0;
   /** 上次真正写库的 (status, lastError) 指纹，用于跳过无意义的重复写 */
   private persistedStatusKey: string | null = null;
   private loopPromise: Promise<void> | null = null;
   private proxyHolder: ProxyDispatcherHolder;
-  private runSerial: SerialRunner;
 
   /** 缓存的展示数据 */
   private biomesCache = new TtlCache<Map<string, any>>(BIOMES_TTL_MS);
@@ -200,10 +204,6 @@ export class AccountRuntime {
     // 定时器池：账号停止时统一清理，异步错误进日志
     this.timers = new TimerPool((err) => {
       this.log.error("定时器", `任务失败：${err instanceof Error ? err.message : String(err)}`);
-    });
-
-    this.runSerial = new SerialRunner((err) => {
-      this.log.error("运行时", `任务异常：${err instanceof Error ? err.message : String(err)}`);
     });
 
     // 代理：账号自己的优先，其次全局兜底
@@ -348,7 +348,6 @@ export class AccountRuntime {
     this.lastError = message;
     this.bus.emit(EVENTS.ACCOUNT_ERROR, { accountId: this.accountId, userId: this.userId, message });
   }
-
   /** 同一 run 增量合并，并保留 state 有而 sync 无的字段 */
   reportRun(run: RunSnapshot | null | undefined): void {
     if (!run) return;
@@ -629,6 +628,7 @@ export class AccountRuntime {
   async start(): Promise<void> {
     if (this.status === "online" || this.status === "starting") return;
     this.abortRequested = false;
+    const epoch = ++this.startEpoch;
     this.setStatus("starting", null);
     this.startedAt = Date.now();
     this.stats.startedAt = this.startedAt;
@@ -652,8 +652,15 @@ export class AccountRuntime {
       throw err;
     }
 
+    // 这段等 Session 的时间里用户可能已经点了停止 → 放弃本次启动，别把账号「复活」
+    if (this.startCancelled(epoch)) return;
+
     // 启动模块
     await this.startModules();
+    if (this.startCancelled(epoch)) {
+      await this.cancelStart();
+      return;
+    }
 
     // 启动节拍循环（只有启用了 keep-online 才真正跑钓鱼）
     const keepOnlineDef = getModule("keep-online");
@@ -672,6 +679,8 @@ export class AccountRuntime {
 
   async stop(reason = "手动停止"): Promise<void> {
     if (this.status === "stopped") return;
+    // 让任何正在进行的 start() 失效（见 startEpoch 的注释）
+    this.startEpoch++;
     this.log.info("会话", `停止账号「${this.label}」：${reason}`);
     this.abortRequested = true;
 
@@ -697,6 +706,21 @@ export class AccountRuntime {
     return this.abortRequested || this.status === "stopped";
   }
 
+  /** 这次启动是否已经被 stop() 作废 */
+  private startCancelled(epoch: number): boolean {
+    return epoch !== this.startEpoch || this.abortRequested;
+  }
+
+  /**
+   * 启动过程中被停止：把这次启动已经拉起来的模块与定时器收干净。
+   * 状态不在这里写：stop() 已经写成 stopped；如果期间又有新的 start() 接手，
+   * 那么状态归那次启动管（这里覆盖会把新启动写坏）。
+   */
+  private async cancelStart(): Promise<void> {
+    for (const id of [...this.instances.keys()]) await this.stopModule(id);
+    this.timers.clear();
+  }
+
   /** 保持在线主循环 */
   private async tickLoop(): Promise<void> {
     let backoffIdx = 0;
@@ -712,6 +736,8 @@ export class AccountRuntime {
     while (!this.isAborted()) {
       try {
         const st = await this.client.fishingState();
+        // 这次请求期间可能已经被停止（stop 最多只等 2 秒就会返回）
+        if (this.isAborted()) return;
         this.reportOnlineCount(st?.onlinePlayerCount);
         await this.refreshDisplayData();
         this.reportStatusPanel(buildStatusPanel(st, this));
@@ -754,6 +780,10 @@ export class AccountRuntime {
         // 3. 同步（run 换代时用 missing，与官方客户端一致）
         const key = keyRunId === run.id ? snapshotKey : "missing";
         const resp = await this.client.fishingSync(key);
+        // ★ 关键：同步期间被停止时不能再往下走 —— 下面会 setStatus("online")，
+        //   而那时 stop() 早已把状态写成 stopped 并返回，账号于是变成
+        //   「显示在线、其实没在钓、还占着一个全局并发名额」的僵尸状态。
+        if (this.isAborted()) return;
         if (resp?.run) {
           if (resp.run.snapshotKey) snapshotKey = resp.run.snapshotKey;
           keyRunId = resp.run.id;

@@ -33,7 +33,6 @@ export type RunnerRegistryDeps = {
 export class RunnerRegistry {
   private runners = new Map<string, AccountRuntime>();
   private deps: RunnerRegistryDeps;
-  private starting = 0;
 
   constructor(deps: RunnerRegistryDeps) {
     this.deps = deps;
