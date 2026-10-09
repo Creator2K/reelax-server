@@ -26,7 +26,9 @@ type FakeBot = {
   onMessage: (fn: (msg: unknown) => void) => void;
   /** 服务现在是分两步调用 login() + start()（而不是 run()），好给连接阶段单独加超时 */
   login: (opts?: unknown) => Promise<void>;
+  /** start() 是长轮询循环：会一直跑到 stop()，所以服务不 await 它 */
   start: () => Promise<void>;
+  isRunning: boolean;
   run: (opts?: unknown) => Promise<void>;
   stop: () => void;
 };
@@ -40,6 +42,8 @@ function makeHarness(opts: { failRuns?: number; failMode?: "login" | "start" } =
 
   const bots: FakeBot[] = [];
   let runAttempts = 0;
+  /** start() 挂起的 resolver：stop() 时放行，模拟真实 SDK 的长轮询 */
+  const stopResolvers: (() => void)[] = [];
 
   const botFactory = async () => {
     const bot: FakeBot = {
@@ -63,17 +67,24 @@ function makeHarness(opts: { failRuns?: number; failMode?: "login" | "start" } =
           throw new Error("The operation was aborted due to timeout");
         }
       },
-      async start() {
-        const shouldFail = opts.failRuns && runAttempts <= opts.failRuns;
-        if (shouldFail && opts.failMode === "start") {
-          throw new Error("start 阶段超时");
-        }
+      // 真实 SDK 里 start() 是长轮询：一直 await 到 stop()，所以这里也返回一个不 resolve 的 Promise
+      start() {
+        // 立刻置为在跑（真实 SDK 的 isRunning 也是 poller 启动后即为 true）
+        bot.isRunning = true;
+        return new Promise<void>((resolve) => {
+          stopResolvers.push(resolve);
+        });
       },
       async run() {
         await bot.login();
-        await bot.start();
+        void bot.start();
       },
-      stop() {},
+      stop() {
+        bot.isRunning = false;
+        // 让挂起的 start() 结束，模拟真实 SDK 的 stop() 行为
+        for (const r of stopResolvers.splice(0)) r();
+      },
+      isRunning: false,
     };
     bots.push(bot);
     return bot;
@@ -117,6 +128,24 @@ function seedWechat(repos: Repos, dataDir: string) {
 }
 
 describe("微信通道 · 连接失败与重试", () => {
+  it("★ start() 是长轮询（永不 resolve）时也必须连接成功", async () => {
+    // 这是踩过的坑：start() 内部 await poller.start()，要一直跑到 stop() 才返回。
+    // 早期把它包进超时并 await —— 15 秒后必然报"启动超时"，通道永远连不上。
+    // 这条测试用一个永不 resolve 的 start() 守住它。
+    const h = makeHarness();
+    const { channel: ch } = seedWechat(h.repos, h.dataDir);
+
+    const done = h.notify.restoreAll();
+    // start() 永不返回，所以不能 await restoreAll 本身等到"全部结束"——
+    // 给足够时间让它走完 login + 启动确认即可。
+    await Promise.race([done, new Promise((r) => setTimeout(r, 3000))]);
+
+    const after = h.repos.notify.findById(ch.id)!;
+    expect(after.status).not.toBe("error");
+    expect(after.status).toBe("online");
+    expect(h.bots[0]!.isRunning).toBe(true);
+  });
+
   it("★ 启动失败会重试，成功后状态是「已登录」（不再是自相矛盾的 bound）", async () => {
     const h = makeHarness({ failRuns: 1 });
     const { channel: ch } = seedWechat(h.repos, h.dataDir);
@@ -143,8 +172,7 @@ describe("微信通道 · 连接失败与重试", () => {
     expect(after.status_detail).toBeTruthy();
   });
 
-  it("失败后 send 会现场重连，而不是直接报「微信未登录」", async () => {
-    const h = makeHarness({ failRuns: 1 });
+  it("失败后 send 会现场重连，而不是直接报「微信未登录」", async () => {    const h = makeHarness({ failRuns: 1 });
     const { channel: ch, userId } = seedWechat(h.repos, h.dataDir);
     // 先绑定一个接收人（模拟历史数据）
     h.repos.notify.setRuntime(ch.id, { targetId: "user-1", status: "bound" });

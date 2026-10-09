@@ -1,0 +1,22 @@
+fix: 微信连不上的真正原因 —— start() 是长轮询，不能 await
+
+上一版把 bot.run() 拆成 login() + start() 并给 start() 套了 15 秒超时，
+结果 3 次重试全是「启动微信机器人超时」，通道永远连不上。
+
+看 SDK 实现才发现：
+
+    async start() {
+      this.runPromise = this.poller.start(...);
+      await this.runPromise;   // ← 一直等到 stop() 才返回
+    }
+
+也就是说 start() 就是那个长轮询循环本身，正常情况下永远不会 resolve。
+给它包超时是错的。
+
+正确做法：
+- login() 是「连接并校验凭证」：要等，且保留 45 秒超时
+- start() 只是把轮询跑起来：不 await，改用 isRunning 确认它真的起来了
+- start() 的错误单独 catch（否则是未处理的 rejection）；
+  轮询中断时清掉实例并把原因写进状态，下次发送或重连会重建
+
+新增回归测试：用一个永不 resolve 的 start() 守住这个坑。

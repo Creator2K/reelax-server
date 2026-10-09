@@ -392,14 +392,36 @@ export class NotifyService {
           bot.onMessage((msg: any) => void handleMessage(bot, ch, msg));
 
           /*
-           * 分两步（而不是 bot.run()）：run() = login() + start()。
-           * 分开调用才能给"连接/校验凭证"这一步单独加超时 ——
-           * SDK 内部的 HTTP 没有超时，实测会永远挂住。
-           * 扫码等待发生在 login() 期间，由 onQrUrl 回调驱动；
-           * 已保存凭证时 login() 只做一次校验请求，应当很快返回。
+           * ★ 分两步调用，且**不能 await start()**。
+           *
+           * 看 SDK 实现：start() 内部是
+           *     this.runPromise = this.poller.start(...); await this.runPromise;
+           * 它要一直 await 到 stop() 才返回 —— 也就是说 start() **就是那个长轮询循环本身**，
+           * 正常情况下永远不会 resolve。
+           *
+           * 之前把 start() 包进 withTimeout 是错的：15 秒后必然报"启动超时"，
+           * 于是通道永远连不上（实测 3 次重试全是这个错）。
+           *
+           * 正确做法：login() 是"连接并校验凭证"（要等，且有超时）；
+           *          start() 只是把轮询跑起来，所以不 await，改为轮询后用
+           *          isRunning 确认它真的起来了。
            */
           await withTimeout(bot.login({ callbacks: callbacksFor(ch.id, ch.label, ch.user_id) }), CONNECT_TIMEOUT_MS, "连接微信");
-          await withTimeout(bot.start(), 15_000, "启动微信机器人");
+
+          // 不 await：start() 会一直跑到 stop()。错误在这里单独捕获，避免变成未处理的 rejection。
+          void Promise.resolve(bot.start()).catch((err: unknown) => {
+            const m = err instanceof Error ? err.message : String(err);
+            log.warn("推送", `[${ch.label}] 微信轮询中断：${m}`, { userId: ch.user_id });
+            // 轮询中断说明实例已不可用：清掉它，下次发送或重连会重建
+            if (bots.get(ch.id) === bot) bots.delete(ch.id);
+            setRuntime(ch.id, { status: "error", statusDetail: "与微信的连接中断，可点「重新连接」", lastError: `轮询中断：${m}` });
+          });
+
+          // 给轮询一点启动时间，然后确认它真的在跑
+          await sleep(600);
+          if (bot.isRunning === false) {
+            throw new Error("微信轮询未能启动");
+          }
 
           const live = repos.notify.findById(ch.id);
           if (!live) {
