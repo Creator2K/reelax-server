@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/input.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { ModulePreview } from "@/components/domain/ModulePreview.tsx";
+import { TemplateFieldEditor } from "@/components/domain/TemplateFieldEditor.tsx";
 import { cn } from "@/lib/utils.ts";
 
 export type ModuleFormProps = {
@@ -274,6 +275,17 @@ function Field({
         </div>
       );
     }
+
+    case "template":
+      return (
+        <TemplateFieldEditor
+          // ConfigField 的联合类型在这里已经收窄到 template
+          field={field}
+          value={value}
+          {...(disabled !== undefined ? { disabled } : {})}
+          onChange={(v) => onChange(v)}
+        />
+      );
 
     case "string":
       return (

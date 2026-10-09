@@ -39,12 +39,30 @@ export type SelectField = ConfigFieldBase & {
 };
 /**
  * 多选：值是一组字符串 id。
- * 用于「从固定清单里挑几项」的配置（例如日报要包含哪些内容）。
+ * 用于「从固定清单里挑几项」的配置（例如哪些通知要开）。
  */
 export type MultiSelectField = ConfigFieldBase & {
   type: "multi-select";
   default: string[];
   options: { value: string; label: string; hint?: string }[];
+};
+
+/**
+ * 模板：一段带 {变量} 占位符的文本。
+ *
+ * 与 textarea 的区别在前端：模板会额外渲染「可插入的变量按钮」与实时预览，
+ * 变量清单由服务端提供（见 modules/daily-digest/template.ts），
+ * 所以新增变量不需要改前端。
+ */
+export type TemplateField = ConfigFieldBase & {
+  type: "template";
+  default: string;
+  placeholder?: string;
+  rows?: number;
+  /** 变量清单的分组（由服务端填充，前端只负责渲染按钮） */
+  vars?: { group: string; vars: { name: string; desc: string; token: string }[] }[];
+  /** 「恢复默认模板」用的内容 */
+  defaultTemplate?: string;
 };
 
 export type ConfigField =
@@ -53,7 +71,8 @@ export type ConfigField =
   | StringField
   | TextareaField
   | SelectField
-  | MultiSelectField;
+  | MultiSelectField
+  | TemplateField;
 
 export type ConfigValues = Record<string, unknown>;
 
@@ -95,6 +114,15 @@ export type ModuleDefinition = {
    * 为 true 时，用户没有任何可用推送通道就不允许启用/配置它。
    */
   requiresNotification?: boolean;
+  /**
+   * 模板类配置项的变量清单（按分组）。
+   *
+   * 由模块自己声明，registry 在下发 configSchema 时注入到 template 字段上 ——
+   * 前端因此只需要渲染「可插入的变量按钮」，新增变量不用改前端。
+   */
+  templateVars?: { group: string; vars: { name: string; desc: string; token: string }[] }[];
+  /** 「恢复默认模板」的内容 */
+  defaultTemplate?: string;
   /**
    * 启动前检查。抛错则本模块不启动，错误会显示在账号详情页的模块卡片上。
    * 用于「缺前置条件就别开」的场景（例如与官方航线助手硬冲突）。
@@ -157,7 +185,8 @@ export function resolveModuleConfig(
         break;
       }
       case "string":
-      case "textarea": {
+      case "textarea":
+      case "template": {
         if (typeof raw !== "string") {
           issues.push({ key: field.key, message: "应为字符串", value: raw });
           merged[field.key] = field.default;
@@ -255,8 +284,11 @@ export function validateConfigPatch(
       }
       case "string":
       case "textarea":
+      case "template":
         if (typeof v !== "string") errors.push({ key: k, message: "应为字符串", value: v });
         else if (field.type === "string" && v.length > 200) errors.push({ key: k, message: "过长", value: v });
+        // 模板允许长一点，但不能无限长（消息有长度限制）
+        else if (field.type === "template" && v.length > 4000) errors.push({ key: k, message: "模板过长（上限 4000 字）", value: v.length });
         else out[k] = v;
         break;
       case "select":

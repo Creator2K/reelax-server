@@ -8,7 +8,6 @@
 // 它们对应游戏里的具体物价/节奏（例如鱼饵 ID、专精保护阈值）。
 import { rarityOptions } from "./shared/rarity.ts";
 import type { ConfigField, ConfigValues, ModuleDefinition } from "./types.ts";
-
 import keepOnline from "./keep-online/index.ts";
 import dailyCheckin from "./daily-checkin/index.ts";
 import autoStats from "./auto-stats/index.ts";
@@ -60,7 +59,20 @@ export function moduleCatalog(opts?: {
     description: m.description,
     defaultEnabled: m.defaultEnabled,
     defaultConfig: m.defaultConfig,
-    configSchema: m.configSchema,
+    /**
+     * configSchema 直接下发，但模板字段要补上变量清单 ——
+     * 变量由**模块自己**声明（单一来源），这里只负责注入，
+     * 前端因此不需要硬编码任何变量名。
+     */
+    configSchema: m.configSchema.map((f) =>
+      f.type === "template"
+        ? ({
+            ...f,
+            vars: m.templateVars ?? [],
+            ...(m.defaultTemplate ? { defaultTemplate: m.defaultTemplate } : {}),
+          } as typeof f)
+        : f,
+    ),
     requiresNotification: Boolean(m.requiresNotification),
     unavailable: opts?.unavailableReason?.(m) ?? null,
   }));

@@ -17,6 +17,7 @@ export function Input({ className, type, ...props }: ComponentProps<"input">) {
   );
 }
 
+// React 19 起 ref 就是普通 prop，直接透传即可（不需要 forwardRef）
 export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
   return (
     <textarea

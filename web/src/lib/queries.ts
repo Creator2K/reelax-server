@@ -161,6 +161,21 @@ export type ConfigField =
       hint?: string;
       default?: string[];
       options: { value: string; label: string; hint?: string }[];
+    }
+  | {
+      /**
+       * 模板：一段带 {变量} 的文本。
+       * vars / defaultTemplate 由服务端注入（单一来源），前端只负责渲染按钮。
+       */
+      key: string;
+      type: "template";
+      label: string;
+      hint?: string;
+      default?: string;
+      placeholder?: string;
+      rows?: number;
+      vars?: { group: string; vars: { name: string; desc: string; token: string }[] }[];
+      defaultTemplate?: string;
     };
 
 export type ModuleDefinition = {
