@@ -1,12 +1,13 @@
-// 账号状态面板：地图 / 天气 / 经验八分区 / 等级资源 / 保底进度 / 船队 / 鱼饵
+// 账号状态面板：地图 / 天气 / 经验加成 / 等级与经验 / 转生 / 保底 / Buff
 //
-// 排版说明（对标 LDC StatCard 范式，来自 workbuddy-manager）：
-//  · 等级与资源用 bg-muted 圆角卡成网格，不再用「标签—值」两列对齐 ——
-//    后者在中文标签长度不一（等级 / 经验/升级 / 转生进度）时参差不齐
-//  · 数值用 tabular-nums，多卡并排时数字不抖
-//  · 经验进度、转生进度、保底进度都用进度条，而不是只给百分比/数字
+// 排版约定（对标 LDC StatCard 范式）：
+//  · 数值卡用 bg-muted 圆角底、无边框；数值 tabular-nums
+//  · 「进度」类信息一律给进度条（等级 / 经验 / 转生 / 保底），不只给数字
+//  · 经验分区标签**不能截断** —— 用整行的「标签  数值」两栏，放不下就换行
+//  · 顶部徽章已经写了地图/天气/鱼饵，面板里不再重复一遍鱼饵卡
 import {
   IconBolt,
+  IconChevronDown,
   IconCoins,
   IconFish,
   IconFlame,
@@ -22,9 +23,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.t
 import { Badge } from "@/components/ui/badge.tsx";
 import { Separator } from "@/components/ui/separator.tsx";
 import { StatCard, ProgressBar } from "@/components/domain/StatCard.tsx";
-import { CountingNumber } from "@/components/animate-ui/counting-number.tsx";
 import type { PityProgress, StatusPanel } from "@/lib/queries.ts";
 import { fmtNum, fmtPct, fmtRelative } from "@/lib/utils.ts";
+
+/** 等级上限（游戏内满级）。用于等级进度条。 */
+const MAX_LEVEL = 20_000;
 
 const SECTION_LABELS: Record<string, string> = {
   permanentBp: "地图专精 + 天赋",
@@ -46,7 +49,7 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
         </CardHeader>
         <CardContent>
           <p className="text-muted-foreground text-sm">
-            还没有状态数据。启动引擎后，这里会显示当前地图、天气、经验加成明细、等级资源与保底进度。
+            还没有状态数据。启动引擎后，这里会显示当前地图、天气、等级经验、转生进度与保底进度。
           </p>
         </CardContent>
       </Card>
@@ -55,6 +58,11 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
 
   const sections = panel.sections ?? {};
   const re = panel.reincarnation;
+  const level = panel.level ?? 0;
+  const xpPct =
+    panel.experience != null && panel.experienceToNextLevel
+      ? Math.round((panel.experience / panel.experienceToNextLevel) * 100)
+      : null;
 
   return (
     <Card className="gap-4">
@@ -67,7 +75,7 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* 地图 / 天气 / 鱼饵 / 船队 */}
+        {/* ---------- 顶部徽章：地图 / 天气 / 鱼饵 / 船队 ---------- */}
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline" className="gap-1 font-normal">
             <IconMapPin className="size-3" />
@@ -97,138 +105,135 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
           ) : null}
         </div>
 
-        {/* 经验八分区明细（只显示非零项，避免整屏 0%） */}
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-4">
-          {Object.entries(sections)
-            .filter(([, bp]) => Number(bp) !== 0)
-            .map(([key, bp]) => (
-              <div key={key} className="flex items-center justify-between gap-2">
-                <span className="text-muted-foreground truncate">{SECTION_LABELS[key] ?? key}</span>
-                <span className="mono-num shrink-0">{fmtPct(bp)}</span>
-              </div>
-            ))}
-          <div className="flex items-center justify-between gap-2 border-t pt-1.5 font-medium sm:col-span-4">
-            <span className="text-muted-foreground">经验总倍率</span>
-            <span className="mono-num">×{(panel.xpTotal ?? 1).toFixed(2)}</span>
+        {/* ---------- 等级与经验：都用进度条 ---------- */}
+        <div className="space-y-3">
+          {/* 等级：以游戏满级为上限 */}
+          <div className="space-y-1.5">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                <IconGauge className="size-3.5" />
+                等级
+              </span>
+              <span className="mono-num text-sm font-semibold">
+                Lv {fmtNum(level)}
+                <span className="text-muted-foreground ml-1 text-[11px] font-normal">
+                  / {fmtNum(MAX_LEVEL)}（{((level / MAX_LEVEL) * 100).toFixed(1)}%）
+                </span>
+              </span>
+            </div>
+            <ProgressBar value={level} max={MAX_LEVEL} tone={level >= MAX_LEVEL ? "success" : "info"} />
+          </div>
+
+          {/* 经验：距下一级 */}
+          <div className="space-y-1.5">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                <IconTrendingUp className="size-3.5" />
+                经验进度
+              </span>
+              <span className="mono-num text-sm font-semibold">
+                {xpPct != null ? `${xpPct}%` : "—"}
+                {panel.experience != null && panel.experienceToNextLevel ? (
+                  <span className="text-muted-foreground ml-1 text-[11px] font-normal">
+                    {fmtNum(panel.experience)} / {fmtNum(panel.experienceToNextLevel)}
+                  </span>
+                ) : null}
+              </span>
+            </div>
+            <ProgressBar
+              value={panel.experience ?? 0}
+              max={panel.experienceToNextLevel ?? 1}
+              tone={xpPct != null && xpPct >= 90 ? "success" : "info"}
+            />
           </div>
         </div>
 
-        {/* Buff */}
-        {panel.buffs.length ? (
-          <>
-            <Separator />
-            <div className="flex flex-wrap gap-1.5">
-              {panel.buffs.map((b, i) => (
-                <Badge key={`${b.tag}-${i}`} variant="warn" className="gap-1 font-normal">
-                  <IconFlame className="size-3" />
-                  {b.tag} <span className="mono-num">+{fmtPct(b.bp)}</span>
-                  {b.endsAt ? <span className="opacity-70">· {fmtRelative(Date.parse(b.endsAt))}结束</span> : null}
-                </Badge>
-              ))}
-            </div>
-          </>
-        ) : null}
-
-        {/* 公会经验增益落点 */}
-        {panel.guildBoosts.length ? (
-          <>
-            <Separator />
-            <div className="space-y-1.5 text-xs">
-              <div className="text-muted-foreground">公会经验增益落在哪张图</div>
-              {panel.guildBoosts.map((g, i) => (
-                <div key={`${g.biomeId}-${i}`} className="flex items-center justify-between gap-2">
-                  <span className="truncate">{g.name}</span>
-                  <span className="mono-num text-muted-foreground shrink-0">
-                    +{fmtPct(g.bp)}
-                    {g.endsAt ? ` · ${fmtRelative(Date.parse(g.endsAt))}结束` : ""}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </>
-        ) : null}
-
-        {/* 等级与资源：圆角底卡网格 */}
-        <Separator />
-        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-          <StatCard
-            label="等级"
-            icon={<IconGauge className="size-3.5" />}
-            value={panel.level ? <CountingNumber number={panel.level} /> : "—"}
-            hint={re?.requiredLevel ? `转生需 Lv ${fmtNum(re.requiredLevel)}` : undefined}
-          />
-          <StatCard
-            label="经验进度"
-            icon={<IconTrendingUp className="size-3.5" />}
-            tone="info"
-            value={
-              panel.experience != null && panel.experienceToNextLevel
-                ? `${Math.round((panel.experience / panel.experienceToNextLevel) * 100)}%`
-                : "—"
-            }
-            hint={
-              panel.experienceToNextLevel && panel.experience != null
-                ? `${fmtNum(panel.experience)} / ${fmtNum(panel.experienceToNextLevel)}`
-                : undefined
-            }
-            delay={0.04}
-          />
+        {/* ---------- 资源卡：金币 / 遗物 / 碎片（鱼饵已在顶部徽章里） ---------- */}
+        <div className="grid grid-cols-3 gap-2.5">
           <StatCard
             label="金币"
             icon={<IconCoins className="size-3.5" />}
             tone="warning"
             value={panel.gold != null ? fmtNum(panel.gold) : "—"}
-            delay={0.08}
           />
           <StatCard
             label="遗物"
             icon={<IconSparkles className="size-3.5" />}
             tone="accent"
             value={panel.relics != null ? fmtNum(panel.relics) : "—"}
-            delay={0.12}
+            delay={0.04}
           />
           <StatCard
             label="碎片"
             icon={<IconStar className="size-3.5" />}
             tone="accent"
             value={panel.fragments != null ? fmtNum(panel.fragments) : "—"}
-            delay={0.16}
-          />
-          <StatCard
-            label="当前鱼饵"
-            icon={<IconFish className="size-3.5" />}
-            value={<span className="text-base sm:text-lg">{panel.baitName ?? "—"}</span>}
-            hint={panel.baitUnitPrice ? `单价 ${fmtNum(panel.baitUnitPrice)} 金币` : undefined}
-            delay={0.2}
+            delay={0.08}
           />
         </div>
 
-        {/* 转生进度 */}
+        {/* ---------- 经验加成构成 ---------- */}
+        {Object.values(sections).some((bp) => Number(bp) !== 0) ? (
+          <>
+            <Separator />
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground text-xs">经验加成构成</span>
+                <span className="mono-num text-sm font-semibold">×{(panel.xpTotal ?? 1).toFixed(2)}</span>
+              </div>
+              {/* 两栏「标签 数值」，标签完整显示不截断 */}
+              <div className="grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+                {Object.entries(sections)
+                  .filter(([, bp]) => Number(bp) !== 0)
+                  .map(([key, bp]) => (
+                    <div key={key} className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">{SECTION_LABELS[key] ?? key}</span>
+                      <span className="mono-num shrink-0">{fmtPct(bp)}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </>
+        ) : null}
+
+        {/* ---------- 转生进度 ---------- */}
         {re ? (
           <>
             <Separator />
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="text-muted-foreground text-xs">转生进度</div>
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-muted-foreground text-xs">
+                  转生进度{panel.reincarnationRound ? `（第 ${panel.reincarnationRound} 轮）` : ""}
+                </span>
                 {re.eligible ? (
-                  <Badge variant="online">可以转生了</Badge>
+                  <Badge variant="online">条件已满，可以转生</Badge>
                 ) : re.awardedPoints ? (
                   <span className="text-muted-foreground text-[11px]">
-                    现可拿 <span className="mono-num text-foreground">{re.awardedPoints}</span> 天赋点
+                    现可拿 <span className="mono-num text-foreground font-medium">{re.awardedPoints}</span> 天赋点
                   </span>
                 ) : null}
               </div>
 
               {re.requiredLevel ? (
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-muted-foreground">还差等级</span>
+                <div className="space-y-1.5">
+                  <div className="flex items-baseline justify-between gap-2 text-xs">
+                    <span className="text-muted-foreground">等级要求</span>
                     <span className="mono-num">
-                      {re.levelShortfall && re.levelShortfall > 0 ? `${fmtNum(re.levelShortfall)} 级` : "已达标"}
+                      {re.levelShortfall && re.levelShortfall > 0 ? (
+                        <>
+                          还差 <span className="text-foreground font-semibold">{fmtNum(re.levelShortfall)}</span> 级
+                          <span className="text-muted-foreground ml-1.5 text-[11px]">
+                            （需 Lv {fmtNum(re.requiredLevel)}）
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-emerald-600 dark:text-emerald-400">已达标</span>
+                      )}
                     </span>
                   </div>
+                  {/* 用「目标等级 − 还差多少」算已完成部分，避免出现负进度 */}
                   <ProgressBar
-                    value={panel.level ?? 0}
+                    value={Math.max(0, re.requiredLevel - (re.levelShortfall ?? 0))}
                     max={re.requiredLevel}
                     tone={re.levelShortfall && re.levelShortfall > 0 ? "info" : "success"}
                   />
@@ -236,11 +241,20 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
               ) : null}
 
               {re.goldCost ? (
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-muted-foreground">还差金币</span>
+                <div className="space-y-1.5">
+                  <div className="flex items-baseline justify-between gap-2 text-xs">
+                    <span className="text-muted-foreground">金币要求</span>
                     <span className="mono-num">
-                      {re.goldShortfall && re.goldShortfall > 0 ? fmtNum(re.goldShortfall) : "已达标"}
+                      {re.goldShortfall && re.goldShortfall > 0 ? (
+                        <>
+                          还差 <span className="text-foreground font-semibold">{fmtNum(re.goldShortfall)}</span>
+                          <span className="text-muted-foreground ml-1.5 text-[11px]">
+                            （需 {fmtNum(re.goldCost)}）
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-emerald-600 dark:text-emerald-400">已达标</span>
+                      )}
                     </span>
                   </div>
                   <ProgressBar
@@ -254,11 +268,66 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
           </>
         ) : null}
 
-        {/* 保底进度 */}
+        {/* ---------- Buff：可折叠（有 buff 时才出现） ---------- */}
+        {panel.buffs.length ? (
+          <>
+            <Separator />
+            <details open className="group">
+              <summary className="text-muted-foreground flex cursor-pointer list-none items-center gap-1.5 text-xs">
+                <IconFlame className="size-3.5" />
+                当前增益 {panel.buffs.length} 项
+                <IconChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {panel.buffs.map((b, i) => (
+                  <Badge key={`${b.tag}-${i}`} variant="warn" className="gap-1 font-normal">
+                    {b.tag} <span className="mono-num">+{fmtPct(b.bp)}</span>
+                    {b.endsAt ? <span className="opacity-70">· {fmtRelative(Date.parse(b.endsAt))}结束</span> : null}
+                  </Badge>
+                ))}
+              </div>
+            </details>
+          </>
+        ) : null}
+
+        {/* ---------- 公会经验增益落点 ---------- */}
+        {panel.guildBoosts.length ? (
+          <>
+            <Separator />
+            <details open className="group">
+              <summary className="text-muted-foreground flex cursor-pointer list-none items-center gap-1.5 text-xs">
+                <IconChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
+                公会经验增益（{panel.guildBoosts.length} 张图）
+              </summary>
+              <div className="mt-2 space-y-1.5 text-xs">
+                {panel.guildBoosts.map((g, i) => (
+                  <div key={`${g.biomeId}-${i}`} className="flex items-center justify-between gap-3">
+                    <span>{g.name}</span>
+                    <span className="mono-num text-muted-foreground shrink-0">
+                      +{fmtPct(g.bp)}
+                      {g.endsAt ? ` · ${fmtRelative(Date.parse(g.endsAt))}结束` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          </>
+        ) : null}
+
+        {/* ---------- 保底进度 ---------- */}
         {panel.pity?.length ? (
           <>
             <Separator />
-            <PitySection list={panel.pity} />
+            <details open className="group">
+              <summary className="text-muted-foreground flex cursor-pointer list-none items-center gap-1.5 text-xs">
+                <IconSparkles className="size-3.5" />
+                保底进度
+                <IconChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="mt-2">
+                <PitySection list={panel.pity} />
+              </div>
+            </details>
           </>
         ) : null}
       </CardContent>
@@ -270,58 +339,51 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
  * 保底进度。
  *
  * 为什么单独成块并给进度条：保底是「再钓 N 杆必出」这种**临门一脚**的信息，
- * 只看数字不容易判断「快到了没」。进度条 + 临近时的醒目标示能一眼看出来。
- * 阈值（total）会随运气/鱼饵/天气变化，所以这里只显示服务端算好的值，不在前端重算。
+ * 只看数字不容易判断快到了没。临近时的醒目标示能一眼看出来。
+ * 阈值会随运气/鱼饵/天气变化，所以只显示服务端算好的值，前端不重算。
  */
 function PitySection({ list }: { list: PityProgress[] }) {
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-1.5">
-        <IconSparkles className="text-muted-foreground size-3.5" />
-        <span className="text-muted-foreground text-xs">保底进度</span>
-      </div>
-
-      <div className="grid gap-2.5 sm:grid-cols-2">
-        {list.map((p) => {
-          // 临近保底（还剩 10% 以内）用警示色，出货前一眼可见
-          const near = p.remaining > 0 && p.remaining <= Math.max(1, Math.round(p.total * 0.1));
-          const tone = p.ready ? "success" : near ? "warning" : "neutral";
-          return (
-            <div
-              key={p.key}
-              className={[
-                "rounded-2xl px-3.5 py-3 transition-colors",
-                p.ready
-                  ? "bg-emerald-500/10 ring-1 ring-emerald-500/25"
-                  : near
-                    ? "bg-amber-500/10 ring-1 ring-amber-500/25"
-                    : "bg-muted",
-              ].join(" ")}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-xs font-medium">{p.label}</span>
-                {p.ready ? (
-                  <Badge variant="online" className="gap-1">
-                    <IconRefresh className="size-3" />
-                    下一杆必出
-                  </Badge>
-                ) : (
-                  <span className="mono-num text-muted-foreground shrink-0 text-[11px]">
-                    还差 <span className="text-foreground font-semibold">{p.remaining}</span>
-                  </span>
-                )}
-              </div>
-
-              <div className="mono-num text-muted-foreground mt-1.5 text-[11px]">
-                已累计 <span className="text-foreground">{fmtNum(p.dry)}</span> / {fmtNum(p.total)}
-                <span className="ml-1.5 opacity-70">({p.percent}%)</span>
-              </div>
-
-              <ProgressBar className="mt-2" value={p.dry} max={p.total} tone={tone} />
+    <div className="grid gap-2.5 sm:grid-cols-2">
+      {list.map((p) => {
+        // 临近保底（还剩 10% 以内）用警示色，出货前一眼可见
+        const near = p.remaining > 0 && p.remaining <= Math.max(1, Math.round(p.total * 0.1));
+        const tone = p.ready ? "success" : near ? "warning" : "neutral";
+        return (
+          <div
+            key={p.key}
+            className={[
+              "rounded-2xl px-3.5 py-3 transition-colors",
+              p.ready
+                ? "bg-emerald-500/10 ring-1 ring-emerald-500/25"
+                : near
+                  ? "bg-amber-500/10 ring-1 ring-amber-500/25"
+                  : "bg-muted",
+            ].join(" ")}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-xs font-medium">{p.label}</span>
+              {p.ready ? (
+                <Badge variant="online" className="gap-1">
+                  <IconRefresh className="size-3" />
+                  下一杆必出
+                </Badge>
+              ) : (
+                <span className="mono-num text-muted-foreground shrink-0 text-[11px]">
+                  还差 <span className="text-foreground font-semibold">{p.remaining}</span>
+                </span>
+              )}
             </div>
-          );
-        })}
-      </div>
+
+            <div className="mono-num text-muted-foreground mt-1.5 text-[11px]">
+              已累计 <span className="text-foreground">{fmtNum(p.dry)}</span> / {fmtNum(p.total)}
+              <span className="ml-1.5 opacity-70">({p.percent}%)</span>
+            </div>
+
+            <ProgressBar className="mt-2" value={p.dry} max={p.total} tone={tone} />
+          </div>
+        );
+      })}
     </div>
   );
 }

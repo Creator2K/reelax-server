@@ -151,7 +151,7 @@ const definition: ModuleDefinition = {
       key: "keepMinutes",
       type: "number",
       label: "剩余时间多于多少分钟就不补",
-      hint: "避免刚买完又买一遍；设为 0 表示只要没生效就买",
+      hint: "Buff 剩余时间少于这个值才续买。设为 0 表示没生效就买。",
       default: 20,
       min: 0,
       max: 240,

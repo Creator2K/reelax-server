@@ -35,6 +35,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog.tsx";
 import { UpdatePanel } from "@/components/domain/UpdatePanel.tsx";
+import { DashboardTab } from "@/components/domain/DashboardTab.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { api } from "@/lib/api.ts";
 import { useSession, type SessionUser } from "@/lib/session.ts";
@@ -84,7 +85,9 @@ type AdminSystem = {
 
 export default function AdminPage() {
   const { data: me } = useSession();
-  usePageHeader("管理", "用户审批、邀请码与系统状态");
+  usePageHeader("后台管理", "用户、邀请码与系统状态");
+  // 受控 tab：仪表盘里的「去处理」需要能跳到用户页
+  const [tab, setTab] = useState("overview");
 
   if (me && me.role !== "admin") {
     return (
@@ -100,13 +103,18 @@ export default function AdminPage() {
 
   return (
     <PageContainer wide>
-      <Tabs defaultValue="users">
+      {/* 默认落在仪表盘：进后台先看总览，而不是直接掉进一张用户表格 */}
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
+          <TabsTrigger value="overview">概览</TabsTrigger>
           <TabsTrigger value="users">用户</TabsTrigger>
           <TabsTrigger value="invites">邀请码</TabsTrigger>
           <TabsTrigger value="system">系统</TabsTrigger>
         </TabsList>
 
+        <TabsContent value="overview" className="pt-4">
+          <DashboardTab myId={me?.id ?? ""} onGoUsers={() => setTab("users")} />
+        </TabsContent>
         <TabsContent value="users" className="pt-4">
           <UsersTab myId={me?.id ?? ""} />
         </TabsContent>
@@ -398,7 +406,7 @@ function InvitesTab() {
             生成
           </Button>
           <p className="text-muted-foreground text-xs">
-            注册流程：用户凭邀请码注册 → 状态为「等待审批」→ 你在上面的「用户」页批准后即可使用。
+            把邀请码发给要注册的人，对方填上就能直接使用，不需要审批。
           </p>
         </CardContent>
       </Card>
@@ -533,17 +541,6 @@ function SystemTab() {
 
       <div className="sm:col-span-2">
         <UpdatePanel />
-      </div>
-
-      <div className="sm:col-span-2">
-        <Alert variant="info">
-          <AlertDescription>
-            这些限额通过环境变量配置（<code className="font-mono">MAX_ACCOUNTS_PER_USER</code>、
-            <code className="font-mono">MAX_RUNNING_ACCOUNTS</code>、
-            <code className="font-mono">ALLOW_REGISTRATION</code>、
-            <code className="font-mono">LOG_RETENTION_DAYS</code>），改动需要重启容器。
-          </AlertDescription>
-        </Alert>
       </div>
     </div>
   );

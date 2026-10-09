@@ -18,7 +18,7 @@ const definition: ModuleDefinition = {
   name: "保持在线",
   version: "2.0.0",
   description:
-    "自动开始并持续维持在线钓鱼：按服务器节拍同步渔获，次数耗尽自动补杆，掉线自动重连/重登。这是「在线模式挂机」的核心，关闭后不会产生任何渔获（但仍会运行其他已启用功能）。",
+    "自动开始并保持在线钓鱼：自动补杆、掉线自动重连。关闭后不会有任何渔获，其他功能也无法生效。",
   defaultEnabled: true,
   defaultConfig: {
     autoRefill: true,
@@ -37,7 +37,7 @@ const definition: ModuleDefinition = {
       key: "syncJitterMs",
       type: "number",
       label: "同步抖动（毫秒）",
-      hint: "在服务器节拍基础上叠加随机延迟（0.5~1.5 倍），模拟真人节奏。设为 0 则严格按节拍同步。",
+      hint: "每次收竿加一点随机延迟，节奏更自然。设为 0 则完全按点收竿。",
       default: 600,
       min: 0,
       max: 3000,
@@ -47,7 +47,7 @@ const definition: ModuleDefinition = {
       key: "retrySec",
       type: "number",
       label: "异常重试间隔（秒）",
-      hint: "网络异常或服务端报错后的最大退避间隔，实际按 5→10→20→45→60 秒逐步退避",
+      hint: "连续失败时最长等多久再重试。建议保留默认值。",
       default: 30,
       min: 5,
       max: 300,

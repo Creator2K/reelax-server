@@ -102,7 +102,7 @@ const definition: ModuleDefinition = {
   name: "自动切图",
   version: "2.0.0",
   description:
-    "在已解锁地图里按你选的优先级自动换图：经验优先（含专精经验、公会经验增益与天气）、鱼价值优先、兼顾、比赛优先、金风优先。有比赛时一律先去比赛地图。使用免费的手动换图接口。",
+    "在已解锁的地图里自动挑最划算的一直待着。可选经验优先、鱼价值优先或兼顾；有比赛时先去比赛地图。",
   defaultEnabled: false,
   defaultConfig: {
     mode: "experience",

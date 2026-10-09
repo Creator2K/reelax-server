@@ -21,7 +21,7 @@ const definition: ModuleDefinition = {
   name: "自动专精献祭",
   version: "2.0.0",
   description:
-    "定期检查各地图的专精需求，把背包里能献的鱼批量献祭（服务端一次匹配全部）。优先献祭专精等级最低的地图，每轮只处理一张。",
+    "把背包里多余的鱼献祭给地图专精，从等级最低的地图开始，逐步提升各地图加成。",
   defaultEnabled: false,
   defaultConfig: {
     intervalMin: 12,
@@ -32,7 +32,7 @@ const definition: ModuleDefinition = {
       key: "intervalMin",
       type: "number",
       label: "检查间隔（分钟）",
-      hint: "每次会随机跳过部分轮次，形成自然的操作节奏",
+      hint: "每次随机跳过部分轮次，节奏更自然。",
       default: 12,
       min: 3,
       max: 120,

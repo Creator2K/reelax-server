@@ -89,7 +89,7 @@ export default function AccountsPage() {
         <EmptyState
           icon={<IconUsers />}
           title="还没有游戏账号"
-          description="添加账号时可以选择「账号密码」（凭证失效能自动重登）或「Cookie 导入」（不在服务端存密码）。"
+          description="可以用游戏账号密码（凭证失效能自动重登），也可以导入 Cookie（不保存密码，失效后需重新导入）。"
           action={
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               添加账号
@@ -266,7 +266,7 @@ function CreateAccountDialog({
         <DialogHeader>
           <DialogTitle>添加游戏账号</DialogTitle>
           <DialogDescription>
-            「账号密码」凭证失效时能自动重登；「Cookie 导入」不在服务端保存密码，但失效后需要重新导入。
+            用账号密码登录，凭证失效时能自动重登；用 Cookie 导入则不保存密码，但失效后需要重新导入。
           </DialogDescription>
         </DialogHeader>
 
@@ -326,7 +326,7 @@ function CreateAccountDialog({
                   onChange={(e) => setPassword(e.target.value)}
                 />
                 <p className="text-muted-foreground text-xs">
-                  密码会用 AES-256-GCM 加密后存入数据库，接口不会回传。
+                  密码会用 AES-256-GCM 加密后保存，之后任何地方都无法再读回明文。
                 </p>
               </div>
             </>

@@ -168,7 +168,7 @@ export default function SettingsPage() {
           <IconTrash />
           <AlertTitle>关于数据</AlertTitle>
           <AlertDescription>
-            你的游戏凭证在服务端用 AES-256-GCM 加密存储，接口永不回传明文。删除账号会同时删除它的配置与统计。
+            游戏凭证用 AES-256-GCM 加密保存，任何地方都无法再读回明文。删除账号会同时删掉它的配置与统计数据。
           </AlertDescription>
         </Alert>
       </div>

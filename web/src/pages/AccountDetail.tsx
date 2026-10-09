@@ -17,7 +17,6 @@ import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent, CardHeader } from "@/components/ui/card.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert.tsx";
-import { Badge } from "@/components/ui/badge.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { useAccounts, useModuleDefinitions, type Account, type ModuleRuntimeState } from "@/lib/queries.ts";
 import { useResetModule, useStartAccount, useStopAccount, useUpdateModule } from "@/lib/mutations.ts";
@@ -264,16 +263,6 @@ function ModuleCard({
                 await reset.mutateAsync(state.id);
               }}
             />
-          </div>
-        ) : Object.keys(state.config).length > 0 && state.enabled ? (
-          <div className="flex flex-wrap gap-1.5">
-            {Object.entries(state.config)
-              .slice(0, 4)
-              .map(([k, v]) => (
-                <Badge key={k} variant="outline" className="font-mono text-[10px] font-normal">
-                  {k}={String(v)}
-                </Badge>
-              ))}
           </div>
         ) : null}
       </CardContent>

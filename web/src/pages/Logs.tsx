@@ -34,7 +34,7 @@ export default function LogsPage() {
   const [follow, setFollow] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  usePageHeader("运行日志", "实时推送，最多保留最近 1000 条（服务端另有落库副本）");
+  usePageHeader("运行日志", "实时推送，页面上最多保留最近 1000 条");
 
   const accountName = useMemo(() => {
     const map = new Map<string, string>();

@@ -16,7 +16,7 @@ const definition: ModuleDefinition = {
   name: "渊潮围猎参战",
   version: "2.0.0",
   description:
-    "在围猎开战前自动选定出战属性（选中即参战，服务端随后自动攻击）。可选「自动取最高属性」或指定某项；已在开战前完成选择时不会重复提交。",
+    "围猎开战前自动选好出战属性并参战。可选自动取最高属性，或固定用某一项。",
   defaultEnabled: false,
   defaultConfig: {
     stat: "max",

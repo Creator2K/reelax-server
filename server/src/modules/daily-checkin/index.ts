@@ -11,7 +11,7 @@ const definition: ModuleDefinition = {
   name: "每日签到",
   version: "2.0.0",
   description:
-    "每天自动领取签到奖励。北京时间零点后由账号节拍触发，另有兜底轮询；重复领取会被服务端拒绝（幂等），不会出错。",
+    "每天自动领取签到奖励，不会漏签。",
   defaultEnabled: false,
   defaultConfig: {
     checkEveryMin: 10,
@@ -21,7 +21,7 @@ const definition: ModuleDefinition = {
       key: "checkEveryMin",
       type: "number",
       label: "兜底检查间隔（分钟）",
-      hint: "除钓鱼节拍外，额外按此间隔检查是否已签到（长时间没有渔获时也不会漏签）",
+      hint: "额外隔多久检查一次是否已签到，长时间没渔获也不会漏签。",
       default: 10,
       min: 5,
       max: 120,

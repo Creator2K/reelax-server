@@ -67,6 +67,8 @@ export type StatusPanel = {
   baitUnitPrice: number | null;
   /** 保底进度（拿不到的项不出现） */
   pity: PityProgress[];
+  /** 当前是第几轮转生 */
+  reincarnationRound?: number | null;
   fleet: { boatName: string | null; boatBiomeName: string | null; sameAsCurrent: boolean } | null;
   reincarnation: {
     requiredLevel: number | null;
