@@ -151,7 +151,16 @@ CREATE TABLE audit_events (
 );
 CREATE INDEX idx_audit_created ON audit_events (created_at DESC);
 CREATE INDEX idx_audit_user ON audit_events (user_id, created_at DESC);
+`,
+  },
 
+  // ★ 迁移一旦发布就**绝不能再改**：已应用过它的数据库不会重跑。
+  //   新增表/字段一律追加新的迁移项（下面这个就是教训的产物 ——
+  //   最初把 notify_channels 写进了 0001_init，结果已有数据库启动时报
+  //   "no such table: notify_channels"）。
+  {
+    id: "0002_notify_channels",
+    sql: `
 -- ---------- 推送通道 ----------
 -- 每个用户可配多个通道（Server酱 / 微信机器人），日报等消息会推给全部已启用通道。
 -- config_enc 是密文：Server酱存 SendKey，微信存凭证目录与绑定目标。
@@ -162,12 +171,11 @@ CREATE TABLE notify_channels (
   label         TEXT NOT NULL,
   enabled       INTEGER NOT NULL DEFAULT 1,
   config_enc    TEXT,                   -- AES-256-GCM，AAD 绑定 userId
-  -- 运行状态（微信扫码登录用；Server酱基本不用）
-  status        TEXT NOT NULL DEFAULT 'idle',   -- idle | starting | qrcode | scanned | online | bound | error
+  status        TEXT NOT NULL DEFAULT 'idle',   -- idle|starting|qrcode|scanned|online|bound|error
   status_detail TEXT,
   target_id     TEXT,                   -- 微信：绑定的接收人 userId
   target_label  TEXT,
-  qr_text       TEXT,                   -- 微信：当前二维码内容（用于前端渲染）
+  qr_text       TEXT,                   -- 微信：当前二维码内容（前端自行渲染）
   sent_count    INTEGER NOT NULL DEFAULT 0,
   last_sent_at  INTEGER,
   last_error    TEXT,

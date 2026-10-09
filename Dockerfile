@@ -46,6 +46,14 @@ COPY server/src/ server/src/
 # 前端产物
 COPY --from=webbuild /app/web/dist web/dist
 
+# 把构建时的提交号烧进镜像：镜像里没有 .git，
+# 但「管理 → 系统 → 在线更新」需要显示当前版本并和远端比对。
+# 用 ARG 接收（compose build args 或 CI 传入），拿不到就留 unknown。
+ARG APP_COMMIT=unknown
+ARG APP_BUILD_TIME=unknown
+ENV APP_COMMIT=$APP_COMMIT \
+    APP_BUILD_TIME=$APP_BUILD_TIME
+
 # 默认值：容器内必须监听 0.0.0.0 才能被映射出去
 ENV PORT=8580 \
     HOST=0.0.0.0 \

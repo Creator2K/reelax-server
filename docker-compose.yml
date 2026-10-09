@@ -2,16 +2,25 @@
 #
 # 用法：
 #   1) 生成主密钥：openssl rand -hex 32
-#   2) 写进 .env：MASTER_KEY=<上面那串>
+#   2) 写进 .env：MASTER_KEY=<上面那串>（Windows 见 README）
 #   3) docker compose up -d --build
 #   4) 打开 http://<服务器>:8580 —— 第一个注册的账号自动成为管理员
 #
-# 注意：MASTER_KEY 必须长期保存。它就是凭证加密主密钥，
-# 弄丢之后数据库里的游戏密码/Cookie 全部无法解密（表现为「账号突然登不上」）。
+# 在线更新（可选）：
+#   把下面的 updater 服务一起启动，就能在「管理 → 系统」里点「检查更新 / 立即更新」：
+#     docker compose --profile update up -d --build
+#
+# ★ MASTER_KEY 必须长期保存：它就是凭证加密主密钥。弄丢之后数据库里的游戏密码 /
+#   Cookie / 推送 SendKey 全部无法解密（表现为「账号突然登不上」）。
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        # 把当前提交烧进镜像，「在线更新」才能显示当前版本
+        APP_COMMIT: "${APP_COMMIT:-unknown}"
+        APP_BUILD_TIME: "${APP_BUILD_TIME:-unknown}"
     image: reelax-server:latest
     container_name: reelax-server
     restart: unless-stopped
@@ -23,7 +32,7 @@ services:
       # ---- 必填 ----
       MASTER_KEY: "${MASTER_KEY:?请先在 .env 里设置 MASTER_KEY（openssl rand -hex 32）}"
 
-      # ---- 监听（容器内固定 0.0.0.0，端口映射由上面 ports 控制）----
+      # ---- 监听（容器内固定 0.0.0.0，对外端口由上面 ports 控制）----
       PORT: 8580
       HOST: 0.0.0.0
       DATA_DIR: /app/data
@@ -36,11 +45,11 @@ services:
       PROXY_ECHO_URL: "${PROXY_ECHO_URL:-https://api.ipify.org?format=json}"
 
       # ---- 反向代理 / HTTPS ----
-      # 在 Nginx/Caddy 之后部署时设为 1，用于限流取真实 IP
+      # 在 Nginx / Caddy 之后部署时设为 1，用于限流取真实 IP
       TRUST_PROXY: "${TRUST_PROXY:-1}"
       # cookie 的 Secure 策略（三态）：
-      #   不设置（默认）= 按每次请求的实际协议自动判断 —— 推荐
-      #   1 = 强制加 Secure（必须整站 HTTPS，否则登录后会立刻掉线）
+      #   不设置（默认）= 按每次请求的实际协议自动判断 —— 推荐，http/https 都能正常工作
+      #   1 = 强制加 Secure（必须整站 HTTPS；只做 80 端口反代会「登录成功但立刻掉线」）
       #   0 = 强制不加
       COOKIE_SECURE: "${COOKIE_SECURE:-}"
 
@@ -48,6 +57,16 @@ services:
       ALLOW_REGISTRATION: "${ALLOW_REGISTRATION:-1}"
       MAX_ACCOUNTS_PER_USER: "${MAX_ACCOUNTS_PER_USER:-5}"
       MAX_RUNNING_ACCOUNTS: "${MAX_RUNNING_ACCOUNTS:-50}"
+
+      # ---- 在线更新 ----
+      # 仓库地址（查询远端最新提交用）
+      REELAX_REPO: "${REELAX_REPO:-Creator2K/reelax-server}"
+      # 私有仓库需要 GITHUB_TOKEN 才能读到远端提交信息（可选）
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      # 旁路更新器地址；启用了 update profile 才会实际存在
+      REELAX_UPDATER_URL: "${REELAX_UPDATER_URL:-}"
+      # 容器内不允许自行 git pull（代码在镜像里，改不了自己）—— 更新交给 updater
+      ALLOW_LOCAL_UPDATE: "0"
 
       # ---- 日志 ----
       LOG_LEVEL: "${LOG_LEVEL:-info}"
@@ -57,7 +76,7 @@ services:
       SESSION_TTL_DAYS: "${SESSION_TTL_DAYS:-30}"
 
     volumes:
-      # 数据库、日志、备份都在这里。备份策略见 docs/DEPLOY.md
+      # 数据库、日志、备份、微信登录凭证都在这里。备份策略见 docs/DEPLOY.md
       - reelax-data:/app/data
 
     # 容器内资源上限（按机器调整）。挂机本身很轻，主要是并发登录的瞬时开销。
@@ -65,6 +84,46 @@ services:
       resources:
         limits:
           memory: 512M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---- 可选：在线更新器 ----
+  #
+  # 它是唯一能改代码的容器（挂了 docker.sock）。只在需要点「立即更新」时启动：
+  #   docker compose --profile update up -d --build
+  #
+  # 安全说明：docker.sock 等同于宿主机 root 权限，所以这个服务**不对外暴露端口**，
+  # 只监听 compose 内网，并且只能被 app 触发。
+  updater:
+    build: ./updater
+    image: reelax-updater:latest
+    container_name: reelax-updater
+    restart: unless-stopped
+    profiles: ["update"]
+
+    environment:
+      UPDATER_PORT: 9000
+      # 容器内看到的是挂载进来的仓库目录
+      UPDATER_PROJECT_DIR: /project
+      UPDATER_COMPOSE_FILE: docker-compose.yml
+      UPDATER_SERVICE: app
+      UPDATER_REBUILD: "1"
+      # 可选：额外一道令牌（app 侧用 REELAX_UPDATER_TOKEN 提供）
+      UPDATER_TOKEN: "${UPDATER_TOKEN:-}"
+
+    volumes:
+      # 宿主机仓库目录（改这里要同步改 .env 的 REELAX_PROJECT_DIR）
+      - "${REELAX_PROJECT_DIR:-.}:/project"
+      # 让 updater 能操作 docker
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    # 不映射端口：只在 compose 网络内可达（app 用 http://updater:9000 访问）
+    expose:
+      - "9000"
 
     logging:
       driver: json-file

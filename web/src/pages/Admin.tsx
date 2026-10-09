@@ -4,9 +4,13 @@
 import { useState } from "react";
 import {
   IconAlertTriangle,
+  IconCheck,
   IconCircleCheck,
   IconCopy,
+  IconDownload,
   IconPlus,
+  IconRefresh,
+  IconSearch,
   IconShieldLock,
   IconTrash,
   IconUserCheck,
@@ -29,6 +33,8 @@ import { api } from "@/lib/api.ts";
 import { useSession, type SessionUser } from "@/lib/session.ts";
 import {
   useApproveUser,
+  useApplyUpdate,
+  useCheckUpdate,
   useCreateInvite,
   useDeleteInvite,
   useSetUserRole,
@@ -429,6 +435,10 @@ function SystemTab() {
       </Card>
 
       <div className="sm:col-span-2">
+        <UpdatePanel />
+      </div>
+
+      <div className="sm:col-span-2">
         <Alert variant="info">
           <AlertDescription>
             这些限额通过环境变量配置（<code className="font-mono">MAX_ACCOUNTS_PER_USER</code>、
@@ -439,6 +449,109 @@ function SystemTab() {
         </Alert>
       </div>
     </div>
+  );
+}
+
+/** 在线更新面板：检查 → 一键更新 */
+function UpdatePanel() {
+  const check = useCheckUpdate();
+  const apply = useApplyUpdate();
+  const r = check.data;
+
+  return (
+    <Card className="gap-4">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <IconRefresh className="size-4" />
+          在线更新
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => check.mutate()} disabled={check.isPending || apply.isPending}>
+            <IconSearch className="size-3.5" />
+            {check.isPending ? "检查中…" : "检查更新"}
+          </Button>
+          {r?.hasUpdate ? (
+            <Button
+              size="sm"
+              onClick={() => apply.mutate()}
+              disabled={apply.isPending || (!r.updaterAvailable && !r.canApplyLocal)}
+            >
+              <IconDownload className="size-3.5" />
+              {apply.isPending ? "更新中…" : "立即更新"}
+            </Button>
+          ) : null}
+        </div>
+
+        {!r && !check.isPending ? (
+          <p className="text-muted-foreground text-xs">点「检查更新」对比当前提交与 GitHub 上的最新提交。</p>
+        ) : null}
+
+        {r ? (
+          <div className="space-y-3 text-xs">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="bg-muted/40 rounded-md border px-3 py-2">
+                <div className="text-muted-foreground">当前版本</div>
+                <div className="font-mono">{r.current ? r.current.short : "读不到（非 git 工作区）"}</div>
+                {r.current?.message ? <div className="truncate text-[11px]" title={r.current.message}>{r.current.message}</div> : null}
+              </div>
+              <div className="bg-muted/40 rounded-md border px-3 py-2">
+                <div className="text-muted-foreground">GitHub 最新</div>
+                <div className="font-mono">{r.latest ? r.latest.short : "读不到"}</div>
+                {r.latest?.message ? <div className="truncate text-[11px]" title={r.latest.message}>{r.latest.message}</div> : null}
+              </div>
+            </div>
+
+            {r.hasUpdate ? (
+              <Alert variant="warn">
+                <IconAlertTriangle />
+                <AlertDescription>
+                  有新版本
+                  {r.behindBy ? `（落后 ${r.behindBy} 个提交）` : ""}。
+                  {r.updaterAvailable
+                    ? " 点「立即更新」会拉取代码并重建容器，服务约 1 分钟后重启。"
+                    : r.canApplyLocal
+                      ? " 点「立即更新」会拉取代码并重建前端，之后需要重启进程。"
+                      : " 当前部署未开启自动更新，请看下方命令。"}
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <Badge variant="online" className="gap-1">
+                <IconCheck className="size-3" />
+                已是最新
+              </Badge>
+            )}
+
+            {r.note ? <div className="text-muted-foreground">{r.note}</div> : null}
+
+            {/* 更新能力说明：让用户知道为什么按钮不可点 */}
+            <div className="text-muted-foreground space-y-1">
+              <div>
+                旁路更新器：{r.updaterAvailable ? "在线可用" : "未启用"}
+                {!r.updaterAvailable ? "（docker compose --profile update up -d 可开启）" : ""}
+              </div>
+              <div>容器内直接 pull：{r.canApplyLocal ? "允许" : "不允许（Docker 部署下正常）"}</div>
+            </div>
+
+            {r.manualHint ? (
+              <pre className="bg-muted/40 overflow-x-auto rounded-md border px-3 py-2 font-mono text-[11px] whitespace-pre-wrap">
+                {r.manualHint}
+              </pre>
+            ) : null}
+          </div>
+        ) : null}
+
+        {apply.data?.log ? (
+          <details className="text-xs">
+            <summary className="text-muted-foreground cursor-pointer">更新输出</summary>
+            <pre className="bg-muted/40 mt-2 max-h-64 overflow-auto rounded-md border px-3 py-2 font-mono text-[11px] whitespace-pre-wrap">
+              {apply.data.log}
+            </pre>
+          </details>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }
 

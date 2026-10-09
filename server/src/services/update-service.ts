@@ -1,0 +1,400 @@
+// 版本与在线更新
+//
+// 两种部署形态下的"更新"含义不同，这里都覆盖：
+//
+//  1) **Docker 部署（推荐）**：应用代码在镜像里，容器内部改不了自己。
+//     真正的在线更新由**旁路 updater 容器**完成（它挂了 docker.sock，能 docker compose up -d --build）。
+//     本服务只需要知道「updater 在不在」，然后把按钮点过去。
+//
+//  2) **裸机/本地运行（git checkout + node）**：应用代码就在工作区里，
+//     可以直接 git pull（+ 重建前端 + 重启进程）。
+//
+// 不引入任何重依赖：git 与 docker 都用子进程调用，缺失时优雅降级为「只检查、给命令」。
+import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { promisify } from "node:util";
+import type { Logger } from "../lib/logger.ts";
+
+const execFileAsync = promisify(execFile);
+
+export type UpdateCheck = {
+  /** 当前代码的提交（拿不到为 null） */
+  current: CommitInfo | null;
+  /** 远端最新提交 */
+  latest: CommitInfo | null;
+  /** 是否有更新 */
+  hasUpdate: boolean;
+  /** 落后多少个提交（拿不到为 null） */
+  behindBy: number | null;
+  /** 当前分支 */
+  branch: string | null;
+  /** 仓库地址 */
+  repo: string | null;
+  /** 是否具备"本地直接更新"的条件（在 git 工作区里且有 git 命令） */
+  canApplyLocal: boolean;
+  /** 旁路 updater 是否可用（Docker 部署场景） */
+  updaterAvailable: boolean;
+  /** 无法自动更新时给用户的操作指引 */
+  manualHint: string | null;
+  /** 检查过程中的提示（例如网络不通） */
+  note: string | null;
+};
+
+export type CommitInfo = {
+  sha: string;
+  short: string;
+  message: string;
+  date: string | null;
+  author: string | null;
+};
+
+export type ApplyResult = {
+  ok: boolean;
+  /** 给用户看的说明 */
+  message: string;
+  /** 是否触发了重启（前端据此提示"稍后刷新"） */
+  restarting: boolean;
+  log?: string;
+};
+
+export type UpdateServiceDeps = {
+  logger: Logger;
+  /** GitHub owner/repo，用于查询远端（如 Creator2K/reelax-server） */
+  repoSlug: string;
+  /** 代码工作区根目录（含 .git）；不在 git 工作区时为 null */
+  workDir: string | null;
+  /** 旁路 updater 的地址（如 http://updater:9000）；未配置为 null */
+  updaterUrl: string | null;
+  /** 允许在容器内直接 git pull + 重建（本地部署场景） */
+  allowLocalUpdate: boolean;
+  /** 注入 fetch 便于测试 */
+  fetchImpl?: typeof fetch;
+};
+
+/** 判断某目录是不是 git 工作区 */
+function isGitWorktree(dir: string | null): boolean {
+  if (!dir) return false;
+  try {
+    return fs.existsSync(path.join(dir, ".git"));
+  } catch {
+    return false;
+  }
+}
+
+export class UpdateService {
+  private deps: UpdateServiceDeps;
+  private log: Logger;
+
+  constructor(deps: UpdateServiceDeps) {
+    this.deps = deps;
+    this.log = deps.logger;
+  }
+
+  /* ---------------- git 读取 ---------------- */
+
+  private async git(args: string[], timeoutMs = 10_000): Promise<string | null> {
+    if (!this.deps.workDir) return null;
+    try {
+      const { stdout } = await execFileAsync("git", ["-C", this.deps.workDir, ...args], {
+        timeout: timeoutMs,
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+      });
+      return stdout.trim();
+    } catch {
+      return null;
+    }
+  }
+
+  /** 本地当前提交 */
+  async currentCommit(): Promise<CommitInfo | null> {
+    // 1) 有 .git 就直接读（裸机 / 本地开发）
+    const sha = await this.git(["rev-parse", "HEAD"]);
+    if (sha) {
+      // 一次调用拿到 message / date / author，避免多次 fork
+      const raw = await this.git(["log", "-1", "--pretty=%s%n%cI%n%an"]);
+      const [message = "", date = "", author = ""] = (raw ?? "").split("\n");
+      return { sha, short: sha.slice(0, 7), message, date: date || null, author: author || null };
+    }
+
+    // 2) 镜像里没有 .git：用构建时烧进去的 APP_COMMIT（见 Dockerfile 的 ARG）
+    const baked = String(process.env.APP_COMMIT ?? "").trim();
+    if (baked && baked !== "unknown" && /^[0-9a-f]{7,40}$/i.test(baked)) {
+      const buildTime = String(process.env.APP_BUILD_TIME ?? "").trim();
+      return {
+        sha: baked,
+        short: baked.slice(0, 7),
+        message: "镜像构建时的提交（容器内没有 .git，无法读取提交说明）",
+        date: buildTime && buildTime !== "unknown" ? buildTime : null,
+        author: null,
+      };
+    }
+
+    return null;
+  }
+
+  async currentBranch(): Promise<string | null> {
+    return await this.git(["rev-parse", "--abbrev-ref", "HEAD"]);
+  }
+
+  async remoteUrl(): Promise<string | null> {
+    return await this.git(["remote", "get-url", "origin"]);
+  }
+
+  /* ---------------- 远端查询（优先 GitHub API，无需 git fetch） ---------------- */
+
+  /**
+   * 查远端最新提交。
+   * 优先用 GitHub REST API：不需要 git fetch，容器里没有 git 也能用；
+   * 私有仓库没有 token 会拿到 404，此时退回 git ls-remote（能拿到 sha，但拿不到 message）。
+   */
+  private async latestCommit(branch: string): Promise<{ info: CommitInfo | null; note: string | null }> {
+    const doFetch = this.deps.fetchImpl ?? fetch;
+    const slug = this.deps.repoSlug?.trim();
+    if (!slug) return { info: null, note: "未配置仓库地址（REELAX_REPO）" };
+
+    // 1) GitHub API
+    try {
+      const resp = await doFetch(`https://api.github.com/repos/${slug}/commits/${encodeURIComponent(branch)}`, {
+        headers: {
+          Accept: "application/vnd.github+json",
+          // GitHub 要求带 UA
+          "User-Agent": "reelax-server",
+          ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
+        },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (resp.ok) {
+        const j = (await resp.json()) as {
+          sha?: string;
+          commit?: { message?: string; committer?: { date?: string; name?: string }; author?: { name?: string } };
+        };
+        if (j?.sha) {
+          return {
+            info: {
+              sha: j.sha,
+              short: j.sha.slice(0, 7),
+              message: (j.commit?.message ?? "").split("\n")[0] ?? "",
+              date: j.commit?.committer?.date ?? null,
+              author: j.commit?.author?.name ?? j.commit?.committer?.name ?? null,
+            },
+            note: null,
+          };
+        }
+      } else if (resp.status === 404) {
+        return {
+          info: null,
+          note: `读不到远端提交（HTTP 404）：仓库可能是私有的。设置 GITHUB_TOKEN 环境变量后可见。`,
+        };
+      } else {
+        return { info: null, note: `查询远端失败：HTTP ${resp.status}` };
+      }
+    } catch (err) {
+      return { info: null, note: `查询远端失败：${err instanceof Error ? err.message : String(err)}` };
+    }
+
+    // 2) 退化：git ls-remote（只有 sha）
+    const ls = await this.git(["ls-remote", "origin", `refs/heads/${branch}`], 15_000);
+    if (ls) {
+      const sha = ls.split(/\s+/)[0] ?? "";
+      if (sha) {
+        return {
+          info: { sha, short: sha.slice(0, 7), message: "（远端提交信息不可用，请到 GitHub 查看）", date: null, author: null },
+          note: null,
+        };
+      }
+    }
+    return { info: null, note: "无法确定远端提交" };
+  }
+
+  /** 落后多少个提交（需要本地有远端引用；没有就先 fetch 一次） */
+  private async behindCount(branch: string): Promise<number | null> {
+    const direct = await this.git(["rev-list", "--count", `HEAD..origin/${branch}`]);
+    if (direct !== null) {
+      const n = Number(direct);
+      return Number.isFinite(n) ? n : null;
+    }
+    // 本地还没有 origin/<branch> 引用，fetch 一次再算（浅仓库/新克隆常见）
+    const fetched = await this.git(["fetch", "--quiet", "origin", branch], 30_000);
+    if (fetched === null) return null;
+    const after = await this.git(["rev-list", "--count", `HEAD..origin/${branch}`]);
+    if (after === null) return null;
+    const n = Number(after);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /* ---------------- 对外：检查更新 ---------------- */
+
+  async check(): Promise<UpdateCheck> {
+    const hasGit = isGitWorktree(this.deps.workDir);
+    const branch = hasGit ? ((await this.currentBranch()) ?? "main") : "main";
+
+    // currentCommit() 自己会处理「没有 .git」的情况（退回镜像里烧好的 APP_COMMIT），
+    // 所以这里**不能**用 hasGit 把它短路掉 —— 之前正是这个守卫导致容器里永远显示「读不到」。
+    const [current, remote, remoteUrl, behind] = await Promise.all([
+      this.currentCommit(),
+      this.latestCommit(branch),
+      hasGit ? this.remoteUrl() : Promise.resolve(null),
+      hasGit ? this.behindCount(branch) : Promise.resolve(null),
+    ]);
+
+    const latest = remote.info;
+    // behind 拿不到时，用 sha 是否相同来判断「有没有更新」
+    const hasUpdate = behind !== null ? behind > 0 : Boolean(current && latest && current.sha !== latest.sha);
+
+    const updaterAvailable = await this.probeUpdater();
+
+    let manualHint: string | null = null;
+    if (!this.deps.allowLocalUpdate && !updaterAvailable) {
+      manualHint =
+        "当前部署没有开启自动更新。在容器外执行：\n" +
+        "  docker compose pull && docker compose up -d --build\n" +
+        "（或运行仓库里的 scripts/update.ps1 / update.sh）";
+    }
+
+    return {
+      current,
+      latest,
+      hasUpdate,
+      behindBy: behind,
+      branch: hasGit ? branch : null,
+      repo: remoteUrl ?? (this.deps.repoSlug ? `https://github.com/${this.deps.repoSlug}` : null),
+      canApplyLocal: Boolean(hasGit && this.deps.allowLocalUpdate),
+      updaterAvailable,
+      manualHint,
+      note: remote.note,
+    };
+  }
+
+  /** 探测旁路 updater 是否在线 */
+  private async probeUpdater(): Promise<boolean> {
+    if (!this.deps.updaterUrl) return false;
+    const doFetch = this.deps.fetchImpl ?? fetch;
+    try {
+      const r = await doFetch(`${this.deps.updaterUrl.replace(/\/+$/, "")}/health`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /* ---------------- 对外：应用更新 ---------------- */
+
+  /**
+   * 触发更新。
+   *  - 有 updater → 让它去 docker compose 重建并重启（容器外动作，最干净）
+   *  - 否则（本地部署且允许） → 自行 git pull + 重建前端；重启交给进程管理器
+   */
+  async apply(opts: { reason: string }): Promise<ApplyResult> {
+    if (this.deps.updaterUrl) {
+      return await this.applyViaUpdater(opts.reason);
+    }
+    if (!this.deps.allowLocalUpdate) {
+      return {
+        ok: false,
+        restarting: false,
+        message:
+          "当前部署未开启自动更新（应用代码在镜像内，容器无法替换自己）。\n" +
+          "请在宿主机执行：docker compose pull && docker compose up -d --build",
+      };
+    }
+    return await this.applyLocally(opts.reason);
+  }
+
+  private async applyViaUpdater(reason: string): Promise<ApplyResult> {
+    const doFetch = this.deps.fetchImpl ?? fetch;
+    const url = `${this.deps.updaterUrl!.replace(/\/+$/, "")}/update`;
+    try {
+      const r = await doFetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      const text = await r.text();
+      if (!r.ok) {
+        return { ok: false, restarting: false, message: `updater 返回 HTTP ${r.status}：${text.slice(0, 300)}` };
+      }
+      this.log.info("更新", `已通过 updater 触发更新：${reason}`);
+      return {
+        ok: true,
+        restarting: true,
+        message: "已通知更新服务：正在拉取最新代码并重建容器。服务会在约 1 分钟内重启，请稍后刷新页面。",
+        log: text.slice(0, 2000),
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        restarting: false,
+        message: `通知 updater 失败：${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  private async applyLocally(reason: string): Promise<ApplyResult> {
+    const dir = this.deps.workDir!;
+    const run = async (cmd: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; out: string }> => {
+      try {
+        const { stdout, stderr } = await execFileAsync(cmd, args, {
+          cwd: dir,
+          timeout: timeoutMs,
+          windowsHide: true,
+          maxBuffer: 8 * 1024 * 1024,
+        });
+        return { ok: true, out: `${stdout}\n${stderr}`.trim() };
+      } catch (err) {
+        const e = err as { stdout?: string; stderr?: string; message?: string };
+        return { ok: false, out: `${e.stdout ?? ""}\n${e.stderr ?? e.message ?? ""}`.trim() };
+      }
+    };
+
+    const lines: string[] = [`触发原因：${reason}`];
+
+    // 1) git pull
+    const pull = await run("git", ["pull", "--ff-only"], 120_000);
+    lines.push(`\n$ git pull --ff-only\n${pull.out.slice(-4000)}`);
+    if (!pull.ok) {
+      return {
+        ok: false,
+        restarting: false,
+        message: "git pull 失败（可能有本地改动或需要手动处理冲突），请看下方输出。",
+        log: lines.join("\n"),
+      };
+    }
+
+    // 2) 装依赖（package-lock 变了才需要，但 npm ci 幂等且快）
+    const install = await run("npm", ["install", "--no-audit", "--no-fund", "--ignore-scripts"], 600_000);
+    lines.push(`\n$ npm install\n${install.out.slice(-2000)}`);
+    if (!install.ok) {
+      return {
+        ok: false,
+        restarting: false,
+        message: "依赖安装失败，请看下方输出。",
+        log: lines.join("\n"),
+      };
+    }
+
+    // 3) 重建前端
+    const build = await run("npm", ["run", "build"], 600_000);
+    lines.push(`\n$ npm run build\n${build.out.slice(-2000)}`);
+    if (!build.ok) {
+      return { ok: false, restarting: false, message: "前端构建失败，请看下方输出。", log: lines.join("\n") };
+    }
+
+    this.log.info("更新", `本地更新完成：${reason}`);
+    return {
+      ok: true,
+      restarting: true,
+      message:
+        "代码已更新、依赖已安装、前端已重建。\n" +
+        "进程需要重启才能加载新的后端代码：请重启服务（systemd / pm2 / 前台进程）。\n" +
+        "如果你用 Docker 部署，建议启用 updater 服务，以获得真正的「一键更新」体验。",
+      log: lines.join("\n"),
+    };
+  }
+}
+
+export type { CommitInfo as UpdateCommitInfo };

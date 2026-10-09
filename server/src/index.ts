@@ -16,6 +16,7 @@ import { RunnerRegistry } from "./game/runner-registry.ts";
 import { AccountService } from "./services/account-service.ts";
 import { ProxyService } from "./services/proxy-service.ts";
 import { NotifyService } from "./services/notify-service.ts";
+import { UpdateService } from "./services/update-service.ts";
 import { runCommand } from "./services/wechat-commands.ts";
 import { createNotifyRouter } from "./api/routes/notify-routes.ts";
 import { parseGlobalProxy } from "./game/proxy.ts";
@@ -54,6 +55,7 @@ type Ctx = {
   accounts: AccountService;
   proxies: ProxyService;
   notify: NotifyService;
+  update: UpdateService;
 };
 
 function buildContext(): Ctx {
@@ -148,12 +150,23 @@ function buildContext(): Ctx {
     proxyEchoUrl: env.proxyEchoUrl,
   });
 
-  return { env, logger, bus, db, repos, limiters, auth, vault, registry, accounts, proxies, notify };
+  const update = new UpdateService({
+    logger,
+    repoSlug: env.repoSlug,
+    // 代码工作区：只有在「仓库里直接跑」时才有 .git（Docker 镜像内没有），
+    // 因此 Docker 部署下 canApplyLocal 自动为 false —— 这是刻意的：
+    // 镜像里的代码无法替换自己，真正的更新交给旁路 updater。
+    workDir: path.resolve(__dirname, "../.."),
+    updaterUrl: env.updaterUrl,
+    allowLocalUpdate: env.allowLocalUpdate,
+  });
+
+  return { env, logger, bus, db, repos, limiters, auth, vault, registry, accounts, proxies, notify, update };
 }
 
 async function main(): Promise<void> {
   const ctx = buildContext();
-  const { env, logger, bus, db, repos, auth, registry, accounts, proxies, notify, limiters } = ctx;
+  const { env, logger, bus, db, repos, auth, registry, accounts, proxies, notify, update, limiters } = ctx;
 
   const checkpointTimer = setInterval(() => db.checkpoint(), 5 * 60_000);
   checkpointTimer.unref();
@@ -262,6 +275,8 @@ async function main(): Promise<void> {
           audit: repos.audit,
           repos,
           registry,
+          update,
+          limiters,
           env,
           version: VERSION,
           startedAt,

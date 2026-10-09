@@ -97,6 +97,8 @@ export class Limiters {
   proxyTest: RateLimiter;
   /** 改口令：按用户，5 次 / 小时 */
   passwordChange: RateLimiter;
+  /** 触发在线更新：按用户，3 次 / 10 分钟（更新会重启服务，不能连点） */
+  updateApply: RateLimiter;
 
   constructor() {
     this.login = new RateLimiter({ windowMs: 15 * 60_000, max: 5 });
@@ -105,6 +107,7 @@ export class Limiters {
     this.inviteGuess = new RateLimiter({ windowMs: 60 * 60_000, max: 10 });
     this.proxyTest = new RateLimiter({ windowMs: 60_000, max: 10 });
     this.passwordChange = new RateLimiter({ windowMs: 60 * 60_000, max: 5 });
+    this.updateApply = new RateLimiter({ windowMs: 10 * 60_000, max: 3 });
   }
 
   clear(): void {

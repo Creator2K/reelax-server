@@ -317,6 +317,44 @@ export function useNotifyAction() {
   });
 }
 
+/* ---------------- 在线更新 ---------------- */
+
+export type UpdateCheck = {
+  current: { sha: string; short: string; message: string; date: string | null; author: string | null } | null;
+  latest: { sha: string; short: string; message: string; date: string | null; author: string | null } | null;
+  hasUpdate: boolean;
+  behindBy: number | null;
+  branch: string | null;
+  repo: string | null;
+  canApplyLocal: boolean;
+  updaterAvailable: boolean;
+  manualHint: string | null;
+  note: string | null;
+};
+
+export type UpdateApplyResult = { ok: boolean; message: string; restarting: boolean; log?: string };
+
+export function useCheckUpdate() {
+  return useMutation({
+    mutationFn: () => api.get<UpdateCheck>("/api/admin/update/check"),
+    onError: (err) => toast.error(errMessage(err)),
+  });
+}
+
+export function useApplyUpdate() {
+  return useMutation({
+    mutationFn: () => api.post<UpdateApplyResult>("/api/admin/update/apply"),
+    onSuccess: (data) => {
+      if (data.ok) {
+        toast.success(data.message, { duration: 12_000 });
+      } else {
+        toast.error(data.message, { duration: 12_000 });
+      }
+    },
+    onError: (err) => toast.error(errMessage(err)),
+  });
+}
+
 /* ---------------- 个人设置 ---------------- */
 
 export function useUpdateProfile() {

@@ -36,6 +36,17 @@ const schema = z.object({
   MAX_ACCOUNTS_PER_USER: intish(5),
   MAX_RUNNING_ACCOUNTS: intish(50),
 
+  // ---- 在线更新 ----
+  /** GitHub owner/repo，用于查询远端最新提交 */
+  REELAX_REPO: z.string().optional().default("Creator2K/reelax-server"),
+  /** 旁路 updater 地址（如 http://updater:9000）；未配置则没有"一键更新" */
+  REELAX_UPDATER_URL: z.string().optional().default(""),
+  /**
+   * 是否允许本进程直接 git pull + 重建。
+   * Docker 部署下必须为 0（代码在镜像里，改不了自己）；本地 node 运行时可开。
+   */
+  ALLOW_LOCAL_UPDATE: boolish,
+
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).optional().default("info"),
   LOG_RETENTION_DAYS: intish(14),
 
@@ -69,6 +80,10 @@ export type Env = {
   logLevel: "debug" | "info" | "warn" | "error";
   logRetentionDays: number;
   sessionTtlDays: number;
+  /** 在线更新相关 */
+  repoSlug: string;
+  updaterUrl: string | null;
+  allowLocalUpdate: boolean;
 };
 
 export class EnvError extends Error {
@@ -161,5 +176,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     logLevel: e.LOG_LEVEL,
     logRetentionDays: e.LOG_RETENTION_DAYS,
     sessionTtlDays: e.SESSION_TTL_DAYS,
+    repoSlug: e.REELAX_REPO.trim(),
+    updaterUrl: e.REELAX_UPDATER_URL.trim() || null,
+    // Docker 里代码在镜像内，本地 git pull 没有意义（而且容器里通常没有 git）
+    allowLocalUpdate: e.ALLOW_LOCAL_UPDATE ?? false,
   };
 }

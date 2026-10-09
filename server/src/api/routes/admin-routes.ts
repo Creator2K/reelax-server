@@ -9,10 +9,12 @@ import type { InvitesRepo } from "../../db/repositories/invites.ts";
 import type { AuditRepo } from "../../db/repositories/audit.ts";
 import type { Repos } from "../../db/repositories/index.ts";
 import type { RunnerRegistry } from "../../game/runner-registry.ts";
+import type { UpdateService } from "../../services/update-service.ts";
 import { currentUser, requireAdmin } from "../../auth/middleware.ts";
 import { body, query } from "../middleware/validate.ts";
-import { clientIp } from "../../auth/ratelimit.ts";
+import { clientIp, Limiters } from "../../auth/ratelimit.ts";
 import { AUDIT_ACTIONS } from "../../db/repositories/audit.ts";
+import { HttpError } from "../server.ts";
 import type { Env } from "../../env.ts";
 
 const statusSchema = z.object({ status: z.enum(["pending", "approved", "banned"]) });
@@ -52,6 +54,8 @@ export function createAdminRouter(deps: {
   audit: AuditRepo;
   repos: Repos;
   registry: RunnerRegistry;
+  update: UpdateService;
+  limiters: Limiters;
   env: Pick<Env, "maxAccountsPerUser" | "maxRunningAccounts" | "allowRegistration" | "baseUrl" | "logRetentionDays">;
   version: string;
   startedAt: number;
@@ -198,6 +202,36 @@ export function createAdminRouter(deps: {
         offset: q.offset ?? 0,
       }),
     );
+  });
+
+  /* ---------- 在线更新 ---------- */
+
+  /** 检查是否有新版本（对比当前提交与远端最新提交） */
+  router.get("/update/check", async (_req, res) => {
+    res.json(await deps.update.check());
+  });
+
+  /**
+   * 应用更新。
+   * 有 updater 时让它去重建容器；否则按 allowLocalUpdate 决定是否本地 git pull。
+   * 限流：更新会重启服务，不能连点。
+   */
+  router.post("/update/apply", async (req, res) => {
+    const admin = currentUser(req);
+    const rl = deps.limiters.updateApply.hit(`update:${admin.id}`);
+    if (!rl.allowed) {
+      throw new HttpError(429, "RATE_LIMITED", `更新操作过于频繁，请 ${Math.ceil(rl.retryAfterMs / 60000)} 分钟后再试。`);
+    }
+
+    const result = await deps.update.apply({ reason: `admin ${admin.email} 手动触发` });
+    deps.audit.record({
+      userId: admin.id,
+      action: "admin.update.applied",
+      target: "update",
+      detail: { ok: result.ok, restarting: result.restarting },
+      ip: clientIp(req),
+    });
+    res.json(result);
   });
 
   return router;
