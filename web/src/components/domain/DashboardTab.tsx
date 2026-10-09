@@ -91,7 +91,16 @@ const ACTION_TEXT: Record<string, string> = {
   "notify.deleted": "删除推送通道",
 };
 
-export function DashboardTab({ myId, onGoUsers }: { myId: string; onGoUsers: () => void }) {
+export function DashboardTab({
+  myId,
+  onGoUsers,
+  onGoInvites,
+}: {
+  myId: string;
+  onGoUsers: () => void;
+  /** 仪表盘里的待办可以直接跳到对应页签 */
+  onGoInvites?: () => void;
+}) {
   // myId 目前只用于「最近动态」里标记自己；保留参数以免调用方按需扩展时改签名
   void myId;
   const usersQ = useQuery({
@@ -196,6 +205,7 @@ export function DashboardTab({ myId, onGoUsers }: { myId: string; onGoUsers: () 
         bannedCount={counts?.banned ?? 0}
         hasUsableInvite={usableInvites.length > 0}
         onGoUsers={onGoUsers}
+        onGoInvites={onGoInvites}
       />
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -223,11 +233,11 @@ export function DashboardTab({ myId, onGoUsers }: { myId: string; onGoUsers: () 
             </div>
 
             <Row label="运行时长" value={sys ? fmtDuration(sys.uptime) : "—"} />
-            <Row label="版本" value={sys?.version ?? "—"} />
-            <Row label="单用户账号上限" value={String(sys?.limits.maxAccountsPerUser ?? "—")} />
+            <Row label="版本" value={`v${sys?.version ?? "—"}`} />
+            <Row label="游戏账号总数" value={String(totalAccounts)} />
+            <Row label="单用户账号额度" value={String(sys?.limits.maxAccountsPerUser ?? "—")} />
             <Row label="自助注册" value={sys?.limits.allowRegistration ? "已开启" : "已关闭"} />
-            <Row label="日志条数" value={String(sys?.storage.logs ?? 0)} />
-            <Row label="日志保留" value={`${sys?.limits.logRetentionDays ?? 14} 天`} />
+            <Row label="日志" value={`${sys?.storage.logs ?? 0} 条 · 保留 ${sys?.limits.logRetentionDays ?? 14} 天`} />
           </CardContent>
         </Card>
 
@@ -283,11 +293,13 @@ function NeedsAttention({
   bannedCount,
   hasUsableInvite,
   onGoUsers,
+  onGoInvites,
 }: {
   counts?: { total: number; pending: number; approved: number; banned: number };
   bannedCount: number;
   hasUsableInvite: boolean;
   onGoUsers: () => void;
+  onGoInvites?: () => void;
 }) {
   const items: { icon: React.ReactNode; text: string; action?: () => void; actionLabel?: string }[] = [];
 
@@ -303,12 +315,14 @@ function NeedsAttention({
     items.push({
       icon: <IconTicket className="size-3.5" />,
       text: "当前没有可用的邀请码，新用户无法注册",
+      ...(onGoInvites ? { action: onGoInvites, actionLabel: "去生成" } : {}),
     });
   }
   if (bannedCount > 0) {
     items.push({
       icon: <IconUserX className="size-3.5" />,
       text: `有 ${bannedCount} 个账号处于封禁状态`,
+      ...(onGoUsers ? { action: onGoUsers, actionLabel: "去看看" } : {}),
     });
   }
 

@@ -12,6 +12,7 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   IconAlertTriangle,
   IconCheck,
+  IconEdit,
   IconKey,
   IconSearch,
   IconShieldLock,
@@ -40,6 +41,7 @@ import { useSession, type SessionUser, type UserRole, type UserStatus } from "@/
 import {
   useApproveUser,
   useBulkUpdateUsers,
+  useEditUser,
   useResetUserPassword,
   useSetUserRole,
   useSetUserStatus,
@@ -71,6 +73,7 @@ export function UsersTab() {
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pwTarget, setPwTarget] = useState<SessionUser | null>(null);
+  const [editTarget, setEditTarget] = useState<SessionUser | null>(null);
 
   const params = new URLSearchParams();
   if (q.trim()) params.set("q", q.trim());
@@ -320,6 +323,10 @@ export function UsersTab() {
                       <IconKey className="size-3.5" />
                       改口令
                     </Button>
+                    <Button size="xs" variant="ghost" onClick={() => setEditTarget(u)} title="编辑显示名与账号额度">
+                      <IconEdit className="size-3.5" />
+                      编辑
+                    </Button>
                   </div>
                 </motion.div>
               );
@@ -356,7 +363,98 @@ export function UsersTab() {
       ) : null}
 
       <ResetPasswordDialog target={pwTarget} onClose={() => setPwTarget(null)} />
+      <EditUserDialog target={editTarget} onClose={() => setEditTarget(null)} />
     </div>
+  );
+}
+
+/**
+ * 编辑用户：显示名 + 单独的账号额度。
+ *
+ * 额度留空 = 跟随「后台设置」里的全局默认；填了就只对这个人生效。
+ * 做成「留空跟随默认」而不是强制填数字，是为了让全局默认的改动
+ * 能自动传导到大多数人（只有需要特例的人才填）。
+ */
+function EditUserDialog({ target, onClose }: { target: SessionUser | null; onClose: () => void }) {
+  const edit = useEditUser();
+  const [name, setName] = useState("");
+  const [quota, setQuota] = useState("");
+  const [inited, setInited] = useState<string | null>(null);
+
+  // 换目标时初始化表单（用 id 记标记，避免同一目标重复打开时状态残留）
+  if (target && inited !== target.id) {
+    setInited(target.id);
+    setName(target.displayName);
+    setQuota(target.quotaOverride == null ? "" : String(target.quotaOverride));
+  }
+
+  const close = () => {
+    setInited(null);
+    onClose();
+  };
+
+  const quotaNum = quota.trim() === "" ? null : Number(quota);
+  const quotaBad = quotaNum !== null && (!Number.isFinite(quotaNum) || quotaNum < 1 || quotaNum > 100);
+  const canSubmit = name.trim().length > 0 && !quotaBad;
+
+  return (
+    <Dialog open={Boolean(target)} onOpenChange={(o) => !o && close()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>编辑「{target?.displayName}」</DialogTitle>
+          <DialogDescription>登录名（{target?.email}）不可修改。</DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <Label htmlFor="eu-name">显示名</Label>
+            <Input id="eu-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={40} />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="eu-quota">账号额度</Label>
+            <Input
+              id="eu-quota"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={100}
+              value={quota}
+              placeholder="留空 = 跟随全局默认"
+              onChange={(e) => setQuota(e.target.value)}
+              className="max-w-48"
+            />
+            {quotaBad ? (
+              <p className="text-[var(--status-error)] text-xs">填 1~100 之间的整数，或留空跟随默认</p>
+            ) : (
+              <p className="text-muted-foreground text-xs">
+                当前已用 {target?.accountCount ?? 0} 个
+                {target?.quotaOverride == null ? "，额度跟随全局默认" : "，额度是单独设置的"}
+              </p>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={close}>
+            取消
+          </Button>
+          <Button
+            disabled={!canSubmit || edit.isPending}
+            onClick={async () => {
+              if (!target) return;
+              await edit.mutateAsync({
+                userId: target.id,
+                patch: { displayName: name.trim(), quotaOverride: quotaNum },
+              });
+              close();
+            }}
+          >
+            {edit.isPending ? "保存中…" : "保存"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

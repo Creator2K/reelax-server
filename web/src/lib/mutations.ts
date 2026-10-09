@@ -459,6 +459,27 @@ export function useApplyUpdate() {
   });
 }
 
+/* ---------------- 管理员：编辑用户（显示名 / 单独额度） ---------------- */
+
+export function useEditUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      userId,
+      patch,
+    }: {
+      userId: string;
+      patch: { displayName?: string; quotaOverride?: number | null };
+    }) => api.patch(`/api/admin/users/${userId}`, patch),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      void qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      toast.success("已保存");
+    },
+    onError: (err) => toast.error(errMessage(err)),
+  });
+}
+
 /* ---------------- 管理员：重置用户口令 ---------------- */
 
 export function useResetUserPassword() {

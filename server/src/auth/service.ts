@@ -21,6 +21,8 @@ export type ApiUser = {
   /** 账号配额（用于前端提前提示，而不是等提交才报错） */
   accountCount?: number;
   accountLimit?: number;
+  /** 单独设置的额度；null = 跟随全局默认。后台编辑用 */
+  quotaOverride?: number | null;
 };
 
 export type SessionToken = { token: string; sessionId: string; expiresAt: number };
@@ -72,9 +74,17 @@ export class AuthService {
   private get ttlMs(): number {
     return this.settings.get("sessionTtlDays") * 86_400_000;
   }
-  /** 每用户账号上限（默认额度；个别用户可单独放宽，见 userQuota） */
+  /** 全局默认的每用户账号上限（设置页里那一项） */
   private get maxAccounts(): number {
     return this.settings.get("maxAccountsPerUser") || this.maxAccountsFallback;
+  }
+  /**
+   * 某个用户实际生效的账号额度。
+   * 有单独覆盖就用覆盖值，否则跟随全局默认。
+   */
+  quotaFor(row: Pick<UserRow, "quota_override">): number {
+    const override = row.quota_override == null ? null : Number(row.quota_override);
+    return Number.isFinite(override) && (override as number) > 0 ? (override as number) : this.maxAccounts;
   }
   private get allowRegistration(): boolean {
     return this.settings.get("allowRegistration");
@@ -95,7 +105,9 @@ export class AuthService {
       createdAt: Number(row.created_at),
       lastLoginAt: row.last_login_at == null ? null : Number(row.last_login_at),
       accountCount: this.repos.accounts.countForUser(row.id),
-      accountLimit: this.maxAccounts,
+      accountLimit: this.quotaFor(row),
+      /** 是否单独设过额度（界面上标出来） */
+      quotaOverride: row.quota_override == null ? null : Number(row.quota_override),
     };
   }
 
@@ -644,6 +656,66 @@ export class AuthService {
     this.repos.users.updatePasswordHash(targetUserId, await hashPassword(newPassword));
     // 改口令后强制所有会话失效：否则旧会话（可能已被泄漏）仍然有效
     this.repos.sessions.deleteForUser(targetUserId);
+  }
+
+  /**
+   * 管理员编辑用户资料。
+   *
+   * 只允许改这几项：显示名、单独额度。
+   * 角色与状态有各自的接口（那边有「不能封最后一个管理员」这类约束），
+   * 混在一起容易绕过校验。
+   *
+   * @param quotaOverride 数字 = 单独设置；null = 清除覆盖跟随全局；undefined = 不改
+   */
+  adminUpdateUser(
+    userId: string,
+    patch: { displayName?: string; quotaOverride?: number | null },
+    adminId: string,
+    ip?: string,
+  ): ApiUser {
+    const target = this.repos.users.findById(userId);
+    if (!target) throw new HttpError(404, "USER_NOT_FOUND", "用户不存在");
+
+    const changes: string[] = [];
+
+    if (patch.displayName !== undefined) {
+      const name = patch.displayName.trim();
+      if (!name) throw badRequest("显示名不能为空", "INVALID_DISPLAY_NAME");
+      if (name.length > 40) throw badRequest("显示名最多 40 个字符", "INVALID_DISPLAY_NAME");
+      if (name !== target.display_name) {
+        this.repos.users.updateDisplayName(userId, name);
+        changes.push(`显示名 → ${name}`);
+      }
+    }
+
+    if (patch.quotaOverride !== undefined) {
+      if (patch.quotaOverride !== null) {
+        const q = Number(patch.quotaOverride);
+        if (!Number.isFinite(q) || q < 1 || q > 100) {
+          throw badRequest("账号额度需要在 1~100 之间", "INVALID_QUOTA");
+        }
+      }
+      const before = target.quota_override == null ? null : Number(target.quota_override);
+      const after = patch.quotaOverride === null ? null : Math.floor(Number(patch.quotaOverride));
+      if (before !== after) {
+        this.repos.users.setQuotaOverride(userId, after);
+        changes.push(after === null ? "账号额度 → 跟随全局默认" : `账号额度 → ${after}`);
+      }
+    }
+
+    if (changes.length) {
+      this.repos.audit.record({
+        userId: adminId,
+        action: "admin.user.updated",
+        target: userId,
+        detail: { changes },
+        ip: ip ?? null,
+      });
+    }
+
+    const fresh = this.repos.users.findById(userId);
+    if (!fresh) throw new HttpError(404, "USER_NOT_FOUND", "用户不存在");
+    return this.toApi(fresh);
   }
 
   async createUserByAdmin(input: {

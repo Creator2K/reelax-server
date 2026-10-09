@@ -10,9 +10,9 @@ import {
   IconCircleCheck,
   IconCopy,
   IconPlus,
+  IconServer,
   IconShieldLock,
   IconTrash,
-  IconUsers,
 } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -25,11 +25,9 @@ import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.tsx";
-import { UpdatePanel } from "@/components/domain/UpdatePanel.tsx";
 import { DashboardTab } from "@/components/domain/DashboardTab.tsx";
 import { UsersTab } from "@/components/domain/UsersTab.tsx";
 import { AdminSettingsTab } from "@/components/domain/AdminSettingsTab.tsx";
-import { ChangelogList } from "@/components/domain/Changelog.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { api } from "@/lib/api.ts";
 import { useSession } from "@/lib/session.ts";
@@ -85,19 +83,31 @@ export default function AdminPage() {
 
   return (
     <PageContainer wide>
-      {/* 默认落在仪表盘：进后台先看总览，而不是直接掉进一张用户表格 */}
+      {/*
+        四个页签，按「日常要做的事」分组（原来 6 个太多、职责重叠）：
+          概览   —— 一眼看状态 + 待办（系统信息也在这里，它本来就是"看一眼"的东西）
+          用户   —— 找人、编辑、批量处理
+          邀请码 —— 发注册名额
+          设置   —— 在线改运行参数、在线更新（都是运维动作）
+        详细变更历史在侧边栏的「更新记录」，不占后台页签。
+      */}
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="overview">概览</TabsTrigger>
           <TabsTrigger value="users">用户</TabsTrigger>
           <TabsTrigger value="invites">邀请码</TabsTrigger>
           <TabsTrigger value="settings">设置</TabsTrigger>
-          <TabsTrigger value="system">系统</TabsTrigger>
-          <TabsTrigger value="changelog">更新记录</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="pt-4">
-          <DashboardTab myId={me?.id ?? ""} onGoUsers={() => setTab("users")} />
+          <div className="space-y-4">
+            <DashboardTab
+              myId={me?.id ?? ""}
+              onGoUsers={() => setTab("users")}
+              onGoInvites={() => setTab("invites")}
+            />
+            <SystemPanel />
+          </div>
         </TabsContent>
         <TabsContent value="users" className="pt-4">
           <UsersTab />
@@ -107,12 +117,6 @@ export default function AdminPage() {
         </TabsContent>
         <TabsContent value="settings" className="pt-4">
           <AdminSettingsTab />
-        </TabsContent>
-        <TabsContent value="system" className="pt-4">
-          <SystemTab />
-        </TabsContent>
-        <TabsContent value="changelog" className="pt-4">
-          <ChangelogList />
         </TabsContent>
       </Tabs>
     </PageContainer>
@@ -264,15 +268,21 @@ function InvitesTab() {
   );
 }
 
-/* ---------------- 系统 ---------------- */
+/* ---------------- 系统信息（挂在概览页下方） ---------------- */
 
-function SystemTab() {
+/**
+ * 系统信息。
+ *
+ * 只展示「看一眼就够」的事实，不放可操作的东西 ——
+ * 参数改动在「设置」页，更新也在「设置」页，避免同一件事有两个入口。
+ */
+function SystemPanel() {
   const { data, isPending, error } = useQuery({
     queryKey: ["admin", "system"],
     queryFn: () => api.get<AdminSystem>("/api/admin/system"),
   });
 
-  if (isPending) return <Skeleton className="h-48" />;
+  if (isPending) return <Skeleton className="h-40" />;
   if (error) {
     return (
       <Alert variant="destructive">
@@ -284,22 +294,19 @@ function SystemTab() {
   if (!data) return null;
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2">
+    <div className="grid gap-3 sm:grid-cols-2">
       <Card className="gap-3">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-sm">
-            <IconUsers className="size-4" />
-            运行状态
+            <IconServer className="size-4" />
+            服务
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-xs">
-          <Row label="版本" value={data.version} />
+          <Row label="版本" value={`v${data.version}`} />
           <Row label="已运行" value={fmtDuration(data.uptime)} />
           <Row label="账号总数" value={String(data.runtime.totalAccounts)} />
-          <Row
-            label="正在运行"
-            value={`${data.runtime.runningAccounts} / ${data.runtime.capacity}`}
-          />
+          <Row label="正在运行" value={`${data.runtime.runningAccounts} / ${data.runtime.capacity}`} />
           <Row label="剩余并发额度" value={String(data.runtime.available)} />
         </CardContent>
       </Card>
@@ -309,18 +316,13 @@ function SystemTab() {
           <CardTitle className="text-sm">限额与存储</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-xs">
-          <Row label="单用户账号上限" value={String(data.limits.maxAccountsPerUser)} />
+          <Row label="单用户账号额度（默认）" value={String(data.limits.maxAccountsPerUser)} />
           <Row label="全局并发上限" value={String(data.limits.maxRunningAccounts)} />
           <Row label="允许自助注册" value={data.limits.allowRegistration ? "是" : "否"} />
-          <Row label="日志保留" value={`${data.limits.logRetentionDays} 天`} />
-          <Row label="日志条数" value={String(data.storage.logs)} />
+          <Row label="日志保留" value={`${data.limits.logRetentionDays} 天 · 现有 ${data.storage.logs} 条`} />
           <Row label="审计事件" value={String(data.storage.auditEvents)} />
         </CardContent>
       </Card>
-
-      <div className="sm:col-span-2">
-        <UpdatePanel />
-      </div>
     </div>
   );
 }
@@ -329,7 +331,7 @@ function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between gap-3">
       <span className="text-muted-foreground">{label}</span>
-      <span className="font-mono">{value}</span>
+      <span className="mono-num truncate">{value}</span>
     </div>
   );
 }

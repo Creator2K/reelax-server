@@ -19,6 +19,8 @@ export type SessionUser = {
   /** 该用户当前游戏账号数与上限 */
   accountCount: number;
   accountLimit: number;
+  /** 单独设置的账号额度；null/缺失 = 跟随全局默认 */
+  quotaOverride?: number | null;
 };
 
 export type SystemInfo = {

@@ -16,6 +16,7 @@ import { Switch } from "@/components/ui/switch.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { api } from "@/lib/api.ts";
+import { UpdatePanel } from "@/components/domain/UpdatePanel.tsx";
 import { SETTINGS_QUERY_KEY, useSaveSettings, type SettingItem } from "@/lib/mutations.ts";
 
 export function AdminSettingsTab() {
@@ -26,7 +27,6 @@ export function AdminSettingsTab() {
   const save = useSaveSettings();
   /** 本地草稿：改动先攒着，点保存才提交（避免开关一动就发请求） */
   const [draft, setDraft] = useState<Record<string, unknown>>({});
-
   if (isPending) {
     return (
       <div className="space-y-3">
@@ -132,7 +132,8 @@ export function AdminSettingsTab() {
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-card sticky bottom-0 flex items-center justify-between gap-3 rounded-2xl border px-4 py-3 shadow-lg"
+          className="bg-card sticky bottom-0 z-10 flex items-center justify-between gap-3 rounded-2xl border px-4 py-3"
+          style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}
         >
           <span className="text-xs">
             有 <strong>{dirtyCount}</strong> 项改动尚未保存
@@ -150,9 +151,13 @@ export function AdminSettingsTab() {
       ) : null}
 
       <p className="text-muted-foreground text-xs">
-        提示：部署时的初始值来自环境变量（如 <code className="font-mono">MAX_ACCOUNTS_PER_USER</code>）。
-        这里改动后以数据库为准，重启不会丢失。
+        这些设置存在数据库里，改完立即生效、重启也不会丢。没被改过的项在重启后仍跟随环境变量。
       </p>
+
+      {/* 在线更新放在这里：它本质也是「运维设置」，不该单独占一个页签 */}
+      <div className="pt-2">
+        <UpdatePanel />
+      </div>
     </div>
   );
 }

@@ -218,6 +218,16 @@ ALTER TABLE notify_channels ADD COLUMN verify_attempts INTEGER NOT NULL DEFAULT 
 ALTER TABLE notify_channels ADD COLUMN pending_target_id TEXT;
 `,
   },
+
+  // ---------- 单用户的账号额度覆盖 ----------
+  // 为什么需要：全局默认额度（设置页里那个）是给所有人的，但经常要给某个人放宽/收紧。
+  // NULL = 跟随全局默认；有值则只对这个人生效。
+  {
+    id: "0005_user_quota_override",
+    sql: `
+ALTER TABLE users ADD COLUMN quota_override INTEGER;
+`,
+  },
 ];
 
 /** 供 migrate.ts 记录已应用版本 */

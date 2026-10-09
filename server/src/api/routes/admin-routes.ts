@@ -32,6 +32,13 @@ const createUserSchema = z.object({
   role: z.enum(["user", "admin"]).optional(),
 });
 
+/** 管理员编辑用户：显示名、单独额度 */
+const editUserSchema = z.object({
+  displayName: z.string().min(1, "显示名不能为空").max(40).optional(),
+  /** 数字 = 单独设置；null = 跟随全局默认 */
+  quotaOverride: z.number().int().min(1).max(100).nullable().optional(),
+});
+
 /** 后台设置保存：键值由 SettingsService 自己校验 */
 const settingsUpdateSchema = z.object({ patch: z.record(z.string(), z.unknown()) });
 
@@ -148,6 +155,16 @@ export function createAdminRouter(deps: {
   router.patch("/users/:id/role", body(roleSchema), (req, res) => {
     const admin = currentUser(req);
     const user = deps.auth.setUserRole(req.params.id as string, req.body.role, admin.id, clientIp(req));
+    res.json({ user });
+  });
+
+  /**
+   * 编辑用户：显示名、单独额度。
+   * 角色与状态仍是各自的接口（那边有「不能封最后一个管理员」这类约束）。
+   */
+  router.patch("/users/:id", body(editUserSchema), (req, res) => {
+    const admin = currentUser(req);
+    const user = deps.auth.adminUpdateUser(req.params.id as string, req.body, admin.id, clientIp(req));
     res.json({ user });
   });
 

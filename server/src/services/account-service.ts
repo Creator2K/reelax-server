@@ -314,8 +314,12 @@ export class AccountService {
   /* ---------- 辅助 ---------- */
 
   private limitFor(userId: string): number {
-    // 目前是全局上限；留出按用户覆盖的扩展点
-    void userId;
+    // 该用户实际生效的额度：优先用单独设置的覆盖值，否则全局默认。
+    // （管理员可以在「用户 → 编辑」里给某个人单独放宽）
+    const user = this.repos.users.findById(userId);
+    if (!user) return this.registry.limitPerUser;
+    const override = user.quota_override == null ? null : Number(user.quota_override);
+    if (Number.isFinite(override) && (override as number) > 0) return override as number;
     return this.registry.limitPerUser;
   }
 

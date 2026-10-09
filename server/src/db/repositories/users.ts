@@ -16,6 +16,8 @@ export type UserRow = {
   approved_at: number | null;
   created_at: number;
   last_login_at: number | null;
+  /** 账号额度覆盖：NULL = 跟随全局默认 */
+  quota_override: number | null;
 };
 
 export type CreateUserInput = {
@@ -160,6 +162,15 @@ export class UsersRepo extends BaseRepo {
 
   updateDisplayName(id: string, displayName: string): boolean {
     return Number(this.db.run("UPDATE users SET display_name = ? WHERE id = ?", displayName.trim(), id).changes) > 0;
+  }
+
+  /**
+   * 设置该用户的账号额度覆盖。
+   * `null` = 清除覆盖，跟随全局默认（设置页里的「每个用户可挂账号数」）。
+   */
+  setQuotaOverride(id: string, quota: number | null): boolean {
+    const v = quota == null ? null : Math.max(1, Math.floor(quota));
+    return Number(this.db.run("UPDATE users SET quota_override = ? WHERE id = ?", v, id).changes) > 0;
   }
 
   updatePasswordHash(id: string, passwordHash: string): boolean {
