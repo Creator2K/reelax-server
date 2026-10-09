@@ -1,6 +1,0 @@
-﻿fix: 天气 id 兼容 weatherId / id 两种写法
-
-模拟器（对真实响应验证过）读的是 biome.weather.weatherId || biome.weather.id，
-我这边只认 weatherId。当前真实响应带的是 weatherId，所以一直正常，
-但游戏若在某处只下发 id，天气面板会变空白、奥秘涌流判断也会失效。
-两处都补上回退，保持与模拟器一致。
