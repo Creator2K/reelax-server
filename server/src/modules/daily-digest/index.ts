@@ -18,12 +18,15 @@
 // 进程重启导致基线丢失时，经验一项明确显示「无基线」，不编数字。
 import { type ModuleContext, type ModuleDefinition } from "../types.ts";
 import { HIGH_RARITIES, RARITY_LABELS } from "../shared/rarity.ts";
-import { fmtNum, localDay } from "../shared/format.ts";
+import { localDay } from "../shared/format.ts";
 import {
   DEFAULT_DIGEST_TEMPLATE,
   type DigestData,
   digestVarsByGroup,
   findUnknownVars,
+  fmtInt,
+  fmtNum,
+  fmtSigned,
   renderDigestTemplate,
 } from "./template.ts";
 
@@ -175,12 +178,15 @@ async function collectDigestData(ctx: ModuleContext, stamp: string, S: DigestSta
   let xpText: string;
   if (Number.isFinite(xpTotal) && S.prevXpTotal != null) {
     xp = xpTotal - S.prevXpTotal;
-    xpText = `经验 +${fmtNum(xp)}`;
+    // ★ 用 fmtSigned 而不是硬编码「经验 +」：转生会重置经验总量，差值为负时
+    //   旧写法会渲染成「经验 +-1,234」这种明显坏掉的文本。
+    //   同时统一成与日报其它数字一致的格式（template.ts 的 fmtNum，无空格）。
+    xpText = `经验 ${fmtSigned(xp)}`;
   } else {
     const sessionXp = ctx.account.runtimeStats().experience;
     if (sessionXp > 0) {
       xp = sessionXp;
-      xpText = `经验 +${fmtNum(sessionXp)}（引擎本次运行累计）`;
+      xpText = `经验 ${fmtSigned(sessionXp)}（引擎本次运行累计）`;
     } else {
       xpText = "经验 —（无基线）";
     }
@@ -195,9 +201,14 @@ async function collectDigestData(ctx: ModuleContext, stamp: string, S: DigestSta
   let levelShortfall: number | null = null;
   let goldShortfall: number | null = null;
   if (pv) {
-    level = Number(pv.levelBefore);
-    levelGain = S.prevLevel != null ? level - S.prevLevel : null;
-    S.prevLevel = level;
+    // ★ 必须挡 NaN：字段缺失时 Number(undefined) = NaN，会渲染成「等级 Lv 0（+NaN）」，
+    //   而且 `NaN != null` 为真 → prevLevel 永久变成 NaN，之后每天都算不出升级数。
+    const lv = Number(pv.levelBefore);
+    if (Number.isFinite(lv)) {
+      level = lv;
+      levelGain = S.prevLevel != null ? lv - S.prevLevel : null;
+      S.prevLevel = lv;
+    }
     const ls = Number(pv.levelShortfall);
     const gs = Number(pv.goldShortfall);
     levelShortfall = Number.isFinite(ls) ? ls : null;
@@ -310,14 +321,18 @@ async function buildReport(ctx: ModuleContext, stamp: string, S: DigestState): P
   // ★ 抛出结构化事件：消费方（通知推送等）读字段，不做字符串匹配
   ctx.account.emit("digest", {
     date: data.date,
+    // label = 期间名（「昨日」/「今日截至现在」）；accountLabel = 账号名。
+    // account-runtime.emit 会先塞账号名再被 payload 覆盖，所以推送标题必须读 accountLabel，
+    // 否则显示成【昨日】收益日报（账号名丢失）。
     label: data.label,
+    accountLabel: data.account,
     lines,
     netGold: data.net,
     income: data.income,
     baitCost: data.baitCost,
     fishTotal: data.fishTotal,
     xpText: data.xpText,
-    levelText: data.level == null ? "" : `Lv ${fmtNum(data.level)}`,
+    levelText: data.level == null ? "" : `Lv ${fmtInt(data.level)}`,
   });
 }
 

@@ -8,6 +8,7 @@ import { createLogger, mirrorToConsole, type Logger } from "./lib/logger.ts";
 import { Bus } from "./lib/bus.ts";
 import { openDb, type Db } from "./db/client.ts";
 import { createRepos, type Repos } from "./db/repositories/index.ts";
+import type { InsertLogInput } from "./db/repositories/logs.ts";
 import { Limiters } from "./auth/ratelimit.ts";
 import { AuthService } from "./auth/service.ts";
 import { attachAuth } from "./auth/middleware.ts";
@@ -106,7 +107,9 @@ function buildContext(): Ctx {
 
   const globalProxy = parseGlobalProxy(env.globalProxy);
   if (env.globalProxy && !globalProxy) {
-    logger.warn("代理", `REELAX_GLOBAL_PROXY 无法解析，已忽略：${env.globalProxy}`);
+    // ★ 不打印原值：它可能形如 socks5://user:pass@host:port，
+    //   而这条日志没有 userId，属于「所有登录用户都能在运行日志页看到」的系统日志。
+    logger.warn("代理", "REELAX_GLOBAL_PROXY 格式无法解析，已忽略（不打印原值，避免带出口令）");
   }
 
   const bus = new Bus();
@@ -166,6 +169,7 @@ function buildContext(): Ctx {
     // 镜像里的代码无法替换自己，真正的更新交给旁路 updater。
     workDir: path.resolve(__dirname, "../.."),
     updaterUrl: env.updaterUrl,
+    updaterToken: env.updaterToken,
     allowLocalUpdate: env.allowLocalUpdate,
   });
 
@@ -179,12 +183,53 @@ async function main(): Promise<void> {
   const checkpointTimer = setInterval(() => db.checkpoint(), 5 * 60_000);
   checkpointTimer.unref();
 
+  /* ---------- 运行日志落库 ----------
+   * lib/logger 只提供 addSink 钩子，早期版本从来没把它接上 → logs 表**永远是空的**，
+   * 于是「微信「日志」命令 / 历史查询 / 日志保留策略 / 管理页的日志条数」全部空转
+   * （微信「日志」命令会永远回复「最近没有值得提醒的日志」）。
+   *
+   * 这里接上，并做批量写入（攒够 40 条或每 5 秒 flush 一次）：高频日志一条一个事务
+   * 会把 fsync 次数放大几十倍。debug 级不落库 —— 它只用于本地排障，长期没有价值。
+   */
+  const pendingLogs: InsertLogInput[] = [];
+  const flushLogs = (): void => {
+    if (!pendingLogs.length) return;
+    const batch = pendingLogs.splice(0, pendingLogs.length);
+    try {
+      repos.logs.insertMany(batch);
+    } catch (err) {
+      console.error("[logs] 落库失败：", err instanceof Error ? err.message : String(err));
+    }
+  };
+  logger.addSink((e) => {
+    if (e.level === "debug") return;
+    if (pendingLogs.length >= 2000) return; // 兜底：异常风暴时宁可丢日志也不吃内存
+    pendingLogs.push({
+      userId: e.userId,
+      accountId: e.accountId,
+      level: e.level,
+      moduleId: e.moduleId,
+      tag: e.tag,
+      msg: e.msg,
+      createdAt: e.t,
+    });
+    if (pendingLogs.length >= 40) flushLogs();
+  });
+  const logFlushTimer = setInterval(flushLogs, 5000);
+  logFlushTimer.unref();
+
   /* ---------- 定期维护 ---------- */
   const maintenance = setInterval(
     () => {
       try {
         repos.sessions.purgeExpired();
-        repos.logs.deleteOlderThan(Date.now() - env.logRetentionDays * 86_400_000);
+        // ★ 保留天数读运行时设置（后台可改）；早期读的是启动时的 env 值，
+        //   导致「日志保留天数」在后台改了完全不生效。
+        repos.logs.deleteOlderThan(Date.now() - settings.get("logRetentionDays") * 86_400_000);
+        // 每用户条数上限：防止单个用户的高频日志把库撑大
+        for (const { userId } of repos.logs.countsByUser()) {
+          if (userId) repos.logs.trimForUser(userId);
+        }
         repos.audit.deleteOlderThan(Date.now() - 180 * 86_400_000);
       } catch (err) {
         logger.warn("维护", `清理任务失败：${err instanceof Error ? err.message : String(err)}`);
@@ -222,11 +267,22 @@ async function main(): Promise<void> {
           ].join("\n"),
           { encoding: "utf8", mode: 0o600 },
         );
-        logger.info("管理员", "━".repeat(52));
-        logger.info("管理员", `已创建默认管理员：${seeded.username}`);
-        logger.info("管理员", `初始口令：${seeded.password}`);
-        logger.info("管理员", `（也已写入 ${notePath}，登录后请尽快修改口令）`);
-        logger.info("管理员", "━".repeat(52));
+        // ★ 初始口令只打 stdout，**绝不能进 Logger 缓冲区**。
+        //   logger.recent()（运行日志页/接口）会把 userId=null 的「系统级日志」发给
+        //   每一个已登录用户，于是任何一个被邀请的普通用户都能读到管理员口令 = 提权。
+        //   stdout 只在宿主机 `docker logs` 可见，正好够运维用。
+        console.log(
+          [
+            "",
+            "━".repeat(52),
+            `[引导] 已创建默认管理员：${seeded.username}`,
+            `[引导] 初始口令：${seeded.password}`,
+            `[引导] 也已写入 ${notePath}，登录后请尽快修改口令并删除该文件`,
+            "━".repeat(52),
+            "",
+          ].join("\n"),
+        );
+        logger.info("管理员", `已创建默认管理员：${seeded.username}（初始口令只打印在容器日志，不在日志页显示）`);
       } else if (seeded.created) {
         logger.info("管理员", `已创建默认管理员：${seeded.username}（口令取自 ADMIN_PASSWORD）`);
       } else if (seeded.note) {
@@ -250,6 +306,8 @@ async function main(): Promise<void> {
     const p = payload as {
       userId?: string;
       label?: string;
+      /** 账号名（推送标题里的【】用这个，不能用 label —— 那是「昨日」这类期间名） */
+      accountLabel?: string;
       lines?: string[];
       date?: string;
     } | null;
@@ -260,7 +318,7 @@ async function main(): Promise<void> {
       .sendToUser(p.userId, {
         title: `收益日报 · ${p.date ?? ""}`.trim(),
         body,
-        accountLabel: p.label ?? null,
+        accountLabel: p.accountLabel ?? p.label ?? null,
       })
       .then((r) => {
         if (r.sent > 0) {
@@ -390,11 +448,14 @@ async function main(): Promise<void> {
     try {
       clearInterval(checkpointTimer);
       clearInterval(maintenance);
+      clearInterval(logFlushTimer);
       // 先停引擎（会把状态写回数据库），再关推送、WS 与 HTTP
       await registry.stopAll();
       await notify.disposeAll().catch(() => {});
       wsGateway.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      // 落库最后一批日志：必须在 db.close() 之前写完，否则这段历史直接丢
+      flushLogs();
       db.close();
       logger.info("服务", "已安全关闭");
       process.exit(0);

@@ -48,39 +48,51 @@ export function UpdatePanel() {
   const [watching, setWatching] = useState(false);
   const progress = useUpdateProgress(watching);
 
-  /** 服务探活结果：「已重启归来」才是真正的完成信号 */
-  const [backOnline, setBackOnline] = useState(false);
+  /** 探活：看到「刚重启起来的进程」才算更新完成（旧容器一直健康，不能当成功） */
+  const [onlineSeen, setOnlineSeen] = useState(false);
+  const [restartedFresh, setRestartedFresh] = useState(false);
   const [waitedSec, setWaitedSec] = useState(0);
   const pollRef = useRef<number | null>(null);
 
   const r = check.data;
   const p = progress.data;
-  const running = Boolean(p?.running) || (watching && !backOnline && apply.isSuccess);
+  /** updater 明确报失败 —— 这个信号优先级最高，不能被「服务还在」掩盖 */
+  const failed = p?.step === "failed";
+  /** 成功：updater 报 ok，或探活确认容器真的重建过 */
+  const succeeded = p?.step === "done" || restartedFresh;
+  const running = Boolean(p?.running) || (watching && !succeeded && apply.isSuccess);
 
   /* ---- 触发更新 ---- */
   const startUpdate = () => {
-    setBackOnline(false);
+    setOnlineSeen(false);
+    setRestartedFresh(false);
     setWaitedSec(0);
     setWatching(true);
     apply.mutate();
   };
 
-  /* ---- 更新期间：轮询探活，等服务回来 ---- */
+  /* ---- 更新期间：轮询探活，等服务带着新进程回来 ---- */
   useEffect(() => {
-    if (!watching || backOnline) return;
+    if (!watching || restartedFresh) return;
     // 只在「已经点过更新」或「观察到正在更新」时才探活，避免无谓请求
     if (!apply.isSuccess && !p?.running) return;
 
     let cancelled = false;
+    let ticks = 0;
     const tick = async () => {
       if (cancelled) return;
-      const ok = await probeHealth();
+      const res = await probeHealth();
       if (cancelled) return;
-      if (ok) {
-        setBackOnline(true);
+      if (res.online) setOnlineSeen(true);
+      if (res.fresh) {
+        // 真的换了一个进程 → 这才是「更新完成」的证据
+        setRestartedFresh(true);
         return;
       }
-      setWaitedSec((s) => s + 2);
+      ticks += 1;
+      setWaitedSec(ticks * 2);
+      // 兜底：10 分钟还没等到新进程就停止探活（例如本次没有触发重建）
+      if (ticks >= 300) setWatching(false);
     };
     // 容器重建至少要几十秒，先等 8 秒再开始探，省掉一轮必然失败的请求
     const first = window.setTimeout(tick, 8000);
@@ -90,7 +102,7 @@ export function UpdatePanel() {
       window.clearTimeout(first);
       if (pollRef.current) window.clearInterval(pollRef.current);
     };
-  }, [watching, backOnline, apply.isSuccess, p?.running]);
+  }, [watching, restartedFresh, apply.isSuccess, p?.running]);
 
   /** 进度百分比：按步骤位置估算（无法拿到真实百分比，但足够传达「在动」） */
   const stepIdx = p ? STEP_ORDER.indexOf(p.step) : -1;
@@ -189,7 +201,7 @@ export function UpdatePanel() {
 
         {/* ---------- 进度 ---------- */}
         <AnimatePresence>
-          {watching && (running || backOnline || p?.step === "failed" || p?.step === "done") ? (
+          {watching && (running || succeeded || failed) ? (
             <motion.div
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
@@ -197,17 +209,31 @@ export function UpdatePanel() {
               transition={{ type: "spring", stiffness: 260, damping: 26 }}
               className="space-y-3 rounded-2xl border px-3.5 py-3"
             >
-              {/* 服务重启归来 → 让用户刷新 */}
-              {backOnline ? (
+              {/* ★ 失败优先：探活成功只说明「有个进程在服务」，早期把它当成功信号
+                  会在构建还没结束（甚至失败）时就显示「更新完成」，掩盖真正的失败 */}
+              {failed ? (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 text-sm font-medium text-[var(--status-error)]">
+                    <IconAlertTriangle className="size-4" />
+                    更新失败
+                  </div>
+                  {p.error ? <div className="text-muted-foreground text-xs">{p.error}</div> : null}
+                  <p className="text-muted-foreground text-xs">
+                    旧的容器仍在运行，服务没有中断。修复原因后可再次点「立即更新」。
+                  </p>
+                </div>
+              ) : succeeded ? (
                 <div className="space-y-2.5">
                   <div className="flex items-center gap-2 text-sm font-medium">
                     <span className="grid size-6 place-items-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
                       <IconRocket className="size-3.5" />
                     </span>
-                    更新完成，服务已重启
+                    {restartedFresh ? "更新完成，服务已重启" : "更新已完成"}
                   </div>
                   <p className="text-muted-foreground text-xs">
-                    当前页面还是旧版本的前端资源，**请刷新页面**加载新版界面。
+                    当前页面还是旧版本的前端资源，请
+                    <span className="text-foreground font-medium">刷新页面</span>
+                    加载新版界面。
                   </p>
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" onClick={() => window.location.reload()}>
@@ -218,17 +244,6 @@ export function UpdatePanel() {
                       刷新后再检查一次
                     </Button>
                   </div>
-                </div>
-              ) : p?.step === "failed" ? (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 text-sm font-medium text-[var(--status-error)]">
-                    <IconAlertTriangle className="size-4" />
-                    更新失败
-                  </div>
-                  {p.error ? <div className="text-muted-foreground text-xs">{p.error}</div> : null}
-                  <p className="text-muted-foreground text-xs">
-                    旧的容器仍在运行，服务没有中断。修复原因后可再次点「立即更新」。
-                  </p>
                 </div>
               ) : (
                 <>
@@ -276,7 +291,9 @@ export function UpdatePanel() {
                   </div>
 
                   <p className="text-muted-foreground text-xs">
-                    重建镜像期间服务会短暂不可用，这是正常现象；页面会自动等它回来。
+                    {onlineSeen
+                      ? "服务仍由旧容器提供（重建还在进行），完成后会自动切换过去。"
+                      : "重建镜像期间服务会短暂不可用，这是正常现象；页面会自动等它回来。"}
                   </p>
                 </>
               )}

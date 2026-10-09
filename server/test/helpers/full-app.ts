@@ -157,7 +157,8 @@ export async function buildFullApp(
   const app = createApp({
     logger,
     isProduction: false,
-    trustProxy: false,
+    // 跟随 env：测试「反代模式下的限流/审计 IP」时必须让 Express 真的解析 XFF
+    trustProxy: env.trustProxy,
     version: "test",
     startedAt: Date.now(),
     mount: (a) => {

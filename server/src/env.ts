@@ -41,6 +41,8 @@ const schema = z.object({
   REELAX_REPO: z.string().optional().default("Creator2K/reelax-server"),
   /** 旁路 updater 地址（如 http://updater:9000）；未配置则没有"一键更新" */
   REELAX_UPDATER_URL: z.string().optional().default(""),
+  /** updater 的访问令牌（需与 updater 容器的 UPDATER_TOKEN 一致；不设则 updater 不校验） */
+  REELAX_UPDATER_TOKEN: z.string().optional().default(""),
   /**
    * 是否允许本进程直接 git pull + 重建。
    * Docker 部署下必须为 0（代码在镜像里，改不了自己）；本地 node 运行时可开。
@@ -95,6 +97,8 @@ export type Env = {
   /** 在线更新相关 */
   repoSlug: string;
   updaterUrl: string | null;
+  /** updater 令牌（空 = 不发 Authorization 头） */
+  updaterToken: string;
   allowLocalUpdate: boolean;
   /** 部署时的默认管理员（username 为空表示不自动创建） */
   adminUsername: string;
@@ -182,9 +186,11 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     baseUrl,
     globalProxy: e.REELAX_GLOBAL_PROXY.trim(),
     proxyEchoUrl: e.PROXY_ECHO_URL,
-    // 默认：生产环境下 trust proxy 默认开（反代后要取真实 IP 用于限流）；
-    // cookie 的 Secure 不按环境猜，交给请求协议判断（见 Env.cookieSecure 注释）。
-    trustProxy: e.TRUST_PROXY ?? isProduction,
+    // ★ 默认**不信任**代理头（fail-safe）：信任 XFF 等于把「客户端 IP」交给客户端自己填，
+    //   直连暴露时会让限流与审计 IP 全部失效。反代部署请显式设 TRUST_PROXY=1，
+    //   并确保反代覆盖客户端传来的 X-Forwarded-For（nginx: proxy_set_header X-Forwarded-For $remote_addr）。
+    //   早期实现是 `?? isProduction`（生产环境默认开），方向正好是危险的那一边。
+    trustProxy: e.TRUST_PROXY ?? false,
     cookieSecure: e.COOKIE_SECURE,
     allowRegistration: e.ALLOW_REGISTRATION ?? true,
     maxAccountsPerUser: e.MAX_ACCOUNTS_PER_USER,
@@ -194,6 +200,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     sessionTtlDays: e.SESSION_TTL_DAYS,
     repoSlug: e.REELAX_REPO.trim(),
     updaterUrl: e.REELAX_UPDATER_URL.trim() || null,
+    updaterToken: e.REELAX_UPDATER_TOKEN.trim(),
     // Docker 里代码在镜像内，本地 git pull 没有意义（而且容器里通常没有 git）
     allowLocalUpdate: e.ALLOW_LOCAL_UPDATE ?? false,
     adminUsername: e.ADMIN_USERNAME.trim(),

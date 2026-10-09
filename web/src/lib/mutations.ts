@@ -435,13 +435,25 @@ export function useCheckUpdate() {
   });
 }
 
-/** 探活：更新会重启服务，用它判断「服务回来了」（这才是可靠的成功信号） */
-export async function probeHealth(timeoutMs = 3000): Promise<boolean> {
+/**
+ * 探活：更新会重启服务，用它判断「服务回来了」。
+ *
+ * ★ 只判断 HTTP 200 是不够的：`docker compose up -d --build` 期间**旧容器一直在服务
+ *   /api/health**（构建在前、重建在后），所以点完更新 8 秒就会探到 200，
+ *   于是构建还在跑、甚至构建失败时，界面都显示「更新完成，服务已重启」。
+ *   这里额外读 /api/health 的 uptime：只有「刚起来的进程」（uptime 很小）才算真重启过。
+ */
+const FRESH_UPTIME_MS = 180_000;
+
+export async function probeHealth(timeoutMs = 3000): Promise<{ online: boolean; fresh: boolean }> {
   try {
     const r = await fetch("/api/health", { signal: AbortSignal.timeout(timeoutMs) });
-    return r.ok;
+    if (!r.ok) return { online: false, fresh: false };
+    const j = (await r.json().catch(() => null)) as { uptime?: number } | null;
+    const uptime = Number(j?.uptime);
+    return { online: true, fresh: Number.isFinite(uptime) && uptime < FRESH_UPTIME_MS };
   } catch {
-    return false;
+    return { online: false, fresh: false };
   }
 }
 

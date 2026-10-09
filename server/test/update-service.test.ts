@@ -10,12 +10,16 @@ import { Logger } from "../src/lib/logger.ts";
 
 const logger = new Logger({ limit: 100, minLevel: "error" });
 
-/** 造一个只回固定 JSON 的假 fetch，并记录调用 */
+/** 造一个只回固定 JSON 的假 fetch，并记录调用（含 Authorization，用于验证令牌确实发出去了） */
 function fakeFetch(handler: (url: string, init?: RequestInit) => { status?: number; body?: unknown; throwError?: unknown }) {
-  const calls: { url: string; method: string }[] = [];
+  const calls: { url: string; method: string; auth: string | null }[] = [];
   const impl: typeof fetch = async (input, init) => {
     const url = String(input);
-    calls.push({ url, method: String(init?.method ?? "GET") });
+    calls.push({
+      url,
+      method: String(init?.method ?? "GET"),
+      auth: new Headers(init?.headers as HeadersInit | undefined).get("authorization"),
+    });
     const r = handler(url, init);
     if (r.throwError) throw r.throwError;
     return new Response(r.body === undefined ? "" : JSON.stringify(r.body), {
@@ -277,5 +281,56 @@ describe("apply：没有更新能力时给出可执行命令", () => {
     const r = await svc.apply({ reason: "t" });
     expect(r.ok).toBe(false);
     expect(r.message).toContain("ECONNREFUSED");
+  });
+});
+
+describe("apply：updater 令牌（UPDATER_TOKEN）", () => {
+  it("★ 配了 REELAX_UPDATER_TOKEN 就带 Authorization（否则按文档开启令牌校验后一键更新永远 401）", async () => {
+    const { impl, calls } = fakeFetch(() => ({ status: 202, body: { ok: true, message: "已开始更新" } }));
+    const svc = new UpdateService({
+      logger,
+      repoSlug: "r/r",
+      workDir: null,
+      updaterUrl: "http://updater:9000",
+      updaterToken: "s3cret-token",
+      allowLocalUpdate: false,
+      fetchImpl: impl,
+    });
+    const r = await svc.apply({ reason: "t" });
+    expect(r.ok).toBe(true);
+    expect(calls[0]?.url).toBe("http://updater:9000/update");
+    expect(calls[0]?.auth).toBe("Bearer s3cret-token");
+  });
+
+  it("没配令牌时不发 Authorization 头（updater 未开启校验的部署不受影响）", async () => {
+    const { impl, calls } = fakeFetch(() => ({ status: 202, body: { ok: true } }));
+    const svc = new UpdateService({
+      logger,
+      repoSlug: "r/r",
+      workDir: null,
+      updaterUrl: "http://updater:9000",
+      allowLocalUpdate: false,
+      fetchImpl: impl,
+    });
+    const r = await svc.apply({ reason: "t" });
+    expect(r.ok).toBe(true);
+    expect(calls[0]?.auth).toBeNull();
+  });
+
+  it("令牌不匹配（401）时给出可操作的排查提示", async () => {
+    const { impl } = fakeFetch(() => ({ status: 401, body: { ok: false, message: "令牌不正确" } }));
+    const svc = new UpdateService({
+      logger,
+      repoSlug: "r/r",
+      workDir: null,
+      updaterUrl: "http://updater:9000",
+      updaterToken: "wrong",
+      allowLocalUpdate: false,
+      fetchImpl: impl,
+    });
+    const r = await svc.apply({ reason: "t" });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("401");
+    expect(r.message).toContain("UPDATER_TOKEN");
   });
 });

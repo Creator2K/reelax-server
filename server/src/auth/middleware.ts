@@ -73,13 +73,16 @@ export function clearSessionCookie(): string {
 /**
  * 组装 cookie 策略。
  * @param forceSecure 显式设置 COOKIE_SECURE 时用它；undefined 表示按请求协议自动判断
+ * @param ttlMs       会话有效期。可传函数：这个值能在后台在线修改，
+ *                    传常量会把「登录态有效期」冻结在启动那一刻（改了设置但 cookie 不变）。
  */
-export function makeCookieStrategy(forceSecure: boolean | undefined, ttlMs: number) {
-  const effective = { forceSecure, maxAgeMs: ttlMs };
+export function makeCookieStrategy(forceSecure: boolean | undefined, ttlMs: number | (() => number)) {
+  const resolveTtl = typeof ttlMs === "function" ? ttlMs : () => ttlMs;
+  const effective = { forceSecure };
   return {
     /** 下发会话 cookie（自动判断本次请求是否 HTTPS） */
     set(res: Response, req: Request, token: string): void {
-      res.append("Set-Cookie", serializeSessionCookie(token, cookieOptionsFor(req, effective)));
+      res.append("Set-Cookie", serializeSessionCookie(token, cookieOptionsFor(req, { ...effective, maxAgeMs: resolveTtl() })));
     },
     /** 清除会话 cookie */
     clear(res: Response): void {
@@ -87,7 +90,7 @@ export function makeCookieStrategy(forceSecure: boolean | undefined, ttlMs: numb
     },
     /** 覆盖 maxAge（例如滑动续期时想用同一套逻辑） */
     get maxAgeMs(): number {
-      return ttlMs;
+      return resolveTtl();
     },
   };
 }

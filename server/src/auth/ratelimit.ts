@@ -89,6 +89,12 @@ export class Limiters {
   login: RateLimiter;
   /** 登录失败：按 IP，20 次 / 15 分钟（防止换邮箱刷） */
   loginByIp: RateLimiter;
+  /**
+   * 登录失败：按用户名（**不含 IP**），10 次 / 15 分钟。
+   * 与 IP 无关的第二道闸：即使部署在反代后、或 XFF 被伪造/配置错误，
+   * 针对同一个账号的爆破仍然有上限（IP 维度失效时它是唯一的兜底）。
+   */
+  loginByUser: RateLimiter;
   /** 注册：按 IP，5 次 / 小时 */
   register: RateLimiter;
   /** 邀请码尝试：按 IP，10 次 / 小时（防止暴力猜码） */
@@ -103,6 +109,7 @@ export class Limiters {
   constructor() {
     this.login = new RateLimiter({ windowMs: 15 * 60_000, max: 5 });
     this.loginByIp = new RateLimiter({ windowMs: 15 * 60_000, max: 20 });
+    this.loginByUser = new RateLimiter({ windowMs: 15 * 60_000, max: 10 });
     this.register = new RateLimiter({ windowMs: 60 * 60_000, max: 5 });
     this.inviteGuess = new RateLimiter({ windowMs: 60 * 60_000, max: 10 });
     this.proxyTest = new RateLimiter({ windowMs: 60_000, max: 10 });
@@ -117,17 +124,24 @@ export class Limiters {
   }
 }
 
-/** 从请求里取客户端 IP（trust proxy 已由 Express 处理） */
+/**
+ * 取客户端 IP（用于限流与审计）。
+ *
+ * ★ 这里**绝不能**自己解析 `X-Forwarded-For`。早期实现是「只要请求带了这个头就取第一段」，
+ *   等于无视 TRUST_PROXY 设置、永远相信客户端：攻击者每次换一个假 IP 就换一个限流桶，
+ *   于是「登录 5 次/15 分钟」「注册 5 次/小时」「邀请码 10 次/小时」全部失效
+ *   （已实测：同一台机器换 XFF 连试 6 次，全部通过），而且审计日志里的 ip
+ *   也变成攻击者随便填的，事后无法追溯。
+ *
+ *   Express 在 `app.set("trust proxy", …)` 打开时才按可信托管链解析该头，
+ *   关闭时 `req.ip` 就是 TCP 对端地址（无法伪造）。所以直接用 req.ip 即可。
+ *   ⇒ 直连暴露的部署必须保持 TRUST_PROXY 关闭（默认值）。
+ */
 export function clientIp(req: {
   ip?: string;
-  headers: Record<string, unknown>;
+  headers?: Record<string, unknown>;
   socket?: { remoteAddress?: string };
 }): string {
-  const xff = req.headers["x-forwarded-for"];
-  if (typeof xff === "string" && xff) {
-    const first = xff.split(",")[0]?.trim();
-    if (first) return first;
-  }
   return req.ip || req.socket?.remoteAddress || "unknown";
 }
 

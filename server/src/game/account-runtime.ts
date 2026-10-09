@@ -158,8 +158,19 @@ export class AccountRuntime {
   private bus: Bus;
   private timers: TimerPool;
   private instances = new Map<string, ModuleInstance>();
+  /**
+   * 每个模块注册的事件订阅取消函数。
+   *
+   * ★ 为什么必须自己记账：`ctx.on()` 返回的是 unsubscribe，而模块代码普遍丢弃了它。
+   *   不释放的话，模块停止后旧实例仍会收到 `fishing:sync`（账号维度过滤照样命中），
+   *   于是停→启一次就多一个实例在跑：两个 auto-bait 同时买饵（每笔带新幂等键 = 真实重复消费）、
+   *   两个 auto-travel 抢着切图，且重复份数随每次重启/改配置线性增长。
+   */
+  private moduleUnsubs = new Map<string, Array<() => void>>();
   private startErrors = new Map<string, string>();
   private abortRequested = false;
+  /** 上次真正写库的 (status, lastError) 指纹，用于跳过无意义的重复写 */
+  private persistedStatusKey: string | null = null;
   private loopPromise: Promise<void> | null = null;
   private proxyHolder: ProxyDispatcherHolder;
   private runSerial: SerialRunner;
@@ -324,7 +335,13 @@ export class AccountRuntime {
       });
     }
     if (detail !== undefined) this.lastError = detail;
+    // ★ 只在「状态或错误信息真的变了」时写库。
+    //   tickLoop 每轮都会调 setStatus("online", null)，早期实现让每个账号
+    //   每 ~6 秒白写一次 SQLite（多余的 WAL 增长 + 无意义 IO）。
+    const key = `${status}\u0000${this.lastError ?? ""}`;
+    if (key === this.persistedStatusKey) return;
     this.deps.onPersistStatus?.(this.accountId, status, this.lastError);
+    this.persistedStatusKey = key;
   }
 
   reportError(message: string): void {
@@ -503,14 +520,23 @@ export class AccountRuntime {
     });
   }
 
-  private buildContext(def: ModuleDefinition, config: Record<string, unknown>): ModuleContext {    return {
+  private buildContext(def: ModuleDefinition, config: Record<string, unknown>): ModuleContext {
+    return {
       moduleId: def.id,
       config,
       state: {},
       log: this.log.child({ moduleId: def.id }),
       api: this.client,
       account: this,
-      on: this.on,
+      // ★ 交给模块的是「带清理的 on」：注册时就按模块名记下取消函数，
+      //   stopModule / 启动失败 / dispose 时统一释放。
+      on: (event, handler) => {
+        const off = this.on(event, handler);
+        const list = this.moduleUnsubs.get(def.id);
+        if (list) list.push(off);
+        else this.moduleUnsubs.set(def.id, [off]);
+        return off;
+      },
       every: this.every,
       schedule: this.schedule,
     };
@@ -537,6 +563,8 @@ export class AccountRuntime {
       return { ok: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // onStart 可能已经注册了订阅才抛错，这里也要释放，否则留下收不到 onStop 的幽灵订阅
+      this.releaseModuleUnsubs(def.id);
       this.startErrors.set(def.id, msg);
       this.log.error("模块", `启动 ${def.id} 失败：${msg}`);
       return { ok: false, error: msg };
@@ -545,13 +573,30 @@ export class AccountRuntime {
 
   async stopModule(id: string): Promise<void> {
     const inst = this.instances.get(id);
-    if (!inst) return;
-    try {
-      await inst.def.onStop?.(inst.ctx);
-    } catch (err) {
-      this.log.warn("模块", `停止 ${id} 时报错：${err instanceof Error ? err.message : String(err)}`);
+    if (inst) {
+      try {
+        await inst.def.onStop?.(inst.ctx);
+      } catch (err) {
+        this.log.warn("模块", `停止 ${id} 时报错：${err instanceof Error ? err.message : String(err)}`);
+      }
     }
+    // 无论有没有实例都要释放（onStart 失败的模块可能只留下订阅）
+    this.releaseModuleUnsubs(id);
     this.instances.delete(id);
+  }
+
+  /** 释放某模块注册的事件订阅（模块停止 / 启动失败 / 实例废弃时调用） */
+  private releaseModuleUnsubs(id: string): void {
+    const list = this.moduleUnsubs.get(id);
+    if (!list) return;
+    this.moduleUnsubs.delete(id);
+    for (const off of list) {
+      try {
+        off();
+      } catch {
+        /* 取消失败不影响停止流程 */
+      }
+    }
   }
 
   /**
@@ -769,6 +814,8 @@ export class AccountRuntime {
    */
   async dispose(): Promise<void> {
     this.abortRequested = true;
+    // 兜底：正常路径上 stop() 已经释放过了，这里防止「实例被丢弃但订阅还在」
+    for (const id of [...this.moduleUnsubs.keys()]) this.releaseModuleUnsubs(id);
     this.timers.clear();
     await this.proxyHolder.close().catch(() => {});
   }

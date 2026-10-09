@@ -46,6 +46,8 @@ export type AuthDeps = {
   limiter: {
     login: AuthLimiterLike;
     loginByIp: AuthLimiterLike;
+    /** 按用户名限流（与 IP 无关的兜底闸） */
+    loginByUser: AuthLimiterLike;
     register: AuthLimiterLike;
     inviteGuess: AuthLimiterLike;
     passwordChange: AuthLimiterLike;
@@ -73,6 +75,14 @@ export class AuthService {
   /** 登录态有效期（毫秒）。改设置后不需要重启。 */
   private get ttlMs(): number {
     return this.settings.get("sessionTtlDays") * 86_400_000;
+  }
+  /**
+   * 供 cookie 策略使用：**每次下发 cookie 时都重新读**，而不是启动时取一次。
+   * 早期实现把 env 里的值传给 makeCookieStrategy，导致后台改「登录态有效期」
+   * 只影响数据库会话、cookie 的 Max-Age 不变（改大仍按旧的提前掉线）。
+   */
+  get cookieTtlMs(): number {
+    return this.ttlMs;
   }
   /** 全局默认的每用户账号上限（设置页里那一项） */
   private get maxAccounts(): number {
@@ -260,6 +270,7 @@ export class AuthService {
     const ip = input.ip ?? "unknown";
     const byUser = `login:${ip}:${email.toLowerCase()}`;
     const byIp = `login-ip:${ip}`;
+    const byName = `login-name:${email.toLowerCase()}`;
 
     const userRl = this.limiter.login.hit(byUser);
     if (!userRl.allowed) {
@@ -272,6 +283,16 @@ export class AuthService {
     const ipRl = this.limiter.loginByIp.hit(byIp);
     if (!ipRl.allowed) {
       throw new HttpError(429, "RATE_LIMITED", "该 IP 登录尝试过多，请稍后再试。");
+    }
+    // 与 IP 无关的第二道闸：IP 维度可能失效（反代配置错误 / XFF 被伪造），
+    // 针对同一个账号的爆破也必须有上限
+    const nameRl = this.limiter.loginByUser.hit(byName);
+    if (!nameRl.allowed) {
+      throw new HttpError(
+        429,
+        "RATE_LIMITED",
+        `该账号登录尝试过多，请 ${Math.ceil(nameRl.retryAfterMs / 60000)} 分钟后再试。`,
+      );
     }
 
     const row = this.repos.users.findByEmail(email);
@@ -297,6 +318,7 @@ export class AuthService {
     // 登录成功：清掉失败计数，不惩罚正常用户
     this.limiter.login.reset(byUser);
     this.limiter.loginByIp.reset(byIp);
+    this.limiter.loginByUser.reset(byName);
 
     // 口令哈希参数升级时静默重算
     if (needsRehash(row.password_hash)) {

@@ -46,6 +46,12 @@ services:
       HOST: 0.0.0.0
       DATA_DIR: /app/data
 
+      # ---- 时区 ----
+      # ★ 容器默认是 UTC，不设这一项时：「日报 09:00（本地时间）」实际是北京时间 17:00，
+      #   统计页也会按 UTC 天分桶（日界在北京时间早上 8 点）。
+      #   Node 自带时区库，不需要在镜像里装 tzdata（已实测 getHours 跟着 TZ 走）。
+      TZ: "${TZ:-Asia/Shanghai}"
+
       # ---- 游戏 ----
       REELAX_BASE_URL: "${REELAX_BASE_URL:-https://reelax.cn}"
       # 无代理账号的兜底出口（可选）
@@ -54,8 +60,12 @@ services:
       PROXY_ECHO_URL: "${PROXY_ECHO_URL:-https://api.ipify.org?format=json}"
 
       # ---- 反向代理 / HTTPS ----
-      # 在 Nginx / Caddy 之后部署时设为 1，用于限流取真实 IP
-      TRUST_PROXY: "${TRUST_PROXY:-1}"
+      # ★ 默认 0（不信任代理头）：信任 X-Forwarded-For 等于让客户端自己填 IP，
+      #   直连暴露时登录/注册/邀请码的限流会全部失效（换一个假 IP 换一个限流桶）。
+      #   在 Nginx / Caddy 之后部署时才设为 1，并且**必须让反代覆盖**这个头：
+      #     nginx: proxy_set_header X-Forwarded-For $remote_addr;
+      #   （若用 $proxy_add_x_forwarded_for 追加，客户端伪造的前缀仍在最左边，仍可绕过）
+      TRUST_PROXY: "${TRUST_PROXY:-0}"
       # cookie 的 Secure 策略（三态）：
       #   不设置（默认）= 按每次请求的实际协议自动判断 —— 推荐，http/https 都能正常工作
       #   1 = 强制加 Secure（必须整站 HTTPS；只做 80 端口反代会「登录成功但立刻掉线」）
@@ -80,6 +90,9 @@ services:
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
       # 旁路更新器地址；启用了 update profile 才会实际存在
       REELAX_UPDATER_URL: "${REELAX_UPDATER_URL:-}"
+      # 更新器令牌（可选）。与下面 updater 的 UPDATER_TOKEN 用同一个 .env 变量，
+      # 两边必须一致，否则一键更新会返回 401
+      REELAX_UPDATER_TOKEN: "${UPDATER_TOKEN:-}"
       # 容器内不允许自行 git pull（代码在镜像里，改不了自己）—— 更新交给 updater
       ALLOW_LOCAL_UPDATE: "0"
 

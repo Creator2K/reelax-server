@@ -110,6 +110,12 @@ export type UpdateServiceDeps = {
   workDir: string | null;
   /** 旁路 updater 的地址（如 http://updater:9000）；未配置为 null */
   updaterUrl: string | null;
+  /**
+   * updater 的访问令牌（对应 updater 容器的 UPDATER_TOKEN），可选。
+   * ★ 早期只有 updater 侧校验、app 侧从不发送，于是「按文档设了令牌」的部署
+   *   一键更新永远 401，唯一的解法是把令牌删掉 —— 反向破坏了加固建议。
+   */
+  updaterToken?: string;
   /** 允许在容器内直接 git pull + 重建（本地部署场景） */
   allowLocalUpdate: boolean;
   /** 注入 fetch 便于测试 */
@@ -437,16 +443,29 @@ export class UpdateService {
   private async applyViaUpdater(reason: string): Promise<ApplyResult> {
     const doFetch = this.deps.fetchImpl ?? fetch;
     const url = `${this.deps.updaterUrl!.replace(/\/+$/, "")}/update`;
+    // 与 updater 容器的 UPDATER_TOKEN 对应；没配置就只发 Content-Type
+    const token = (this.deps.updaterToken ?? "").trim();
     try {
       const r = await doFetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ reason }),
         signal: AbortSignal.timeout(20_000),
       });
       const text = await r.text();
       if (!r.ok) {
-        return { ok: false, restarting: false, message: `updater 返回 HTTP ${r.status}：${text.slice(0, 300)}` };
+        const hint =
+          r.status === 401
+            ? "\n（updater 开启了令牌校验：请让 app 的 REELAX_UPDATER_TOKEN 与 updater 的 UPDATER_TOKEN 保持一致）"
+            : "";
+        return {
+          ok: false,
+          restarting: false,
+          message: `updater 返回 HTTP ${r.status}：${text.slice(0, 300)}${hint}`,
+        };
       }
       this.log.info("更新", `已通过 updater 触发更新：${reason}`);
       return {

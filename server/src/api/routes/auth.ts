@@ -39,8 +39,9 @@ export function createAuthRouter(deps: {
   logger: Logger;
 }): Router {
   const router = Router();
-  // cookie 的 Secure 按请求协议自动判断；COOKIE_SECURE 显式设置时才强制
-  const cookies = makeCookieStrategy(deps.env.cookieSecure, deps.env.sessionTtlDays * 86_400_000);
+  // cookie 的 Secure 按请求协议自动判断；COOKIE_SECURE 显式设置时才强制。
+  // 有效期传函数：这个值能在后台在线改，传常量会把 cookie 的 Max-Age 冻结在启动时刻。
+  const cookies = makeCookieStrategy(deps.env.cookieSecure, () => deps.auth.cookieTtlMs);
   /** header 可能是 string[]，统一归一为 string | undefined */
   const ua = (req: Request): string | undefined => {
     const v = req.headers["user-agent"];

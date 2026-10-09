@@ -100,7 +100,7 @@ export const DIGEST_VARS: {
   { name: "artifactLevels", desc: "神器等级提升", group: "掉落", sample: "1" },
 
   { name: "xp", desc: "经验增量（纯数字）", group: "成长", sample: "1204.6万" },
-  { name: "xpText", desc: "经验（整句）", group: "成长", sample: "经验 +1,204.6 万" },
+  { name: "xpText", desc: "经验（整句）", group: "成长", sample: "经验 +1204.6万" },
   { name: "level", desc: "当前等级", group: "成长", sample: "11,622" },
   { name: "levelGain", desc: "当日升级数", group: "成长", sample: "3" },
   { name: "levelShortfall", desc: "距转生还差等级", group: "成长", sample: "3,377" },
@@ -368,7 +368,7 @@ export const DIGEST_PREVIEW_DATA: DigestData = {
   artifactLevels: 1,
 
   xp: 12_046_000,
-  xpText: "经验 +1,204.6 万",
+  xpText: "经验 +1204.6万",
   level: 11622,
   levelGain: 3,
   levelShortfall: 3377,

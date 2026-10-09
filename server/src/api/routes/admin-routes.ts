@@ -127,6 +127,14 @@ export function createAdminRouter(deps: {
       detail: { updated: result.updated.length, failed: result.failed.length },
       ip: clientIp(req),
     });
+    // ★ 批量封禁也要立刻停机：账号由 RunnerRegistry 驱动、与登录态无关，
+    //   不停的话被封禁的人继续挂机、继续占用全局并发额度。
+    //   单条改状态的接口一直有这一步，批量操作漏了。
+    if (req.body.action === "ban") {
+      for (const userId of result.updated) {
+        void deps.registry.stopAllForUser(userId);
+      }
+    }
     res.json(result);
   });
 

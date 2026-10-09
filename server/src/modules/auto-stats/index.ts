@@ -52,6 +52,19 @@ export function investedOf(base: unknown): number[] {
   });
 }
 
+/**
+ * 配置里的主属性名 → STAT_KEYS 下标；名字不认识时退回「智力」。
+ *
+ * ★ 单独抽成函数并加测试，是因为这里踩过坑：
+ *   原写法 `Math.max(0, STAT_KEYS.indexOf(x)) || 1` —— 下标 **0 是 falsy**，
+ *   于是用户选「力量」（STAT_KEYS[0]）会被静默改成下标 1 的「智力」：
+ *   界面上勾了力量，点数全加到智力上，而且没有任何报错。
+ */
+export function statIndex(primary: unknown): number {
+  const idx = (STAT_KEYS as readonly string[]).indexOf(String(primary));
+  return idx >= 0 ? idx : 1;
+}
+
 export type AllocationPlan = {
   /** 四维投放数量（顺序与 STAT_KEYS 一致，全部字段都会出现） */
   amounts: number[];
@@ -251,10 +264,7 @@ const definition: ModuleDefinition = {
         }
 
         const mode = String(ctx.config.mode ?? "priority");
-        const primaryIdx = Math.max(
-          0,
-          (STAT_KEYS as readonly string[]).indexOf(String(ctx.config.primary)),
-        ) || 1; // 找不到时退回「智力」（下标 1）
+        const primaryIdx = statIndex(ctx.config.primary);
 
         const callPlan = (invested: number[], spendable: number) =>
           planAllocation({
