@@ -11,6 +11,7 @@
 import { type ModuleDefinition } from "../types.ts";
 import { assistantTakesOver } from "../shared/conflicts.ts";
 import { baitOptions, baitName } from "../shared/rarity.ts";
+import { baitDisplayName, decideRefill, extractBaits } from "./baits.ts";
 
 const ARCANE_SURGE = "arcane_surge";
 
@@ -161,27 +162,31 @@ const definition: ModuleDefinition = {
           return;
         }
 
-        const data = await ctx.api.baits();
-        const list: any[] = data?.baits ?? [];
-        const wanted = list.find((b) => b?.id === wantedId);
+        // 用 baits.ts 的解析helper：字段名/包裹形式都在那里统一（可单测）
+        const wanted = extractBaits(await ctx.api.baits()).find((b) => b?.id === wantedId);
         if (!wanted) {
           ctx.log.warn("自动换饵", `${trigger}：找不到鱼饵 ${wantedId}（可能是配置写错或该饵未解锁）`);
           return;
         }
 
         /* ---------- 补货 ---------- */
-        const buyQuantity = Math.max(0, Math.floor(Number(ctx.config.buyQuantity) || 0));
-        const price = Number(wanted.unitPrice) || 0;
-        if (buyQuantity > 0 && Number(wanted.ownedQuantity ?? 0) <= 0) {
+        // 判断逻辑抽在 baits.ts 里（可单测）：字段名和边界都在那里钉住
+        const refill = decideRefill(wanted, ctx.config);
+        if (refill.buy) {
+          const price = Number(wanted.unitPrice) || 0;
           try {
-            await ctx.api.purchaseBait(wanted.id, buyQuantity);
+            await ctx.api.purchaseBait(wanted.id, refill.quantity);
             ctx.log.info(
               "自动换饵",
-              `🛒 已购买 ${wanted.name} ×${buyQuantity}（单价 ${price}，约 ${(price * buyQuantity).toLocaleString("zh-CN")} 金币）`,
+              `🛒 已购买 ${baitDisplayName(wanted)} ×${refill.quantity}` +
+                `（单价 ${price}，约 ${(price * refill.quantity).toLocaleString("zh-CN")} 金币）`,
             );
           } catch (err) {
-            ctx.log.warn("自动换饵", `购买 ${wanted.name} 失败：${err instanceof Error ? err.message : String(err)}`);
+            ctx.log.warn("自动换饵", `购买 ${baitDisplayName(wanted)} 失败：${err instanceof Error ? err.message : String(err)}`);
           }
+        } else if (refill.stock !== null && refill.stock > 0) {
+          // 只在真的读到库存时提示，避免无限饵也刷这条
+          idle(`${trigger}：${baitDisplayName(wanted)} ${refill.reason}`);
         }
 
         /* ---------- 换饵 ---------- */
