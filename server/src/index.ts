@@ -34,6 +34,7 @@ import { createStatsRouter } from "./api/routes/stats-routes.ts";
 import { createAdminRouter } from "./api/routes/admin-routes.ts";
 import { WsGateway } from "./api/ws-gateway.ts";
 import { createApp } from "./api/server.ts";
+import { shouldSnapshot, SNAPSHOT_INTERVAL_MS } from "./lib/maintenance.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -219,7 +220,45 @@ async function main(): Promise<void> {
   logFlushTimer.unref();
 
   /* ---------- 定期维护 ---------- */
-  let lastBackupDay = "";
+  /* 数据库快照（VACUUM INTO，保留最近 3 份）。
+   *
+   * ★ 两个坑都踩过：
+   *   1) 以前只有「有待执行迁移」时才备份，正常重启与日常运行从不备份；
+   *   2) 如果只挂在「每小时维护」上，那么只要进程活不过一小时就**永远不备份** ——
+   *      本项目每次更新都会重建容器，很容易一直重启。
+   *   所以：启动后 90 秒先查一次，之后每小时查一次；判断依据是「距上次快照够不够久」，
+   *   而「上次快照时间」在启动时从已有快照文件的 mtime 恢复（重启不会把计时清零）。
+   *   注意：快照和数据在**同一个卷**里，卷丢了会一起丢 —— 见 DEPLOY.md 的异地备份建议。
+   */
+  const newestSnapshotAt = (): number => {
+    try {
+      const dir = path.resolve(env.dataDir);
+      return fs
+        .readdirSync(dir)
+        .filter((f) => f.startsWith("reelax.db.bak-"))
+        .reduce((newest, f) => {
+          try {
+            return Math.max(newest, fs.statSync(path.join(dir, f)).mtimeMs);
+          } catch {
+            return newest;
+          }
+        }, 0);
+    } catch {
+      return 0;
+    }
+  };
+  let lastSnapshotAt = newestSnapshotAt();
+  const maybeDailySnapshot = (): void => {
+    if (!shouldSnapshot(Date.now(), lastSnapshotAt, SNAPSHOT_INTERVAL_MS)) return;
+    const snapshot = db.backupNow();
+    if (snapshot) {
+      lastSnapshotAt = Date.now();
+      logger.info("数据库", `已生成数据库快照：${path.basename(snapshot)}`);
+    }
+  };
+  const firstSnapshotCheck = setTimeout(maybeDailySnapshot, 90_000);
+  firstSnapshotCheck.unref();
+
   const maintenance = setInterval(
     () => {
       try {
@@ -232,16 +271,7 @@ async function main(): Promise<void> {
           if (userId) repos.logs.trimForUser(userId);
         }
         repos.audit.deleteOlderThan(Date.now() - 180 * 86_400_000);
-        // 每天一份数据库快照（VACUUM INTO，保留最近 3 份）。
-        // ★ 以前只有「有待执行迁移」时才备份，正常重启和日常运行从不备份，
-        //   而 docs/DEPLOY.md 却写着「启动时会做一次快照」。
-        //   注意：快照和数据在**同一个卷**里，卷丢了会一起丢 —— 见 DEPLOY.md 的异地备份建议。
-        const today = new Date().toISOString().slice(0, 10);
-        if (lastBackupDay !== today) {
-          lastBackupDay = today;
-          const snapshot = db.backupNow();
-          if (snapshot) logger.info("数据库", `已生成每日快照：${path.basename(snapshot)}`);
-        }
+        maybeDailySnapshot();
       } catch (err) {
         logger.warn("维护", `清理任务失败：${err instanceof Error ? err.message : String(err)}`);
       }
@@ -468,6 +498,7 @@ async function main(): Promise<void> {
       clearInterval(checkpointTimer);
       clearInterval(maintenance);
       clearInterval(logFlushTimer);
+      clearTimeout(firstSnapshotCheck);
       // 先停引擎（会把状态写回数据库），再关推送、WS 与 HTTP
       await registry.stopAll();
       await notify.disposeAll().catch(() => {});

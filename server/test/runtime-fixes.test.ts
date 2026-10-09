@@ -10,6 +10,7 @@ import { buildFullApp, type FullApp } from "./helpers/full-app.ts";
 import type { ModuleDefinition } from "../src/modules/types.ts";
 import { statIndex } from "../src/modules/auto-stats/index.ts";
 import { isReportDue, parseReportAt } from "../src/modules/daily-digest/index.ts";
+import { shouldSnapshot, SNAPSHOT_INTERVAL_MS } from "../src/lib/maintenance.ts";
 
 let app: FullApp;
 let admin: ReturnType<FullApp["seedApprovedUser"]>;
@@ -198,6 +199,24 @@ describe("日报发送时刻（曾经「错过那一分钟就整天不发」）"
     expect(isReportDue(new Date(2026, 9, 10, 9, 0), at)).toBe(true);
     expect(isReportDue(new Date(2026, 9, 10, 9, 31), at)).toBe(true);
     expect(isReportDue(new Date(2026, 9, 10, 23, 59), at)).toBe(true);
+  });
+});
+
+describe("数据库快照的时机（曾经永远不备份 / 频繁重启就永远不备份）", () => {
+  const H = 3_600_000;
+
+  it("距上次快照不足间隔时不做（避免每次重启都拍一份）", () => {
+    const now = 1_000 * H;
+    expect(shouldSnapshot(now, now - 1 * H, SNAPSHOT_INTERVAL_MS)).toBe(false);
+    expect(shouldSnapshot(now, now - 19 * H, SNAPSHOT_INTERVAL_MS)).toBe(false);
+  });
+
+  it("★ 超过间隔就做 —— 即使中间重启过（lastAt 从已有快照文件恢复）", () => {
+    const now = 1_000 * H;
+    expect(shouldSnapshot(now, now - 20 * H, SNAPSHOT_INTERVAL_MS)).toBe(true);
+    expect(shouldSnapshot(now, now - 30 * H, SNAPSHOT_INTERVAL_MS)).toBe(true);
+    // 从来没备份过（lastAt = 0）→ 立刻做
+    expect(shouldSnapshot(now, 0, SNAPSHOT_INTERVAL_MS)).toBe(true);
   });
 });
 
