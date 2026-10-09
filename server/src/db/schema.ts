@@ -186,6 +186,22 @@ CREATE INDEX idx_notify_user ON notify_channels (user_id, created_at);
 CREATE INDEX idx_notify_kind ON notify_channels (kind);
 `,
   },
+
+  // ---------- 可在线修改的运行时设置 ----------
+  // 为什么放进数据库而不是只读环境变量：这些值运维时经常要临时调（开一段注册、
+  // 给某个人多开几个账号额度），要求改 .env + 重启容器太重。
+  // 规则：环境变量提供**初始值**（首次启动写入），之后以数据库为准。
+  {
+    id: "0003_app_settings",
+    sql: `
+CREATE TABLE app_settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT
+);
+`,
+  },
 ];
 
 /** 供 migrate.ts 记录已应用版本 */

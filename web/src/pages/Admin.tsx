@@ -1,18 +1,17 @@
-// 后台管理页：用户管理（角色 / 状态 / 改口令）、邀请码、系统信息、在线更新
+// 后台管理页：概览仪表盘、用户管理、邀请码、在线设置、系统信息、更新记录
 //
 // 仅 role === "admin" 可见。管理员是**纯后台**角色：这里不出现任何挂机面板，
 // 因为管理员账号本身不挂游戏（挂机是普通用户的事）。
+//
+// 用户管理与后台设置体量较大，各自拆成独立组件（domain/UsersTab、AdminSettingsTab）。
 import { useState } from "react";
 import {
   IconAlertTriangle,
   IconCircleCheck,
   IconCopy,
-  IconKey,
   IconPlus,
   IconShieldLock,
   IconTrash,
-  IconUserCheck,
-  IconUserX,
   IconUsers,
 } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
@@ -26,33 +25,16 @@ import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.tsx";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog.tsx";
 import { UpdatePanel } from "@/components/domain/UpdatePanel.tsx";
 import { DashboardTab } from "@/components/domain/DashboardTab.tsx";
+import { UsersTab } from "@/components/domain/UsersTab.tsx";
+import { AdminSettingsTab } from "@/components/domain/AdminSettingsTab.tsx";
+import { ChangelogList } from "@/components/domain/Changelog.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { api } from "@/lib/api.ts";
-import { useSession, type SessionUser } from "@/lib/session.ts";
-import {
-  useApproveUser,
-  useCreateInvite,
-  useDeleteInvite,
-  useResetUserPassword,
-  useSetUserRole,
-  useSetUserStatus,
-} from "@/lib/mutations.ts";
+import { useSession } from "@/lib/session.ts";
+import { useCreateInvite, useDeleteInvite } from "@/lib/mutations.ts";
 import { fmtDateTime, fmtDuration, fmtRelative } from "@/lib/utils.ts";
-
-type AdminUsersResponse = {
-  users: SessionUser[];
-  counts: { total: number; pending: number; approved: number; banned: number };
-};
 
 type InviteRow = {
   id: string;
@@ -109,234 +91,31 @@ export default function AdminPage() {
           <TabsTrigger value="overview">概览</TabsTrigger>
           <TabsTrigger value="users">用户</TabsTrigger>
           <TabsTrigger value="invites">邀请码</TabsTrigger>
+          <TabsTrigger value="settings">设置</TabsTrigger>
           <TabsTrigger value="system">系统</TabsTrigger>
+          <TabsTrigger value="changelog">更新记录</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="pt-4">
           <DashboardTab myId={me?.id ?? ""} onGoUsers={() => setTab("users")} />
         </TabsContent>
         <TabsContent value="users" className="pt-4">
-          <UsersTab myId={me?.id ?? ""} />
+          <UsersTab />
         </TabsContent>
         <TabsContent value="invites" className="pt-4">
           <InvitesTab />
         </TabsContent>
+        <TabsContent value="settings" className="pt-4">
+          <AdminSettingsTab />
+        </TabsContent>
         <TabsContent value="system" className="pt-4">
           <SystemTab />
         </TabsContent>
+        <TabsContent value="changelog" className="pt-4">
+          <ChangelogList />
+        </TabsContent>
       </Tabs>
     </PageContainer>
-  );
-}
-
-/* ---------------- 用户 ---------------- */
-
-function UsersTab({ myId }: { myId: string }) {
-  const { data, isPending, error } = useQuery({
-    queryKey: ["admin", "users"],
-    queryFn: () => api.get<AdminUsersResponse>("/api/admin/users"),
-  });
-  const approve = useApproveUser();
-  const setStatus = useSetUserStatus();
-  const setRole = useSetUserRole();
-  /** 正在改口令的目标用户 */
-  const [pwTarget, setPwTarget] = useState<SessionUser | null>(null);
-
-  if (isPending) {
-    return (
-      <div className="space-y-2">
-        {[0, 1, 2].map((i) => (
-          <Skeleton key={i} className="h-16" />
-        ))}
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <Alert variant="destructive">
-        <IconAlertTriangle />
-        <AlertDescription>读取用户失败：{(error as Error).message}</AlertDescription>
-      </Alert>
-    );
-  }
-
-  const users = data?.users ?? [];
-  const counts = data?.counts;
-
-  return (
-    <div className="space-y-4">
-      {counts ? (
-        <div className="flex flex-wrap gap-2">
-          <Badge variant="outline">共 {counts.total}</Badge>
-          {counts.pending > 0 ? <Badge variant="warn">待审批 {counts.pending}</Badge> : null}
-          <Badge variant="online">已审批 {counts.approved}</Badge>
-          {counts.banned > 0 ? <Badge variant="error">已封禁 {counts.banned}</Badge> : null}
-        </div>
-      ) : null}
-
-      <Card className="gap-0 overflow-hidden py-0">
-        <div className="divide-border divide-y">
-          {users.map((u) => (
-            <div key={u.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium">{u.displayName}</span>
-                  {u.role === "admin" ? <Badge variant="secondary">管理员</Badge> : null}
-                  {u.status === "pending" ? (
-                    <Badge variant="warn">待审批</Badge>
-                  ) : u.status === "banned" ? (
-                    <Badge variant="error">已封禁</Badge>
-                  ) : (
-                    <Badge variant="online">已审批</Badge>
-                  )}
-                  {u.id === myId ? <Badge variant="outline">你</Badge> : null}
-                </div>
-                <div className="text-muted-foreground mt-0.5 flex flex-wrap gap-x-3 text-[11px]">
-                  <span>{u.email}</span>
-                  <span>注册 {fmtRelative(u.createdAt)}</span>
-                  {u.lastLoginAt ? <span>上次登录 {fmtRelative(u.lastLoginAt)}</span> : null}
-                  {u.accountCount != null ? (
-                    <span>
-                      账号 {u.accountCount} / {u.accountLimit}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                {u.status === "pending" ? (
-                  <Button size="xs" onClick={() => approve.mutate(u.id)} disabled={approve.isPending}>
-                    <IconUserCheck className="size-3.5" />
-                    批准
-                  </Button>
-                ) : null}
-                {u.status === "approved" && u.id !== myId ? (
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    onClick={() => setStatus.mutate({ id: u.id, status: "banned" })}
-                    disabled={setStatus.isPending}
-                  >
-                    <IconUserX className="size-3.5" />
-                    封禁
-                  </Button>
-                ) : null}
-                {u.status === "banned" ? (
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    onClick={() => setStatus.mutate({ id: u.id, status: "approved" })}
-                    disabled={setStatus.isPending}
-                  >
-                    解封
-                  </Button>
-                ) : null}
-                {u.id !== myId ? (
-                  <Button
-                    size="xs"
-                    variant="ghost"
-                    onClick={() => setRole.mutate({ id: u.id, role: u.role === "admin" ? "user" : "admin" })}
-                    disabled={setRole.isPending}
-                    title={u.role === "admin" ? "降级为普通用户" : "提升为管理员"}
-                  >
-                    {u.role === "admin" ? "降级" : "设为管理员"}
-                  </Button>
-                ) : null}
-                {/* 改口令：部署时生成的随机初始口令只出现一次，忘了得有找回途径 */}
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  onClick={() => setPwTarget(u)}
-                  title="重置该用户的口令"
-                >
-                  <IconKey className="size-3.5" />
-                  改口令
-                </Button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      <ResetPasswordDialog target={pwTarget} onClose={() => setPwTarget(null)} />
-    </div>
-  );
-}
-
-/**
- * 重置口令对话框。
- *
- * 注意：重置会让目标用户的**所有登录态立刻失效**（包括他正在用的浏览器），
- * 所以文案里必须写清楚，避免管理员以为「只是改个密码」。
- */
-function ResetPasswordDialog({ target, onClose }: { target: SessionUser | null; onClose: () => void }) {
-  const reset = useResetUserPassword();
-  const [pw, setPw] = useState("");
-  const [confirm, setConfirm] = useState("");
-
-  // 关闭时清空，避免下次打开看到上次输入
-  const close = () => {
-    setPw("");
-    setConfirm("");
-    onClose();
-  };
-
-  const tooShort = pw.length > 0 && pw.length < 8;
-  const mismatch = confirm.length > 0 && pw !== confirm;
-  const canSubmit = pw.length >= 8 && pw === confirm;
-
-  return (
-    <Dialog open={Boolean(target)} onOpenChange={(o) => !o && close()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>重置「{target?.displayName}」的口令</DialogTitle>
-          <DialogDescription>
-            设置一个新口令。该用户当前的所有登录会立即失效，需要用新口令重新登录。
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-3">
-          <div className="space-y-2">
-            <Label htmlFor="rp-new">新口令（至少 8 位）</Label>
-            <Input
-              id="rp-new"
-              type="password"
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              autoComplete="new-password"
-            />
-            {tooShort ? <p className="text-[var(--status-error)] text-xs">至少 8 个字符</p> : null}
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="rp-confirm">再输一次</Label>
-            <Input
-              id="rp-confirm"
-              type="password"
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-              autoComplete="new-password"
-            />
-            {mismatch ? <p className="text-[var(--status-error)] text-xs">两次输入不一致</p> : null}
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={close}>
-            取消
-          </Button>
-          <Button
-            disabled={!canSubmit || reset.isPending}
-            onClick={async () => {
-              if (!target) return;
-              await reset.mutateAsync({ userId: target.id, password: pw });
-              close();
-            }}
-          >
-            {reset.isPending ? "提交中…" : "重置口令"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 

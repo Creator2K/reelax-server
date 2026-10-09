@@ -10,6 +10,7 @@ import type { AuditRepo } from "../../db/repositories/audit.ts";
 import type { Repos } from "../../db/repositories/index.ts";
 import type { RunnerRegistry } from "../../game/runner-registry.ts";
 import type { UpdateService } from "../../services/update-service.ts";
+import type { SettingsService } from "../../services/settings-service.ts";
 import { currentUser, requireAdmin } from "../../auth/middleware.ts";
 import { body, query } from "../middleware/validate.ts";
 import { clientIp, Limiters } from "../../auth/ratelimit.ts";
@@ -24,11 +25,15 @@ const roleSchema = z.object({ role: z.enum(["user", "admin"]) });
 const resetPasswordSchema = z.object({ password: z.string().min(8).max(200) });
 
 const createUserSchema = z.object({
-  email: z.string().email("邮箱格式不正确"),
+  /** 登录标识：用户名或邮箱（与自助注册同口径） */
+  username: z.string().min(3, "用户名至少 3 个字符").max(32, "用户名最多 32 个字符"),
   displayName: z.string().max(40).optional(),
   password: z.string().min(8, "口令至少 8 个字符").max(200).optional(),
   role: z.enum(["user", "admin"]).optional(),
 });
+
+/** 后台设置保存：键值由 SettingsService 自己校验 */
+const settingsUpdateSchema = z.object({ patch: z.record(z.string(), z.unknown()) });
 
 const inviteCreateSchema = z.object({
   code: z.string().max(64).optional(),
@@ -40,8 +45,17 @@ const inviteCreateSchema = z.object({
 
 const listUsersSchema = z.object({
   status: z.enum(["pending", "approved", "banned"]).optional(),
+  role: z.enum(["user", "admin"]).optional(),
+  /** 搜索词：匹配用户名或显示名 */
+  q: z.string().max(64).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
   offset: z.coerce.number().int().min(0).max(100000).optional(),
+});
+
+/** 批量操作：一次对多个用户做同一件事 */
+const bulkUsersSchema = z.object({
+  userIds: z.array(z.string().min(1).max(64)).min(1, "至少选择一个用户").max(200, "一次最多 200 个"),
+  action: z.enum(["ban", "unban", "promote", "demote"]),
 });
 
 const auditSchema = z.object({
@@ -58,6 +72,7 @@ export function createAdminRouter(deps: {
   repos: Repos;
   registry: RunnerRegistry;
   update: UpdateService;
+  settings: SettingsService;
   limiters: Limiters;
   env: Pick<Env, "maxAccountsPerUser" | "maxRunningAccounts" | "allowRegistration" | "baseUrl" | "logRetentionDays">;
   version: string;
@@ -70,13 +85,16 @@ export function createAdminRouter(deps: {
 
   router.get("/users", query(listUsersSchema), (req, res) => {
     const q = res.locals.query as z.infer<typeof listUsersSchema>;
-    const users = deps.auth.listUsers({
+    const filter = {
       ...(q.status ? { status: q.status } : {}),
-      limit: q.limit ?? 100,
-      offset: q.offset ?? 0,
-    });
+      ...(q.role ? { role: q.role } : {}),
+      ...(q.q?.trim() ? { q: q.q.trim() } : {}),
+    };
+    const users = deps.auth.listUsers({ ...filter, limit: q.limit ?? 100, offset: q.offset ?? 0 });
     res.json({
       users,
+      /** 当前筛选条件下的总数（前端分页用） */
+      filtered: deps.auth.countUsers(filter),
       counts: {
         total: deps.repos.users.countAll(),
         pending: deps.repos.users.countByStatus("pending"),
@@ -84,6 +102,25 @@ export function createAdminRouter(deps: {
         banned: deps.repos.users.countByStatus("banned"),
       },
     });
+  });
+
+  /** 批量操作：封禁 / 解封 / 提升 / 降级。单条失败不影响其余 */
+  router.post("/users/bulk", body(bulkUsersSchema), (req, res) => {
+    const admin = currentUser(req);
+    const result = deps.auth.bulkUpdate({
+      userIds: req.body.userIds,
+      action: req.body.action,
+      adminId: admin.id,
+      ip: clientIp(req),
+    });
+    deps.audit.record({
+      userId: admin.id,
+      action: "admin.users.bulk",
+      target: req.body.action,
+      detail: { updated: result.updated.length, failed: result.failed.length },
+      ip: clientIp(req),
+    });
+    res.json(result);
   });
 
   router.post("/users/:id/approve", (req, res) => {
@@ -118,8 +155,8 @@ export function createAdminRouter(deps: {
   router.post("/users", body(createUserSchema), async (req, res) => {
     const admin = currentUser(req);
     const result = await deps.auth.createUserByAdmin({
-      email: req.body.email,
-      displayName: req.body.displayName ?? req.body.email,
+      username: req.body.username,
+      ...(req.body.displayName ? { displayName: req.body.displayName } : {}),
       ...(req.body.password ? { password: req.body.password } : {}),
       ...(req.body.role ? { role: req.body.role } : {}),
       adminId: admin.id,
@@ -211,6 +248,30 @@ export function createAdminRouter(deps: {
         auditEvents: deps.audit.countAll(),
       },
     });
+  });
+
+  /* ---------- 后台设置（在线修改，立即生效） ---------- */
+
+  router.get("/settings", (_req, res) => {
+    res.json({ items: deps.settings.describe() });
+  });
+
+  router.patch("/settings", body(settingsUpdateSchema), (req, res) => {
+    const admin = currentUser(req);
+    let changed: string[];
+    try {
+      changed = deps.settings.update(req.body.patch, admin.id);
+    } catch (err) {
+      throw new HttpError(400, "INVALID_SETTING", err instanceof Error ? err.message : String(err));
+    }
+    deps.audit.record({
+      userId: admin.id,
+      action: "admin.settings.updated",
+      target: "settings",
+      detail: { changed },
+      ip: clientIp(req),
+    });
+    res.json({ changed, items: deps.settings.describe() });
   });
 
   /* ---------- 审计 ---------- */

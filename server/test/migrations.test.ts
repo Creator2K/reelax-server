@@ -23,6 +23,7 @@ import { openDb } from "../src/db/client.ts";
 const FROZEN_CHECKSUMS: Record<string, string> = {
   "0001_init": "e2c4ce3128efbf54",
   "0002_notify_channels": "c42fb6f1fab3c967",
+  "0003_app_settings": "97a8c43fad13be41",
 };
 
 function checksum(sql: string): string {
@@ -83,6 +84,8 @@ describe("全新数据库能建出全部表", () => {
         "audit_events",
         // ★ 就是这条漏过：曾经写在 0001 里，已存在的库不会补建
         "notify_channels",
+        // 可在线修改的运行时设置
+        "app_settings",
       ]) {
         expect(tables.has(t), `缺少表 ${t}`).toBe(true);
       }

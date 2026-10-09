@@ -6,8 +6,9 @@ import http from "node:http";
 import type { Express } from "express";
 import { openDb, type Db } from "../../src/db/client.ts";
 import { createRepos, type Repos } from "../../src/db/repositories/index.ts";
-import { Limiters } from "../../src/auth/ratelimit.ts";
+import { Limiters, RateLimiter } from "../../src/auth/ratelimit.ts";
 import { AuthService } from "../../src/auth/service.ts";
+import { SettingsService } from "../../src/services/settings-service.ts";
 import { attachAuth } from "../../src/auth/middleware.ts";
 import { CredentialVault } from "../../src/security/vault.ts";
 import { RunnerRegistry } from "../../src/game/runner-registry.ts";
@@ -85,7 +86,17 @@ export function testEnv(overrides: Partial<Env> = {}): Env {
   };
 }
 
-export async function buildFullApp(opts: { env?: Partial<Env>; fetchImpl?: typeof fetch } = {}): Promise<FullApp> {
+export async function buildFullApp(
+  opts: {
+    env?: Partial<Env>;
+    fetchImpl?: typeof fetch;
+    /**
+     * 覆盖限流规则。默认值（注册 5 次/小时）对真实使用合适，
+     * 但一个测试文件里注册十几次会被拦，需要放宽。
+     */
+    limits?: Partial<Record<"register" | "login" | "loginByIp" | "inviteGuess", { windowMs: number; max: number }>>;
+  } = {},
+): Promise<FullApp> {
   bootstrapModules();
   const env = testEnv(opts.env);
   const logger = new Logger({ limit: 1000, minLevel: "error" });
@@ -94,15 +105,25 @@ export async function buildFullApp(opts: { env?: Partial<Env>; fetchImpl?: typeo
   db.migrate();
   const repos = createRepos(db);
   const limiters = new Limiters();
-  const auth = new AuthService({ repos, env, limiter: limiters, logger });
+  // 按需放宽某些限流（测试里会连续注册很多次）
+  for (const [key, rule] of Object.entries(opts.limits ?? {})) {
+    if (!rule) continue;
+    (limiters as unknown as Record<string, unknown>)[key] = new RateLimiter(rule);
+  }
+  // 运行时设置：必须让 AuthService / RunnerRegistry / admin 路由共用**同一个**实例。
+  // 各建一份的话，后台改了设置不会影响鉴权与配额判断（各自持有自己的缓存）。
+  const settings = new SettingsService(db, env);
+  const auth = new AuthService({ repos, env, settings, limiter: limiters, logger });
   const vault = new CredentialVault(env.masterKey, logger);
   const registry = new RunnerRegistry({
     repos,
     vault,
     logger,
     bus,
-    maxRunningAccounts: env.maxRunningAccounts,
-    maxAccountsPerUser: env.maxAccountsPerUser,
+    limits: {
+      maxRunningAccounts: () => settings.get("maxRunningAccounts"),
+      maxAccountsPerUser: () => settings.get("maxAccountsPerUser"),
+    },
     globalProxy: null,
     ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
   });
@@ -175,6 +196,8 @@ export async function buildFullApp(opts: { env?: Partial<Env>; fetchImpl?: typeo
           audit: repos.audit,
           repos,
           registry,
+          settings,
+          limiters,
           env,
           version: "test",
           startedAt: Date.now(),

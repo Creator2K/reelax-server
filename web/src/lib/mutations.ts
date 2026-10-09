@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError } from "./api.ts";
 import { ACCOUNTS_QUERY_KEY, MODULES_QUERY_KEY, PROXIES_QUERY_KEY } from "./queries.ts";
+import { SYSTEM_QUERY_KEY } from "./session.ts";
 
 function errMessage(err: unknown): string {
   if (err instanceof ApiError) return err.message;
@@ -312,6 +313,61 @@ export function useNotifyAction() {
       void qc.invalidateQueries({ queryKey: NOTIFY_AVAILABILITY_KEY });
       const label = { login: "已开始重新登录，请扫码", unbind: "已解绑，请重新给机器人发一条消息", retry: "正在重试登录" }[vars.action];
       toast.success(label);
+    },
+    onError: (err) => toast.error(errMessage(err)),
+  });
+}
+
+/* ---------------- 管理员：运行时设置 ---------------- */
+
+export type SettingItem = {
+  key: string;
+  label: string;
+  hint: string;
+  type: "boolean" | "number";
+  value: unknown;
+  envValue: unknown;
+  overridden: boolean;
+};
+
+export const SETTINGS_QUERY_KEY = ["admin", "settings"] as const;
+
+export function useSaveSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Record<string, unknown>) =>
+      api.patch<{ changed: string[]; items: SettingItem[] }>("/api/admin/settings", { patch }),
+    onSuccess: (data) => {
+      void qc.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
+      // 注册开关会影响登录/注册页的文案
+      void qc.invalidateQueries({ queryKey: SYSTEM_QUERY_KEY });
+      void qc.invalidateQueries({ queryKey: ["admin", "system"] });
+      toast.success(data.changed.length ? `已保存 ${data.changed.length} 项，立即生效` : "没有变化");
+    },
+    onError: (err) => toast.error(errMessage(err)),
+  });
+}
+
+/* ---------------- 管理员：批量操作 ---------------- */
+
+export type BulkAction = "ban" | "unban" | "promote" | "demote";
+
+export function useBulkUpdateUsers() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { userIds: string[]; action: BulkAction }) =>
+      api.post<{ updated: string[]; failed: { userId: string; reason: string }[] }>("/api/admin/users/bulk", input),
+    onSuccess: (data) => {
+      void qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      void qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+      if (data.failed.length === 0) {
+        toast.success(`已处理 ${data.updated.length} 个用户`);
+      } else {
+        // 部分失败要说清楚是什么原因（例如「不能封禁最后一个管理员」）
+        toast.warning(`成功 ${data.updated.length} 个，失败 ${data.failed.length} 个：${data.failed[0]?.reason ?? ""}`, {
+          duration: 9000,
+        });
+      }
     },
     onError: (err) => toast.error(errMessage(err)),
   });

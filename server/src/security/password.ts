@@ -29,6 +29,35 @@ const maxmemFor = (p: ScryptParams) => 128 * p.N * p.r * 2;
 export const PASSWORD_MIN_LENGTH = 8;
 export const PASSWORD_MAX_LENGTH = 200;
 
+/** 用户名长度范围（登录标识） */
+export const USERNAME_MIN_LENGTH = 3;
+export const USERNAME_MAX_LENGTH = 32;
+
+/**
+ * 校验「登录标识」（用户名或邮箱）。
+ *
+ * 允许：字母、数字、下划线、连字符、点、@，以及中文字符。
+ * 为什么允许中文与 @：
+ *   · 这是自建服务，用户想用什么名字就用什么名字
+ *   · 历史上已存在的用户是邮箱（someone@example.com），必须继续能登录/注册同名
+ * 禁止：空白、控制字符，以及容易造成混淆的 < > / \ ' " ` 空格
+ *
+ * @returns 错误信息；合法则返回 null
+ */
+export function validateUsername(raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return "请填写用户名";
+  // 用 [...v] 按「字符」而不是字节算长度，否则中文用户名会被误判为太长
+  const len = [...v].length;
+  if (len < USERNAME_MIN_LENGTH) return `用户名至少 ${USERNAME_MIN_LENGTH} 个字符`;
+  if (len > USERNAME_MAX_LENGTH) return `用户名最多 ${USERNAME_MAX_LENGTH} 个字符`;
+  if (/\s/.test(v)) return "用户名不能包含空格";
+  // eslint-disable-next-line no-control-regex -- 控制字符正是要挡掉的东西
+  if (/[\u0000-\u001f\u007f]/.test(v)) return "用户名包含不可用字符";
+  if (/[<>/\\'"`|]/.test(v)) return "用户名不能包含 < > / \\ ' \" ` | 这些字符";
+  return null;
+}
+
 export function validatePasswordStrength(password: string): { ok: true } | { ok: false; message: string } {
   if (typeof password !== "string") return { ok: false, message: "口令必须是字符串" };
   if (password.length < PASSWORD_MIN_LENGTH) return { ok: false, message: `口令至少 ${PASSWORD_MIN_LENGTH} 个字符` };

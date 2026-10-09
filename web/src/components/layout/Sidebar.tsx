@@ -8,6 +8,7 @@ import {
   IconBroadcast,
   IconChartDots,
   IconCloudNetwork,
+  IconHistory,
   IconLayoutDashboard,
   IconListDetails,
   IconSettings,
@@ -38,6 +39,7 @@ export const USER_NAV_ITEMS: NavItem[] = [
   { to: "/proxies", label: "代理", icon: IconCloudNetwork },
   { to: "/notify", label: "推送", icon: IconBroadcast },
   { to: "/logs", label: "运行日志", icon: IconListDetails },
+  { to: "/changelog", label: "更新记录", icon: IconHistory },
   { to: "/settings", label: "设置", icon: IconSettings },
 ];
 
@@ -49,6 +51,7 @@ export const USER_NAV_ITEMS: NavItem[] = [
  */
 export const ADMIN_NAV_ITEMS: NavItem[] = [
   { to: "/admin", label: "后台管理", icon: IconShieldLock, end: true },
+  { to: "/changelog", label: "更新记录", icon: IconHistory },
   { to: "/settings", label: "设置", icon: IconSettings },
 ];
 

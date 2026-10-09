@@ -7,16 +7,20 @@ import { body } from "../middleware/validate.ts";
 import { clientIp } from "../../auth/ratelimit.ts";
 import type { Env } from "../../env.ts";
 import type { Logger } from "../../lib/logger.ts";
+import { CHANGELOG, currentRelease } from "../../version.ts";
 
+// 注册：用户名 + 口令即可，不再要求邮箱（自建服务不会给用户发任何邮件）
 const registerSchema = z.object({
-  email: z.string().email("邮箱格式不正确"),
+  username: z.string().min(3, "用户名至少 3 个字符").max(32, "用户名最多 32 个字符"),
   password: z.string().min(8, "口令至少 8 个字符").max(200, "口令过长"),
-  displayName: z.string().min(1, "请填写显示名").max(40, "显示名最多 40 个字符"),
+  // 显示名可选，不填就用用户名
+  displayName: z.string().max(40, "显示名最多 40 个字符").optional(),
   inviteCode: z.string().max(64).optional(),
 });
 
+// 登录标识同样是用户名（兼容历史上的邮箱）
 const loginSchema = z.object({
-  email: z.string().min(1, "请输入邮箱"),
+  username: z.string().min(1, "请输入用户名"),
   password: z.string().min(1, "请输入口令"),
 });
 
@@ -52,12 +56,25 @@ export function createAuthRouter(deps: {
     });
   });
 
+  /**
+   * 更新记录（公开，不需要登录）。
+   * 登录页要能显示「当前版本」，用户登录后也要能看「这个版本更新了啥」，
+   * 所以不放在 /api/admin 下面。
+   */
+  router.get("/changelog", (_req: Request, res: Response) => {
+    res.json({
+      version: deps.env.version,
+      latest: currentRelease(),
+      entries: CHANGELOG,
+    });
+  });
+
   router.post("/register", body(registerSchema), async (req, res) => {
     const result = await deps.auth.registerAsync({
-      email: req.body.email,
+      username: req.body.username,
       password: req.body.password,
-      displayName: req.body.displayName,
-      inviteCode: req.body.inviteCode,
+      ...(req.body.displayName ? { displayName: req.body.displayName } : {}),
+      ...(req.body.inviteCode ? { inviteCode: req.body.inviteCode } : {}),
       ip: clientIp(req),
       userAgent: ua(req),
     });
@@ -67,7 +84,7 @@ export function createAuthRouter(deps: {
 
   router.post("/login", body(loginSchema), async (req, res) => {
     const result = await deps.auth.login({
-      email: req.body.email,
+      email: req.body.username,
       password: req.body.password,
       ip: clientIp(req),
       userAgent: ua(req),

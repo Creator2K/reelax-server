@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { AuthShell } from "@/components/layout/AuthShell.tsx";
+import { VersionLine } from "@/components/domain/Changelog.tsx";
 import { useAuthActions } from "@/lib/session.ts";
 import { ApiError } from "@/lib/api.ts";
 
@@ -81,10 +82,17 @@ export default function LoginPage() {
         <p className="text-muted-foreground text-center text-sm">
           还没有账号？
           <Link to="/register" className="text-foreground underline underline-offset-4">
-            用邀请码注册
+            去注册
           </Link>
         </p>
       </form>
+
+      {/* 登录前也能看版本与更新内容 */}
+      <div className="mt-4 flex justify-center">
+        <Link to="/changelog" className="text-muted-foreground hover:text-foreground text-xs underline underline-offset-4">
+          <VersionLine />
+        </Link>
+      </div>
     </AuthShell>
   );
 }

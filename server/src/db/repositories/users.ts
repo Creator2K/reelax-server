@@ -51,20 +51,73 @@ export class UsersRepo extends BaseRepo {
     return Boolean(this.findByEmail(email));
   }
 
-  list(opts: { status?: UserStatus; limit?: number; offset?: number } = {}): UserRow[] {
+  /**
+   * 列表查询。支持搜索与筛选（后台用户管理用）。
+   *
+   * 搜索匹配登录标识与显示名，大小写不敏感（SQLite 的 LIKE 对 ASCII 本来就不敏感，
+   * 这里再 lower() 一次保证行为一致）。
+   * 只允许白名单字段拼 SQL —— 不把用户输入直接塞进语句。
+   */
+  list(
+    opts: {
+      status?: UserStatus;
+      role?: UserRole;
+      /** 搜索词：匹配用户名或显示名 */
+      q?: string;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ): UserRow[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+
     if (opts.status) {
-      return this.db.all<UserRow>(
-        "SELECT * FROM users WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        opts.status,
-        opts.limit ?? 100,
-        opts.offset ?? 0,
-      );
+      where.push("status = ?");
+      params.push(opts.status);
     }
-    return this.db.all<UserRow>(
-      "SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?",
-      opts.limit ?? 100,
-      opts.offset ?? 0,
+    if (opts.role) {
+      where.push("role = ?");
+      params.push(opts.role);
+    }
+    const q = opts.q?.trim();
+    if (q) {
+      where.push("(lower(email) LIKE ? OR lower(display_name) LIKE ?)");
+      const like = `%${q.toLowerCase()}%`;
+      params.push(like, like);
+    }
+
+    const sql =
+      `SELECT * FROM users` +
+      (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
+      ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+    params.push(opts.limit ?? 100, opts.offset ?? 0);
+
+    return this.db.all<UserRow>(sql, ...params);
+  }
+
+  /** 与 list 同条件的总数（分页要用） */
+  count(opts: { status?: UserStatus; role?: UserRole; q?: string } = {}): number {
+    const where: string[] = [];
+    const params: string[] = [];
+    if (opts.status) {
+      where.push("status = ?");
+      params.push(opts.status);
+    }
+    if (opts.role) {
+      where.push("role = ?");
+      params.push(opts.role);
+    }
+    const q = opts.q?.trim();
+    if (q) {
+      where.push("(lower(email) LIKE ? OR lower(display_name) LIKE ?)");
+      const like = `%${q.toLowerCase()}%`;
+      params.push(like, like);
+    }
+    const row = this.db.get<{ c: number }>(
+      `SELECT count(*) AS c FROM users` + (where.length ? ` WHERE ${where.join(" AND ")}` : ""),
+      ...params,
     );
+    return Number(row?.c ?? 0);
   }
 
   create(input: CreateUserInput): UserRow {

@@ -9,6 +9,7 @@ export type UserStatus = "pending" | "approved" | "banned";
 
 export type SessionUser = {
   id: string;
+  /** 登录标识。历史上这一列存的是邮箱，现在新用户是用户名 */
   email: string;
   displayName: string;
   role: UserRole;
@@ -24,6 +25,8 @@ export type SystemInfo = {
   version: string;
   baseUrl: string;
   allowRegistration: boolean;
+  /** 注册是否需要邀请码（后台可关） */
+  requireInvite: boolean;
   maxAccountsPerUser: number;
   /** 是否已有用户（首个注册者成为管理员） */
   hasUsers: boolean;
@@ -64,15 +67,17 @@ export function useAuthActions() {
   const qc = useQueryClient();
 
   return {
-    async login(email: string, password: string): Promise<SessionUser> {
-      const data = await api.post<{ user: SessionUser }>("/api/auth/login", { email, password });
+    /** 登录标识可以是用户名，也可以是历史上注册的邮箱 */
+    async login(username: string, password: string): Promise<SessionUser> {
+      const data = await api.post<{ user: SessionUser }>("/api/auth/login", { username, password });
       qc.setQueryData(SESSION_QUERY_KEY, data.user);
       return data.user;
     },
     async register(input: {
-      email: string;
+      username: string;
       password: string;
-      displayName: string;
+      /** 可不填，后端会用用户名兜底 */
+      displayName?: string;
       inviteCode?: string;
     }): Promise<{ user: SessionUser; becameAdmin: boolean }> {
       const data = await api.post<{ user: SessionUser; becameAdmin: boolean }>("/api/auth/register", input);

@@ -17,6 +17,8 @@ import { AccountService } from "./services/account-service.ts";
 import { ProxyService } from "./services/proxy-service.ts";
 import { NotifyService } from "./services/notify-service.ts";
 import { UpdateService } from "./services/update-service.ts";
+import { SettingsService } from "./services/settings-service.ts";
+import { VERSION } from "./version.ts";
 import { runCommand } from "./services/wechat-commands.ts";
 import { createNotifyRouter } from "./api/routes/notify-routes.ts";
 import { parseGlobalProxy } from "./game/proxy.ts";
@@ -33,7 +35,6 @@ import { WsGateway } from "./api/ws-gateway.ts";
 import { createApp } from "./api/server.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.1.0";
 
 process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err instanceof Error ? (err.stack ?? err.message) : err);
@@ -56,6 +57,8 @@ type Ctx = {
   proxies: ProxyService;
   notify: NotifyService;
   update: UpdateService;
+  /** 运行时设置：环境变量只给初始值，之后可在后台在线改 */
+  settings: SettingsService;
 };
 
 function buildContext(): Ctx {
@@ -97,7 +100,9 @@ function buildContext(): Ctx {
 
   const vault = new CredentialVault(env.masterKey, logger);
   const limiters = new Limiters();
-  const auth = new AuthService({ repos, env, limiter: limiters, logger });
+  // 运行时设置：环境变量只提供初始值，之后以数据库为准（后台可在线改）
+  const settings = new SettingsService(db, env);
+  const auth = new AuthService({ repos, env, settings, limiter: limiters, logger });
 
   const globalProxy = parseGlobalProxy(env.globalProxy);
   if (env.globalProxy && !globalProxy) {
@@ -110,8 +115,11 @@ function buildContext(): Ctx {
     vault,
     logger,
     bus,
-    maxRunningAccounts: env.maxRunningAccounts,
-    maxAccountsPerUser: env.maxAccountsPerUser,
+    // 传函数而不是值：这两个上限能在后台在线改，值必须在调用时才读取
+    limits: {
+      maxRunningAccounts: () => settings.get("maxRunningAccounts"),
+      maxAccountsPerUser: () => settings.get("maxAccountsPerUser"),
+    },
     globalProxy,
   });
   // accounts 与 notify 互相引用：
@@ -161,12 +169,12 @@ function buildContext(): Ctx {
     allowLocalUpdate: env.allowLocalUpdate,
   });
 
-  return { env, logger, bus, db, repos, limiters, auth, vault, registry, accounts, proxies, notify, update };
+  return { env, logger, bus, db, repos, limiters, auth, vault, registry, accounts, proxies, notify, update, settings };
 }
 
 async function main(): Promise<void> {
   const ctx = buildContext();
-  const { env, logger, bus, db, repos, auth, registry, accounts, proxies, notify, update, limiters } = ctx;
+  const { env, logger, bus, db, repos, auth, registry, accounts, proxies, notify, update, settings, limiters } = ctx;
 
   const checkpointTimer = setInterval(() => db.checkpoint(), 5 * 60_000);
   checkpointTimer.unref();
@@ -319,6 +327,7 @@ async function main(): Promise<void> {
           repos,
           registry,
           update,
+          settings,
           limiters,
           env,
           version: VERSION,

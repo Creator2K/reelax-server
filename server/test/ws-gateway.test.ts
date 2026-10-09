@@ -10,6 +10,7 @@ import { openDb } from "../src/db/client.ts";
 import { createRepos } from "../src/db/repositories/index.ts";
 import { Limiters } from "../src/auth/ratelimit.ts";
 import { AuthService } from "../src/auth/service.ts";
+import { SettingsService } from "../src/services/settings-service.ts";
 import { CredentialVault } from "../src/security/vault.ts";
 import { RunnerRegistry } from "../src/game/runner-registry.ts";
 import { AccountService } from "../src/services/account-service.ts";
@@ -108,15 +109,14 @@ beforeAll(async () => {
   db.migrate();
   repos = createRepos(db);
   const limiters = new Limiters();
-  auth = new AuthService({ repos, env, limiter: limiters, logger });
+  auth = new AuthService({ repos, env, settings: new SettingsService(db, env), limiter: limiters, logger });
   const vault = new CredentialVault(env.masterKey, logger);
   registry = new RunnerRegistry({
     repos,
     vault,
     logger,
     bus,
-    maxRunningAccounts: 10,
-    maxAccountsPerUser: 5,
+    limits: { maxRunningAccounts: () => 10, maxAccountsPerUser: () => 5 },
     globalProxy: null,
   });
   accounts = new AccountService({ repos, vault, registry });

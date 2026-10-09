@@ -6,6 +6,7 @@ import { openDb, type Db } from "../../src/db/client.ts";
 import { createRepos, type Repos } from "../../src/db/repositories/index.ts";
 import { Limiters } from "../../src/auth/ratelimit.ts";
 import { AuthService } from "../../src/auth/service.ts";
+import { SettingsService } from "../../src/services/settings-service.ts";
 import { attachAuth } from "../../src/auth/middleware.ts";
 import { createApp } from "../../src/api/server.ts";
 import { createAuthRouter } from "../../src/api/routes/auth.ts";
@@ -87,7 +88,7 @@ export class TestServer {
     this.db.migrate();
     this.repos = createRepos(this.db);
     this.limiters = new Limiters();
-    this.auth = new AuthService({ repos: this.repos, env, limiter: this.limiters, logger: this.logger });
+    this.auth = new AuthService({ repos: this.repos, env, settings: new SettingsService(this.db, env), limiter: this.limiters, logger: this.logger });
 
     this.app = createApp({
       logger: this.logger,

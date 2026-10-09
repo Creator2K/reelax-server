@@ -24,6 +24,7 @@ import ProxiesPage from "./pages/Proxies.tsx";
 import NotifyPage from "./pages/Notify.tsx";
 import LogsPage from "./pages/Logs.tsx";
 import SettingsPage from "./pages/Settings.tsx";
+import ChangelogPage from "./pages/Changelog.tsx";
 import AdminPage from "./pages/Admin.tsx";
 import NotFoundPage from "./pages/NotFound.tsx";
 
@@ -88,6 +89,7 @@ export default function App() {
 
         {/* 两者都能访问 */}
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/changelog" element={<ChangelogPage />} />
 
         {/* 纯后台：仅管理员 */}
         <Route path="/admin" element={adminOnly(createElement(AdminPage))} />

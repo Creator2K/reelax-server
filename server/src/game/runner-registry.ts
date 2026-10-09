@@ -17,8 +17,14 @@ export type RunnerRegistryDeps = {
   vault: CredentialVault;
   logger: Logger;
   bus: Bus;
-  maxRunningAccounts: number;
-  maxAccountsPerUser: number;
+  /**
+   * 并发与配额改成**函数**而不是常量：这两个值能在后台在线修改，
+   * 存成常量就得重启才生效（早期实现就是这个毛病）。
+   */
+  limits: {
+    maxRunningAccounts: () => number;
+    maxAccountsPerUser: () => number;
+  };
   globalProxy: ProxyConfig | null;
   /** 测试注入 */
   fetchImpl?: typeof fetch;
@@ -90,12 +96,14 @@ export class RunnerRegistry {
 
   get capacity(): { running: number; max: number; available: number } {
     const running = this.runningCount;
-    return { running, max: this.deps.maxRunningAccounts, available: Math.max(0, this.deps.maxRunningAccounts - running) };
+    // 每次读设置：后台改了并发上限，下一次启动/容量查询就按新值算
+    const max = this.deps.limits.maxRunningAccounts();
+    return { running, max, available: Math.max(0, max - running) };
   }
 
-  /** 单用户账号配额（由 env 提供；这里透出便于服务层复用） */
+  /** 单用户账号配额（运行时设置提供；这里透出便于服务层复用） */
   get limitPerUser(): number {
-    return this.deps.maxAccountsPerUser;
+    return this.deps.limits.maxAccountsPerUser();
   }
 
   /**
@@ -105,11 +113,11 @@ export class RunnerRegistry {
     const rt = this.require(accountId);
     if (rt.status !== "stopped") return rt;
 
-    if (this.runningCount >= this.deps.maxRunningAccounts) {
+    if (this.runningCount >= this.deps.limits.maxRunningAccounts()) {
       throw new HttpError(
         409,
         "RUNNING_LIMIT_REACHED",
-        `同时运行的账号数已达上限（${this.deps.maxRunningAccounts}），请先停止其他账号。`,
+        `同时运行的账号数已达上限（${this.deps.limits.maxRunningAccounts()}），请先停止其他账号。`,
       );
     }
     await rt.start();
@@ -158,10 +166,10 @@ export class RunnerRegistry {
     for (const [i, rt] of targets.entries()) {
       if (i > 0) await new Promise((r) => setTimeout(r, 2500));
       // 超过全局并发上限就停手，剩下的账号保持 stopped 并给出明确原因
-      if (this.runningCount >= this.deps.maxRunningAccounts) {
+      if (this.runningCount >= this.deps.limits.maxRunningAccounts()) {
         this.deps.logger.warn(
           "引擎",
-          `已达同时运行上限（${this.deps.maxRunningAccounts}），其余账号保持停止。请在控制台手动启动。`,
+          `已达同时运行上限（${this.deps.limits.maxRunningAccounts()}），其余账号保持停止。请在控制台手动启动。`,
         );
         break;
       }

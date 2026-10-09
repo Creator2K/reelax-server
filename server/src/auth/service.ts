@@ -5,9 +5,10 @@ import type { Repos } from "../db/repositories/index.ts";
 import { AUDIT_ACTIONS } from "../db/repositories/audit.ts";
 import type { UserRow, UserRole, UserStatus } from "../db/repositories/users.ts";
 import { hashToken } from "../db/repositories/auth-sessions.ts";
-import { burnTimeLikeVerify, hashPassword, needsRehash, validatePasswordStrength, verifyPassword } from "../security/password.ts";
+import { burnTimeLikeVerify, hashPassword, needsRehash, validatePasswordStrength, validateUsername, verifyPassword } from "../security/password.ts";
 import { HttpError, badRequest, conflict, forbidden, unauthorized } from "../api/server.ts";
 import type { Logger } from "../lib/logger.ts";
+import type { SettingsService } from "../services/settings-service.ts";
 
 export type ApiUser = {
   id: string;
@@ -32,7 +33,14 @@ export type AuthLimiterLike = {
 
 export type AuthDeps = {
   repos: Repos;
+  /**
+   * 只保留"启动后不该变"的项。
+   * 会话时长 / 每用户账号上限 / 是否允许注册都改成走 SettingsService —— 
+   * 那些值要能在后台在线改且立即生效。
+   */
   env: Pick<Env, "sessionTtlDays" | "maxAccountsPerUser" | "allowRegistration">;
+  /** 运行时设置（在线可改） */
+  settings: SettingsService;
   limiter: {
     login: AuthLimiterLike;
     loginByIp: AuthLimiterLike;
@@ -45,19 +53,34 @@ export type AuthDeps = {
 
 export class AuthService {
   private repos: Repos;
-  private ttlMs: number;
-  private maxAccounts: number;
-  private allowRegistration: boolean;
+  private maxAccountsFallback: number;
+  private settings: SettingsService;
   private limiter: AuthDeps["limiter"];
   private log: Logger;
 
   constructor(deps: AuthDeps) {
     this.repos = deps.repos;
-    this.ttlMs = deps.env.sessionTtlDays * 86_400_000;
-    this.maxAccounts = deps.env.maxAccountsPerUser;
-    this.allowRegistration = deps.env.allowRegistration;
+    this.maxAccountsFallback = deps.env.maxAccountsPerUser;
+    this.settings = deps.settings;
     this.limiter = deps.limiter;
     this.log = deps.logger;
+  }
+
+  /* ---------- 运行时设置（在线可改，改了立即生效） ---------- */
+
+  /** 登录态有效期（毫秒）。改设置后不需要重启。 */
+  private get ttlMs(): number {
+    return this.settings.get("sessionTtlDays") * 86_400_000;
+  }
+  /** 每用户账号上限（默认额度；个别用户可单独放宽，见 userQuota） */
+  private get maxAccounts(): number {
+    return this.settings.get("maxAccountsPerUser") || this.maxAccountsFallback;
+  }
+  private get allowRegistration(): boolean {
+    return this.settings.get("allowRegistration");
+  }
+  private get requireInvite(): boolean {
+    return this.settings.get("requireInvite");
   }
 
   /* ---------- 序列化 ---------- */
@@ -80,6 +103,8 @@ export class AuthService {
   publicSystemInfo(extra: Record<string, unknown> = {}): Record<string, unknown> {
     return {
       allowRegistration: this.allowRegistration,
+      /** 注册是否需要邀请码（关闭后注册页不再显示邀请码输入框） */
+      requireInvite: this.requireInvite,
       maxAccountsPerUser: this.maxAccounts,
       hasUsers: this.repos.users.countAll() > 0,
       ...extra,
@@ -88,22 +113,34 @@ export class AuthService {
 
   /* ---------- 注册 ---------- */
 
-  /** 注册：首个用户直接成为已审批管理员；其余凭邀请码注册并等待审批 */
+  /**
+   * 注册。
+   *
+   * ★ 账号标识改用**用户名**（也兼容邮箱格式，老用户不受影响）：
+   *   要求邮箱才能注册对自建服务是多余的门槛 —— 用户不会收到任何邮件，
+   *   而登录只需要一个能记住的名字。数据库里那一列仍叫 email（历史命名），
+   *   语义是「登录标识」，可以是 admin / 摸鱼小王 / someone@example.com。
+   *
+   * 是否要邀请码由设置项 requireInvite 决定（默认要）；是否开放注册由
+   * allowRegistration 决定。两者都能在后台在线改且立即生效。
+   */
   async registerAsync(input: {
-    email: string;
+    /** 登录标识：用户名或邮箱 */
+    username?: string;
+    /** @deprecated 兼容旧调用（前端已改为传 username） */
+    email?: string;
     password: string;
-    displayName: string;
+    displayName?: string;
     inviteCode?: string;
     ip?: string;
     userAgent?: string;
   }): Promise<{ user: ApiUser; becameAdmin: boolean; token: SessionToken }> {
-    const email = input.email.trim();
-    const displayName = input.displayName.trim();
+    const username = (input.username ?? input.email ?? "").trim();
+    // 显示名可选：没填就用用户名本身，少一个必填项
+    const displayName = (input.displayName ?? "").trim() || username;
 
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      throw badRequest("邮箱格式不正确", "INVALID_EMAIL");
-    }
-    if (!displayName) throw badRequest("请填写显示名", "INVALID_DISPLAY_NAME");
+    const invalid = validateUsername(username);
+    if (invalid) throw badRequest(invalid, "INVALID_USERNAME");
     if (displayName.length > 40) throw badRequest("显示名最多 40 个字符", "INVALID_DISPLAY_NAME");
 
     const strength = validatePasswordStrength(input.password);
@@ -114,8 +151,8 @@ export class AuthService {
       throw new HttpError(429, "RATE_LIMITED", `注册过于频繁，请 ${Math.ceil(rl.retryAfterMs / 60000)} 分钟后再试。`);
     }
 
-    if (this.repos.users.existsEmail(email)) {
-      throw conflict("该邮箱已注册", "EMAIL_TAKEN");
+    if (this.repos.users.existsEmail(username)) {
+      throw conflict("该用户名已被使用", "USERNAME_TAKEN");
     }
 
     const isFirstUser = this.repos.users.countAll() === 0;
@@ -125,23 +162,24 @@ export class AuthService {
       if (!this.allowRegistration) {
         throw forbidden("本服务已关闭自助注册，请联系管理员创建账号。", "REGISTRATION_DISABLED");
       }
-      // ★ 邀请码是唯一的注册门槛：用对了就能直接使用，不需要管理员审批。
-      //   （审批环节已移除，避免「注册完还要等人点一下」这种体验）
-      const code = input.inviteCode?.trim();
-      if (!code) throw badRequest("需要邀请码才能注册", "INVITE_REQUIRED");
+      // 邀请码：由设置项决定是否强制（公开站点建议保持强制）
+      if (this.requireInvite) {
+        const code = input.inviteCode?.trim();
+        if (!code) throw badRequest("需要邀请码才能注册", "INVITE_REQUIRED");
 
-      const guess = this.limiter.inviteGuess.hit(input.ip ?? "unknown");
-      if (!guess.allowed) throw new HttpError(429, "RATE_LIMITED", "邀请码尝试过于频繁，请稍后再试。");
+        const guess = this.limiter.inviteGuess.hit(input.ip ?? "unknown");
+        if (!guess.allowed) throw new HttpError(429, "RATE_LIMITED", "邀请码尝试过于频繁，请稍后再试。");
 
-      const invite = this.repos.invites.findByCode(code);
-      if (!invite) throw badRequest("邀请码无效", "INVITE_INVALID");
-      const usable = this.repos.invites.isUsable(invite);
-      if (!usable.ok) throw badRequest(usable.reason, "INVITE_UNUSABLE");
+        const invite = this.repos.invites.findByCode(code);
+        if (!invite) throw badRequest("邀请码无效", "INVITE_INVALID");
+        const usable = this.repos.invites.isUsable(invite);
+        if (!usable.ok) throw badRequest(usable.reason, "INVITE_UNUSABLE");
 
-      if (!this.repos.invites.consume(code)) {
-        throw badRequest("邀请码已用尽或已过期", "INVITE_UNUSABLE");
+        if (!this.repos.invites.consume(code)) {
+          throw badRequest("邀请码已用尽或已过期", "INVITE_UNUSABLE");
+        }
+        consumedInvite = code;
       }
-      consumedInvite = code;
     }
 
     const passwordHash = await hashPassword(input.password);
@@ -149,7 +187,7 @@ export class AuthService {
     let row: UserRow;
     try {
       row = this.repos.users.create({
-        email,
+        email: username,
         passwordHash,
         displayName,
         // 首个注册者是管理员；其余为普通用户。
@@ -176,7 +214,11 @@ export class AuthService {
 
     this.log.info(
       "认证",
-      isFirstUser ? `首位用户注册成为管理员：${email}` : `新用户注册（凭邀请码，直接可用）：${email}`,
+      isFirstUser
+        ? `首位用户注册成为管理员：${username}`
+        : consumedInvite
+          ? `新用户注册（凭邀请码，直接可用）：${username}`
+          : `新用户注册（免邀请码，直接可用）：${username}`,
       { userId: row.id },
     );
 
@@ -380,8 +422,50 @@ export class AuthService {
 
   /* ---------- 管理员：用户 ---------- */
 
-  listUsers(opts: { status?: UserStatus; limit?: number; offset?: number } = {}): ApiUser[] {
+  listUsers(
+    opts: { status?: UserStatus; role?: UserRole; q?: string; limit?: number; offset?: number } = {},
+  ): ApiUser[] {
     return this.repos.users.list(opts).map((u) => this.toApi(u));
+  }
+
+  /** 与 listUsers 同条件的总数（分页用） */
+  countUsers(opts: { status?: UserStatus; role?: UserRole; q?: string } = {}): number {
+    return this.repos.users.count(opts);
+  }
+
+  /**
+   * 批量设置状态 / 角色。
+   *
+   * 逐个走单条逻辑而不是一条 SQL 批处理：单条逻辑里有「不能封自己」「不能封最后一个
+   * 管理员」这些约束，批处理绕过去会把管理员锁在门外。
+   * 单条失败不影响其余（结果里逐条回报）。
+   */
+  bulkUpdate(input: {
+    userIds: string[];
+    action: "ban" | "unban" | "promote" | "demote";
+    adminId: string;
+    ip?: string;
+  }): { updated: string[]; failed: { userId: string; reason: string }[] } {
+    const updated: string[] = [];
+    const failed: { userId: string; reason: string }[] = [];
+
+    for (const userId of input.userIds) {
+      try {
+        if (input.action === "ban") {
+          this.setUserStatus(userId, "banned", input.adminId, input.ip);
+        } else if (input.action === "unban") {
+          this.setUserStatus(userId, "approved", input.adminId, input.ip);
+        } else if (input.action === "promote") {
+          this.setUserRole(userId, "admin", input.adminId, input.ip);
+        } else {
+          this.setUserRole(userId, "user", input.adminId, input.ip);
+        }
+        updated.push(userId);
+      } catch (err) {
+        failed.push({ userId, reason: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return { updated, failed };
   }
 
   approve(userId: string, adminId: string, ip?: string): ApiUser {
@@ -563,18 +647,18 @@ export class AuthService {
   }
 
   async createUserByAdmin(input: {
-    email: string;
-    displayName: string;
+    /** 登录标识：用户名或邮箱（与自助注册同口径） */
+    username: string;
+    displayName?: string;
     password?: string;
     role?: UserRole;
     adminId: string;
     ip?: string;
   }): Promise<{ user: ApiUser; initialPassword: string | null }> {
-    const email = input.email.trim();
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      throw badRequest("邮箱格式不正确", "INVALID_EMAIL");
-    }
-    if (this.repos.users.existsEmail(email)) throw conflict("该邮箱已注册", "EMAIL_TAKEN");
+    const username = input.username.trim();
+    const invalid = validateUsername(username);
+    if (invalid) throw badRequest(invalid, "INVALID_USERNAME");
+    if (this.repos.users.existsEmail(username)) throw conflict("该用户名已被使用", "USERNAME_TAKEN");
 
     const generated = input.password ? null : randomBytes(9).toString("base64url");
     const password = input.password ?? (generated as string);
@@ -583,9 +667,9 @@ export class AuthService {
 
     const passwordHash = await hashPassword(password);
     const row = this.repos.users.create({
-      email,
+      email: username,
       passwordHash,
-      displayName: input.displayName.trim() || email.split("@")[0] || email,
+      displayName: (input.displayName ?? "").trim() || username,
       role: input.role ?? "user",
       status: "approved",
       approvedBy: input.adminId,
@@ -595,7 +679,7 @@ export class AuthService {
       userId: input.adminId,
       action: AUDIT_ACTIONS.REGISTER,
       target: row.id,
-      detail: { email, byAdmin: true, generated: Boolean(generated) },
+      detail: { username, byAdmin: true, generated: Boolean(generated) },
       ip: input.ip ?? null,
     });
 

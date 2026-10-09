@@ -1,10 +1,14 @@
+// 注册：用户名 + 口令即可，不再要求邮箱
+//
+// 为什么去掉邮箱：这是自建服务，不会给用户发任何邮件，邮箱只是个多余的必填项。
+// 登录标识统一叫「用户名」（历史上注册的邮箱用户照常能登录，因为那一列只存字符串）。
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { IconInfoCircle, IconLoader2 } from "@tabler/icons-react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert.tsx";
+import { IconCircleCheck, IconLoader2 } from "@tabler/icons-react";
+import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
@@ -13,8 +17,13 @@ import { useAuthActions, useSystemInfo } from "@/lib/session.ts";
 import { ApiError } from "@/lib/api.ts";
 
 const schema = z.object({
-  displayName: z.string().min(1, "请输入显示名").max(40, "显示名最多 40 个字符"),
-  email: z.string().min(1, "请输入邮箱").email("邮箱格式不正确"),
+  username: z
+    .string()
+    .min(3, "用户名至少 3 个字符")
+    .max(32, "用户名最多 32 个字符")
+    .regex(/^[^\s<>/\\'"`|]+$/, "用户名不能包含空格或 < > / \\ ' \" ` | 这些字符"),
+  // 显示名可选：不填就用用户名
+  displayName: z.string().max(40, "显示名最多 40 个字符").optional(),
   password: z.string().min(8, "口令至少 8 个字符").max(200, "口令过长"),
   inviteCode: z.string().optional(),
 });
@@ -31,6 +40,8 @@ export default function RegisterPage() {
 
   const isFirstUser = system?.hasUsers === false;
   const registrationOpen = system?.allowRegistration !== false;
+  // 后台可以关掉「注册需要邀请码」，此时不再显示邀请码输入框
+  const needInvite = system?.requireInvite !== false && !isFirstUser;
 
   const {
     register,
@@ -38,17 +49,17 @@ export default function RegisterPage() {
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { displayName: "", email: "", password: "", inviteCode: "" },
+    defaultValues: { username: "", displayName: "", password: "", inviteCode: "" },
   });
 
   const onSubmit = async (values: FormValues) => {
     setFormError(null);
     try {
       const res = await registerUser({
-        email: values.email,
+        username: values.username.trim(),
         password: values.password,
-        displayName: values.displayName,
-        inviteCode: values.inviteCode?.trim() || undefined,
+        ...(values.displayName?.trim() ? { displayName: values.displayName.trim() } : {}),
+        ...(values.inviteCode?.trim() ? { inviteCode: values.inviteCode.trim() } : {}),
       });
       setBecameAdmin(res.becameAdmin);
       setRegistered(true);
@@ -62,13 +73,14 @@ export default function RegisterPage() {
   if (registered && !becameAdmin) {
     return (
       <AuthShell title="注册成功" description="可以开始使用了">
-        <Alert>
-          <IconInfoCircle />
-          <AlertTitle>账号已就绪</AlertTitle>
-          <AlertDescription>
-            凭邀请码注册的账号**无需审批**，现在就可以添加游戏账号并开始挂机。
-          </AlertDescription>
-        </Alert>
+        <div className="flex flex-col items-center gap-3 py-2 text-center">
+          <div className="grid size-10 place-items-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+            <IconCircleCheck className="size-5" />
+          </div>
+          <p className="text-muted-foreground text-sm">
+            账号已创建，现在就可以添加游戏账号并开始挂机。
+          </p>
+        </div>
         <Button className="mt-4 w-full" onClick={() => navigate("/", { replace: true })}>
           进入控制台
         </Button>
@@ -77,10 +89,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <AuthShell
-      title="注册"
-      description={isFirstUser ? "你是第一个注册者，将自动成为管理员" : "需要管理员提供的邀请码"}
-    >
+    <AuthShell title="注册" description={isFirstUser ? "你是第一个注册者，将自动成为管理员" : undefined}>
       {!registrationOpen ? (
         <Alert variant="warn">
           <AlertDescription>本服务已关闭自助注册，请联系管理员创建账号。</AlertDescription>
@@ -95,15 +104,25 @@ export default function RegisterPage() {
         ) : null}
 
         <div className="space-y-2">
-          <Label htmlFor="displayName">显示名</Label>
-          <Input id="displayName" autoComplete="nickname" placeholder="怎么称呼你" {...register("displayName")} />
-          {errors.displayName ? <p className="text-destructive text-xs">{errors.displayName.message}</p> : null}
+          <Label htmlFor="username">用户名</Label>
+          <Input
+            id="username"
+            type="text"
+            autoComplete="username"
+            placeholder="登录时用它，例如 xiaowang"
+            {...register("username")}
+          />
+          {errors.username ? (
+            <p className="text-destructive text-xs">{errors.username.message}</p>
+          ) : (
+            <p className="text-muted-foreground text-xs">3~32 个字符，不带空格</p>
+          )}
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="email">邮箱</Label>
-          <Input id="email" type="email" autoComplete="username" placeholder="you@example.com" {...register("email")} />
-          {errors.email ? <p className="text-destructive text-xs">{errors.email.message}</p> : null}
+          <Label htmlFor="displayName">显示名（可不填）</Label>
+          <Input id="displayName" autoComplete="nickname" placeholder="界面里怎么称呼你" {...register("displayName")} />
+          {errors.displayName ? <p className="text-destructive text-xs">{errors.displayName.message}</p> : null}
         </div>
 
         <div className="space-y-2">
@@ -116,7 +135,7 @@ export default function RegisterPage() {
           )}
         </div>
 
-        {!isFirstUser ? (
+        {needInvite ? (
           <div className="space-y-2">
             <Label htmlFor="inviteCode">邀请码</Label>
             <Input id="inviteCode" placeholder="由管理员生成" {...register("inviteCode")} />

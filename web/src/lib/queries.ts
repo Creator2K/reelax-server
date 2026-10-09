@@ -229,6 +229,36 @@ export function useNotifyAvailability() {
   });
 }
 
+/* ---------- 更新记录 ---------- */
+
+export type ChangeKind = "feature" | "improve" | "fix";
+
+export type ChangelogEntry = {
+  version: string;
+  date: string;
+  title: string;
+  notice?: string;
+  changes: { kind: ChangeKind; text: string }[];
+};
+
+export type ChangelogResponse = {
+  version: string;
+  latest: ChangelogEntry;
+  entries: ChangelogEntry[];
+};
+
+/**
+ * 更新记录（公开接口，登录前也能取）。
+ * 缓存久一点没关系：它只随发版变化。
+ */
+export function useChangelog() {
+  return useQuery({
+    queryKey: ["changelog"],
+    queryFn: () => api.get<ChangelogResponse>("/api/auth/changelog"),
+    staleTime: 30 * 60_000,
+  });
+}
+
 /* ---------- 代理 ---------- */
 
 export type ProxyRow = {
