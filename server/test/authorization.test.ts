@@ -271,6 +271,40 @@ describe("模块配置校验", () => {
     expect(r.status).toBe(400);
   });
 
+  it("★ 旧版本残留的配置键不会挡住保存（配置表单会把整份配置原样回传）", async () => {
+    // 模拟：这个功能曾经有 legacyKey 这一项，改版后 schema 里没有它了，但库里还留着。
+    // 前端表单拿到的是「合并后的整份配置」（含 legacyKey），保存时会一起发回来 ——
+    // 如果服务端一律拒绝未知键，用户改任何一项都会被 400 挡下，那个功能就再也存不了配置。
+    app.repos.modules.upsert(aAccount, "keep-online", {
+      enabled: true,
+      config: { legacyKey: "old", syncJitterMs: 900 },
+    });
+
+    const r = await app.patch(
+      `/api/accounts/${aAccount}/modules/keep-online`,
+      { config: { legacyKey: "old", syncJitterMs: 700 } },
+      A.jar,
+    );
+    expect(r.status).toBe(200);
+
+    const stored = app.repos.modules.find(aAccount, "keep-online");
+    // 认识的键照常保存
+    expect(stored?.config.syncJitterMs).toBe(700);
+    // 遗留键原样保留：不写进新配置，也不静默抹掉用户数据
+    expect(stored?.config.legacyKey).toBe("old");
+  });
+
+  it("★ 但没见过的新键仍然被拒（拼写错误不会被静默吞掉）", async () => {
+    const r = await app.patch(
+      `/api/accounts/${aAccount}/modules/keep-online`,
+      { config: { syncJitterMs2: 100 } },
+      A.jar,
+    );
+    expect(r.status).toBe(400);
+    expect(r.body.error.code).toBe("INVALID_CONFIG");
+    expect(String(r.body.error.message)).toContain("syncJitterMs2");
+  });
+
   it("合法配置被接受并持久化", async () => {
     const r = await app.patch(
       `/api/accounts/${aAccount}/modules/keep-online`,

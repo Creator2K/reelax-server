@@ -279,7 +279,14 @@ export class AccountService {
     }
 
     if (patch.config) {
-      const { patch: clean, errors } = validateConfigPatch(def, patch.config);
+      // ★ 库里已经存在、但当前 schema 不认识的键 = 旧版本残留（例如某次改版删掉的配置项）。
+      //   配置表单会把服务端下发的整份配置原样回传，所以这些键必须放行，
+      //   否则用户改任何一项都会被「不是该模块的配置项」挡下来 —— 那个模块就再也存不了配置。
+      const stored = this.repos.modules.find(accountId, moduleId)?.config ?? {};
+      const knownKeys = new Set(def.configSchema.map((f) => f.key));
+      const legacyKeys = Object.keys(stored).filter((k) => !knownKeys.has(k));
+
+      const { patch: clean, errors } = validateConfigPatch(def, patch.config, { tolerateUnknown: legacyKeys });
       if (errors.length) {
         const first = errors[0]!;
         throw new HttpError(400, "INVALID_CONFIG", `${first.key}：${first.message}`);

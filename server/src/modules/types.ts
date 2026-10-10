@@ -264,18 +264,33 @@ export function pickKnownConfig(def: ModuleDefinition, stored: ConfigValues | un
   return out;
 }
 
-/** 把「PATCH 部分配置」收敛为「只含合法键的补丁」，非法值直接报错（不静默丢弃） */
+/**
+ * 把「PATCH 部分配置」收敛为「只含合法键的补丁」，非法值直接报错（不静默丢弃）。
+ *
+ * ★ `tolerateUnknown` 用来放行**旧版本残留的键**（库里已经存在、但当前 schema 不认识的键）。
+ *   为什么必须放行：配置表单拿到的是服务端下发的整份配置（含这些残留键），
+ *   保存时会把它们原样回传 —— 若一律拒绝，用户改任何一项都会被 400 挡住，
+ *   那个模块就再也存不了配置了（真实踩到过：自动切图的 mode 被替换成 priorities 之后）。
+ *   放行只是「不收进补丁」，库里那份原值仍然保留（upsert 是浅合并），不会抹掉用户数据。
+ */
 export function validateConfigPatch(
   def: ModuleDefinition,
   patch: ConfigValues,
-): { patch: ConfigValues; errors: ConfigIssue[] } {
+  opts: { tolerateUnknown?: Iterable<string> } = {},
+): { patch: ConfigValues; errors: ConfigIssue[]; ignored: string[] } {
   const byKey = new Map(def.configSchema.map((f) => [f.key, f]));
+  const tolerated = new Set(opts.tolerateUnknown ?? []);
+  const ignored: string[] = [];
   const out: ConfigValues = {};
   const errors: ConfigIssue[] = [];
 
   for (const [k, v] of Object.entries(patch)) {
     const field = byKey.get(k);
     if (!field) {
+      if (tolerated.has(k)) {
+        ignored.push(k);
+        continue;
+      }
       errors.push({ key: k, message: "不是该模块的配置项", value: v });
       continue;
     }
@@ -332,5 +347,5 @@ export function validateConfigPatch(
     }
   }
 
-  return { patch: out, errors };
+  return { patch: out, errors, ignored };
 }

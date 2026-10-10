@@ -11,7 +11,7 @@
 //  · 发版时在数组最前面追加一项
 
 /** 当前版本（与 package.json 的 version 同步维护） */
-export const VERSION = "1.2.3";
+export const VERSION = "1.2.4";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -26,6 +26,24 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.2.4",
+    date: "2026-10-10",
+    title: "修复「改过配置项的功能保存不了」",
+    notice:
+      "如果你现在就卡在这个报错（例如保存「自动切图」时提示「mode：不是该模块的配置项」），" +
+      "更新前可以临时点该功能的「恢复默认配置」绕过 —— 代价是这个功能的自定义值会被一并重置。",
+    changes: [
+      {
+        kind: "fix",
+        text: "保存功能配置时报「XXX：不是该模块的配置项」→ 修好。原因：改版删掉的旧配置项会留在库里，而配置表单拿到的是服务端下发的「整份配置」（含这些旧键），保存时会原样回传，服务端又一律拒绝未知键 —— 于是那个功能再也存不了配置。现在服务端放行「库里已经存在的遗留键」（既不写进新配置，也不抹掉原值），前端保存时也不再回传它们",
+      },
+      {
+        kind: "improve",
+        text: "功能表单上那条「旧版本遗留配置」提示写清楚了：保存时会自动跳过，不影响其它设置",
+      },
+    ],
+  },
   {
     version: "1.2.3",
     date: "2026-10-10",

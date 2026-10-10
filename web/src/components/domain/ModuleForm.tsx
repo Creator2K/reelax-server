@@ -68,7 +68,17 @@ export function ModuleForm({
   const save = async () => {
     setSaving(true);
     try {
-      await onSave(draft);
+      // ★ 只提交表单认识的字段。
+      //   服务端下发的 config 里可能带着**旧版本残留的键**（改版删掉的配置项），
+      //   它们会一起进 draft；原样回传会被服务端判为「不是该模块的配置项」，
+      //   于是这个模块就再也存不了配置（真实踩到过）。这里过滤掉，
+      //   库里那份原值仍然保留（服务端是浅合并）。
+      const known = new Set(fields.map((f) => f.key));
+      const patch: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(draft)) {
+        if (known.has(k)) patch[k] = v;
+      }
+      await onSave(patch);
       setDirty(false);
     } finally {
       setSaving(false);
@@ -91,7 +101,8 @@ export function ModuleForm({
 
       {staleKeys.length > 0 ? (
         <div className="text-muted-foreground text-xs">
-          另有 {staleKeys.length} 项旧版本遗留配置（{staleKeys.join("、")}）已保留但当前不使用。
+          另有 {staleKeys.length} 项旧版本遗留配置（{staleKeys.join("、")}）已保留在库里但当前不使用；
+          保存时会自动跳过它们，不影响其它设置。
         </div>
       ) : null}
 
