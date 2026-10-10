@@ -1,6 +1,6 @@
 {
   "name": "reelax-server",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "private": true,
   "description": "Reelax 多用户挂机平�?�?服务器版（Docker 部署 + 每账号代理）",
   "type": "module",

@@ -7,7 +7,15 @@ import { describe, expect, it } from "vitest";
 import { MODULES, assertRegistryValid } from "../src/modules/registry.ts";
 import { investedOf, parseRatio, parseTargets, planAllocation } from "../src/modules/auto-stats/index.ts";
 import { bucketOf } from "../src/modules/auto-sell-gear/index.ts";
-import { describeBiome, pickBest, primaryScore, valueWeight, xpWeight } from "../src/modules/auto-travel/index.ts";
+import {
+  DEFAULT_PRIORITIES,
+  describeBiome,
+  isGolden,
+  parsePriorities,
+  planTravel,
+  valueWeight,
+  xpWeight,
+} from "../src/modules/auto-travel/index.ts";
 
 /* ==================== 自动加点 ==================== */
 
@@ -260,110 +268,180 @@ describe("bucketOf（装备分档）", () => {
   });
 });
 
-/* ==================== 自动切图评分 ==================== */
+/* ==================== 自动切图：优先级与评分 ==================== */
 
-describe("xpWeight / valueWeight", () => {
-  it("经验权重 = (1 + 专精 + 公会) × (1 + 天气%)", () => {
+describe("parsePriorities", () => {
+  it("解析三项顺序", () => {
+    expect(parsePriorities("golden,competition,experience")).toEqual(["golden", "competition", "experience"]);
+  });
+
+  it("★ 无论怎么写，结果都一定三项齐全且不重复（顺序才是配置项本身）", () => {
+    expect(parsePriorities("experience")).toEqual(["experience", "competition", "golden"]);
+    expect(parsePriorities("golden,golden,experience")).toEqual(["golden", "experience", "competition"]);
+    expect(parsePriorities("")).toEqual(DEFAULT_PRIORITIES);
+    expect(parsePriorities(undefined)).toEqual(DEFAULT_PRIORITIES);
+    expect(parsePriorities("看心情")).toEqual(DEFAULT_PRIORITIES);
+  });
+});
+
+describe("xpWeight / valueWeight（经验只看天气）", () => {
+  it("★ 经验权重只看天气倍率，不算专精与公会", () => {
+    // 专精 +31.5%、公会 +50% 都不参与 —— 否则专精高的老图永远赢
     const biome = {
-      masteryXpBonusBasisPoints: 3150, // +31.5%
-      guildXpBonusBasisPoints: 5000, // +50%
-      weather: { effect: "+20% 经验" },
+      masteryXpBonusBasisPoints: 3150,
+      guildXpBonusBasisPoints: 5000,
+      weather: { weatherId: "mist" }, // 雾语 +20%
     };
-    // (1 + 0.315 + 0.5) × 1.2 = 2.178
-    expect(xpWeight(biome)).toBeCloseTo(2.178, 6);
+    expect(xpWeight(biome)).toBeCloseTo(1.2, 6);
   });
 
-  it("★ 专精与公会经验必须计入（旧版漏掉导致「经验优先」选错图）", () => {
-    const withBonuses = { masteryXpBonusBasisPoints: 10_000, guildXpBonusBasisPoints: 0, weather: { effect: "" } };
-    const withoutBonuses = { masteryXpBonusBasisPoints: 0, guildXpBonusBasisPoints: 0, weather: { effect: "" } };
-    expect(xpWeight(withBonuses)).toBeCloseTo(2, 6);
-    expect(xpWeight(withoutBonuses)).toBeCloseTo(1, 6);
+  it("九种天气都用倍率表（金风 / 枯潮的文本里没有「经验」二字）", () => {
+    expect(xpWeight({ weather: { weatherId: "arcane_surge" } })).toBeCloseTo(1.75, 6);
+    expect(xpWeight({ weather: { weatherId: "gilded_current" } })).toBeCloseTo(0.75, 6);
+    expect(xpWeight({ weather: { weatherId: "wither_tide" } })).toBeCloseTo(0.5, 6);
+    expect(xpWeight({ weather: { weatherId: "clear" } })).toBeCloseTo(1, 6);
   });
 
-  it("无天气文本时按 1 倍", () => {
+  it("天气字段缺失 / 只给 id / 不认识时按 1 倍，不编造", () => {
+    expect(xpWeight({ weather: { id: "tempest" } })).toBeCloseTo(1.5, 6);
     expect(xpWeight({ weather: {} })).toBeCloseTo(1, 6);
     expect(xpWeight({})).toBeCloseTo(1, 6);
+    expect(xpWeight({ weather: { weatherId: "新天气" } })).toBeCloseTo(1, 6);
   });
 
   it("鱼价值倍率缺失时按 1", () => {
     expect(valueWeight({ valueMultiplier: 1.4 })).toBe(1.4);
     expect(valueWeight({})).toBe(1);
   });
+
+  it("isGolden 认的是金风天气", () => {
+    expect(isGolden({ weather: { weatherId: "gilded_current" } })).toBe(true);
+    expect(isGolden({ weather: { id: "gilded_current" } })).toBe(true);
+    expect(isGolden({ weather: { weatherId: "clear" } })).toBe(false);
+    expect(isGolden({})).toBe(false);
+  });
 });
 
-describe("primaryScore / pickBest", () => {
+describe("planTravel（按优先级选图）", () => {
   const biomes = [
-    { id: "cur", name: "当前", isCurrent: true, masteryXpBonusBasisPoints: 0, valueMultiplier: 1, weather: {} },
-    {
-      id: "xp",
-      name: "经验图",
-      masteryXpBonusBasisPoints: 5000,
-      valueMultiplier: 1.1,
-      weather: { effect: "+20% 经验" },
-    },
-    {
-      id: "gold",
-      name: "金币图",
-      masteryXpBonusBasisPoints: 0,
-      valueMultiplier: 2.0,
-      weather: {},
-    },
-    {
-      id: "goldwind",
-      name: "金风图",
-      masteryXpBonusBasisPoints: 0,
-      valueMultiplier: 1.2,
-      weather: { weatherId: "gilded_current", effect: "每杆直接金币区间 +300~500" },
-    },
+    { id: "cur", name: "当前", isCurrent: true, valueMultiplier: 1, weather: { weatherId: "clear" } },
+    { id: "xp", name: "经验图", valueMultiplier: 1.1, weather: { weatherId: "tempest" } }, // ×1.5
+    { id: "gold", name: "金币图", valueMultiplier: 2.0, weather: { weatherId: "clear" } },
+    { id: "goldwind", name: "金风图", valueMultiplier: 1.2, weather: { weatherId: "gilded_current" } },
   ];
+  const plan = (over: Partial<Parameters<typeof planTravel>[0]> = {}) =>
+    planTravel({
+      priorities: DEFAULT_PRIORITIES,
+      unlocked: biomes,
+      currentBiomeId: "cur",
+      competition: null,
+      minImprovePct: 3,
+      ...over,
+    });
 
-  it("experience 模式选经验权重最高的", () => {
-    const best = pickBest("experience", biomes, "cur");
-    expect(best?.id).toBe("xp");
+  it("★ 顺序即决定：比赛 > 金风 > 经验（默认）", () => {
+    // 有比赛 → 去比赛图（哪怕金风 / 经验更好）
+    expect(plan({ competition: { biomeId: "gold", why: "个人赛 #3 进行中" } })).toMatchObject({
+      action: "travel",
+      biomeId: "gold",
+      reason: "competition",
+    });
+    // 没比赛 → 金风优先于经验
+    expect(plan()).toMatchObject({ action: "travel", biomeId: "goldwind", reason: "golden" });
   });
 
-  it("gold 模式选鱼价值最高的", () => {
-    const best = pickBest("gold", biomes, "cur");
-    expect(best?.id).toBe("gold");
+  it("★ 把经验排到最前面，就去天气经验最高的图（不看专精 / 公会 / 鱼价值）", () => {
+    const d = plan({ priorities: ["experience", "golden", "competition"] });
+    expect(d).toMatchObject({ action: "travel", biomeId: "xp", reason: "experience" });
   });
 
-  it("balanced 模式按 鱼价值 × 经验权重", () => {
-    const best = pickBest("balanced", biomes, "cur");
-    // xp: 1.1 × (1.5×1.2=1.8) = 1.98；gold: 2.0 × 1 = 2.0 → gold 略高
-    expect(best?.id).toBe("gold");
+  it("优先级可以只把金风排前面", () => {
+    const d = plan({ priorities: ["golden", "experience", "competition"], competition: { biomeId: "gold", why: "个人赛 #9" } });
+    expect(d).toMatchObject({ action: "travel", biomeId: "goldwind", reason: "golden" });
   });
 
-  it("排除当前地图", () => {
-    const only = [biomes[0]];
-    expect(pickBest("experience", only as any[], "cur")).toBeNull();
+  it("★ 已经在比赛图里就待着（不会被金风 / 经验拽走）", () => {
+    const d = plan({ competition: { biomeId: "cur", why: "个人赛 #3 进行中" } });
+    expect(d).toMatchObject({ action: "stay", reason: "competition" });
+    expect(d.why).toContain("已在比赛地图");
   });
 
-  it("primaryScore 与模式对应", () => {
-    expect(primaryScore("experience", biomes[1])).toBeCloseTo(xpWeight(biomes[1]), 6);
-    expect(primaryScore("gold", biomes[2])).toBeCloseTo(2.0, 6);
-    expect(primaryScore("balanced", biomes[2])).toBeCloseTo(2.0, 6);
+  it("★ 已经在金风图里就待着（金风排在经验前面时）", () => {
+    const d = plan({ currentBiomeId: "goldwind" });
+    expect(d).toMatchObject({ action: "stay", reason: "golden" });
   });
 
-  it("★ 金风文本里没有「经验」二字，经验权重不应被它虚高", () => {
-    // 金风只影响金币，不该让它在「经验优先」里胜出
-    expect(xpWeight(biomes[3])).toBeCloseTo(1, 6);
+  it("当前图天气经验最高 → 待着（经验优先级）", () => {
+    const d = plan({ priorities: ["experience", "golden", "competition"], currentBiomeId: "xp" });
+    expect(d).toMatchObject({ action: "stay", reason: "experience" });
+    expect(d.why).toContain("最优");
+  });
+
+  it("★ 迟滞：高得不够就不动（含具体数字，便于排查）", () => {
+    // 当前 clear×1.00，目标 mist 在另一套数据里给 +20%
+    const set = [
+      { id: "cur", name: "当前", valueMultiplier: 1, weather: { weatherId: "rain" } }, // 1.05
+      { id: "better", name: "稍好", valueMultiplier: 1, weather: { weatherId: "gale" } }, // 1.10 → 高 4.76%
+    ];
+    const d = planTravel({
+      priorities: ["experience", "golden", "competition"],
+      unlocked: set,
+      currentBiomeId: "cur",
+      competition: null,
+      minImprovePct: 10, // 门槛 10% → 不动
+    });
+    expect(d).toMatchObject({ action: "stay", reason: "experience" });
+    expect(d.why).toContain("4.8%");
+    // 门槛降到 3% 就会切
+    expect(
+      planTravel({
+        priorities: ["experience", "golden", "competition"],
+        unlocked: set,
+        currentBiomeId: "cur",
+        competition: null,
+        minImprovePct: 3,
+      }),
+    ).toMatchObject({ action: "travel", biomeId: "better" });
+  });
+
+  it("比赛 / 金风命中时不受迟滞影响（时段性的，犹豫就错过）", () => {
+    const d = plan({ minImprovePct: 100, competition: { biomeId: "gold", why: "公会赛 #2 即将开赛" } });
+    expect(d).toMatchObject({ action: "travel", biomeId: "gold" });
+  });
+
+  it("没有候选（没比赛、没金风、也没有别的图）→ 待着", () => {
+    expect(plan({ unlocked: [biomes[0]], currentBiomeId: "cur" })).toMatchObject({ action: "stay" });
+    expect(planTravel({ priorities: DEFAULT_PRIORITIES, unlocked: [], currentBiomeId: null, competition: null, minImprovePct: 0 })).toMatchObject({
+      action: "stay",
+      reason: null,
+    });
+  });
+
+  it("多张金风图时挑鱼价值最高的", () => {
+    const set = [
+      { id: "cur", name: "当前", valueMultiplier: 1, weather: { weatherId: "clear" } },
+      { id: "g1", name: "金风A", valueMultiplier: 1.1, weather: { weatherId: "gilded_current" } },
+      { id: "g2", name: "金风B", valueMultiplier: 1.5, weather: { weatherId: "gilded_current" } },
+    ];
+    expect(plan({ unlocked: set })).toMatchObject({ action: "travel", biomeId: "g2" });
   });
 });
 
 describe("describeBiome（日志可核对）", () => {
-  it("包含鱼价值与经验倍率及分项", () => {
+  it("包含鱼价值与天气经验倍率，不再提专精 / 公会", () => {
     const text = describeBiome({
       name: "熔潮环礁",
       valueMultiplier: 1.4,
       masteryXpBonusBasisPoints: 2100,
       guildXpBonusBasisPoints: 1100,
-      weather: { effect: "+5% 经验" },
+      weather: { weatherId: "heatwave" }, // 热浪 +30%
     });
     expect(text).toContain("熔潮环礁");
     expect(text).toContain("鱼价值×1.40");
-    expect(text).toContain("专精+21%");
-    expect(text).toContain("公会+11%");
-    expect(text).toContain("天气+5%");
+    expect(text).toContain("热浪");
+    expect(text).toContain("×1.30");
+    expect(text).not.toContain("专精");
+    expect(text).not.toContain("公会");
   });
 });
 

@@ -15,7 +15,6 @@ import {
   WEATHER_XP_MULTIPLIER,
   WEATHER_NAMES,
   bpToMultiplier,
-  parsePercentFromText,
   weatherMultiplier,
   weatherName,
 } from "../src/modules/keep-online/xp-multiplier.ts";
@@ -35,9 +34,7 @@ describe("天气倍率常量表", () => {
     });
   });
 
-  it("★ 金风与枯潮的文本里没有「经验」二字，倍率必须靠表", () => {
-    // 这两个是最容易踩的坑：文本是「每杆直接金币区间 +300~500」之类，反推会得到 0
-    expect(parsePercentFromText("每杆直接金币区间 +300~500")).toBe(0);
+  it("★ 金风与枯潮的倍率必须靠表（文本是「每杆直接金币区间 +300~500」之类，反推会得到 0）", () => {
     expect(weatherMultiplier("gilded_current")).toBe(0.75);
     expect(weatherMultiplier("wither_tide")).toBe(0.5);
   });
@@ -60,12 +57,6 @@ describe("天气倍率常量表", () => {
     expect(bpToMultiplier(10000)).toBe(2);
     expect(bpToMultiplier(-5000)).toBe(0.5);
     expect(bpToMultiplier(undefined)).toBe(1);
-  });
-
-  it("parsePercentFromText 只用于非权威场景", () => {
-    expect(parsePercentFromText("+20% 经验")).toBe(20);
-    expect(parsePercentFromText("无修正")).toBe(0);
-    expect(parsePercentFromText("")).toBe(0);
   });
 });
 

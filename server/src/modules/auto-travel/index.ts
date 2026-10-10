@@ -1,50 +1,78 @@
-// 自动切图：在所有已解锁地图里按优先级挑最合适的一张
+// 自动切图：按「优先级」在已解锁地图里挑一张待着（做法对齐官方航线助手）
 //
 // 协议：
 //  - GET /api/biomes → { biomes: [{ id, name, isUnlocked, isCurrent, valueMultiplier,
-//                                  masteryXpBonusBasisPoints, guildXpBonusBasisPoints,
-//                                  guildBoostEndsAt, weather: { weatherId, effect, name },
-//                                  activeCompetitions }] }
+//                                  weather: { weatherId, effect, name }, activeCompetitions }] }
 //  - GET /api/tournaments/overview 与 /api/guild-tournaments/overview：比赛场次（进图依据）
-//  - PUT /api/player/current-biome { biomeId }   手动换图（免费）
+//  - PUT /api/player/current-biome { biomeId }   换图（免费）
 //
-// ★ 选图口径（这是修正过一版的重点）：
-//     经验权重 = (1 + 专精经验 + 公会经验) × (1 + 天气经验%)
-//     鱼价值   = valueMultiplier
-//   旧版「经验优先」实际只看 鱼价值×天气，完全没算专精与公会经验加成，
-//   于是出现「明明选了经验优先却不切过去」的问题。
+// ★ 优先级（与官方助手的「换图优先级」同构，可从高到低排序）：
+//     比赛     我在打的比赛地图（个人赛 / 公会赛已报名，进行中或即将开赛）
+//     金风     正在刮「金风」（gilded_current）的地图 —— 每杆直接金币区间提高
+//     经验     天气经验加成最高的地图（**只看天气**，不含专精 / 公会增益）
 //
-//   ★ 不管哪个模式，「有比赛就去比赛地图」永远最高优先 ——
-//     否则会把刚送进比赛图的号又拽走。
+//   判定方式是「按顺序找第一个有候选的优先级，它就是决定」——
+//   也就是说：有比赛可去就不会因为别处天气好而跑掉；已经是金风了也不会被经验优先级拽走。
 //
-//   迟滞：目标收益需高出当前地图 minImprovePct 才切；每次切换有冷却，防止来回横跳。
+// ★ 经验口径（v3 起）：只看**天气**倍率（keep-online/xp-multiplier.ts 的表，9 种天气全覆盖）。
+//   旧版把「地图专精 + 公会增益 + 天气」乘在一起当经验权重，于是「选了经验优先却不切过去」
+//   （专精高的老图永远赢），而且金风 / 枯潮的文本里没有「经验」二字，靠解析文本会算成 0。
 //
-// 与官方航线助手：**完全不看它**（不读它的开关、不接管、不提示）。
-// 本项目自己负责换图；助手是跑在游戏页面里的循环，挂机时它本来就不动 ——
-// 你只要在游戏里把它关掉即可（功能本项目全包了）。
+// 迟滞：经验优先级下，目标天气倍率要高出当前 minImprovePct% 才切；
+//      比赛 / 金风命中则直接去（那两个是时段性的，犹豫就错过）。
 import { type ModuleDefinition } from "../types.ts";
-import { parsePercentFromText } from "../keep-online/xp-multiplier.ts";
+import { weatherMultiplier, weatherName } from "../keep-online/xp-multiplier.ts";
 
-const GOLDWIND_WEATHER_ID = "gilded_current";
+const GOLDEN_WEATHER_ID = "gilded_current";
 
-type Mode = "experience" | "gold" | "balanced" | "competition" | "goldwind";
-const MODES: Mode[] = ["experience", "gold", "balanced", "competition", "goldwind"];
+/** 三个优先级（与官方航线助手一致） */
+export type Priority = "competition" | "golden" | "experience";
 
-const MODE_LABEL: Record<Mode, string> = {
-  experience: "经验",
-  gold: "鱼价值",
-  balanced: "综合收益",
+export const PRIORITY_LABELS: Record<Priority, string> = {
   competition: "比赛",
-  goldwind: "金风",
+  golden: "金风",
+  experience: "经验",
 };
 
-/** 该地图的「经验权重」：专精经验 + 公会经验（万分比）再乘天气经验 */
+/** 缺省顺序（也是官方助手的默认值） */
+export const DEFAULT_PRIORITIES: Priority[] = ["competition", "golden", "experience"];
+
+const ALL_PRIORITIES: Priority[] = ["competition", "golden", "experience"];
+const isPriority = (v: unknown): v is Priority => ALL_PRIORITIES.includes(v as Priority);
+
+/**
+ * 解析「优先级」配置（值形如 "competition,golden,experience"）。
+ * 无论怎么写，结果都一定是三项齐全且不重复 —— 顺序才是配置项本身。
+ */
+export function parsePriorities(value: unknown): Priority[] {
+  const list = String(value ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const seen = new Set<Priority>();
+  const out: Priority[] = [];
+  for (const item of list) {
+    if (isPriority(item) && !seen.has(item)) {
+      seen.add(item);
+      out.push(item);
+    }
+  }
+  // 缺的补在后面：用户只写了一半也不会漏掉某个优先级
+  for (const p of DEFAULT_PRIORITIES) if (!seen.has(p)) out.push(p);
+  return out;
+}
+
+/** 该地图的天气 id（原始响应里是 weatherId；个别版本只给 id） */
+export function weatherIdOf(biome: any): string | null {
+  return biome?.weather?.weatherId ?? biome?.weather?.id ?? null;
+}
+
+/**
+ * 该地图的「经验权重」——**只看天气加成**（用户明确要求）：
+ * 专精等级、公会增益都不参与，避免专精高的老图永远赢。
+ */
 export function xpWeight(biome: any): number {
-  const mastery = Number(biome?.masteryXpBonusBasisPoints) || 0;
-  const guild = Number(biome?.guildXpBonusBasisPoints) || 0;
-  // 地图列表只给天气文本，没有结构化倍率 → 这里用文本里的百分比
-  const weather = parsePercentFromText(biome?.weather?.effect);
-  return (1 + mastery / 10_000 + guild / 10_000) * (1 + weather / 100);
+  return weatherMultiplier(weatherIdOf(biome));
 }
 
 /** 该地图的「鱼价值」倍率 */
@@ -52,60 +80,147 @@ export function valueWeight(biome: any): number {
   return Number(biome?.valueMultiplier) || 1;
 }
 
-/** 按模式返回主指标（用于迟滞比较） */
-export function primaryScore(mode: Mode, biome: any): number {
-  const xp = xpWeight(biome);
-  const val = valueWeight(biome);
-  if (mode === "experience" || mode === "competition" || mode === "goldwind") return xp;
-  if (mode === "gold") return val;
-  return val * xp; // balanced
+/** 是否正在刮金风 */
+export function isGolden(biome: any): boolean {
+  return weatherIdOf(biome) === GOLDEN_WEATHER_ID;
 }
 
-/** 按模式挑最优（返回 best，排除当前地图） */
-export function pickBest(mode: Mode, unlocked: any[], currentId: string): any | null {
-  let cmp: (a: any, b: any) => number;
-  if (mode === "gold") {
-    cmp = (a, b) => valueWeight(b) - valueWeight(a) || xpWeight(b) - xpWeight(a);
-  } else if (mode === "balanced") {
-    cmp = (a, b) => valueWeight(b) * xpWeight(b) - valueWeight(a) * xpWeight(a) || xpWeight(b) - xpWeight(a);
-  } else {
-    // experience / competition / goldwind 的兜底都是「经验优先」
-    cmp = (a, b) => xpWeight(b) - xpWeight(a) || valueWeight(b) - valueWeight(a);
-  }
+export type TravelDecision =
+  | { action: "travel"; biomeId: string; reason: Priority; why: string }
+  | { action: "stay"; reason: Priority | null; why: string };
 
-  let best: any = null;
-  for (const b of unlocked) {
-    if (b.id === currentId) continue;
-    if (!best || cmp(b, best) < 0) best = b;
+/** 比大小：先按主指标，再按 id 兜底，保证同一份数据每次选出同一张（可测） */
+function bestBy<T>(list: T[], score: (b: T) => number, idOf: (b: T) => string): T | null {
+  let best: T | null = null;
+  for (const item of list) {
+    if (!best) {
+      best = item;
+      continue;
+    }
+    const d = score(item) - score(best);
+    if (d > 0 || (d === 0 && idOf(item) < idOf(best))) best = item;
   }
   return best;
 }
 
+/**
+ * 选图决策（纯函数）。
+ *
+ * @param input.competition 外部算好的比赛目标（我在打的比赛地图）；没有则 null
+ */
+export function planTravel(input: {
+  priorities: Priority[];
+  /** 已解锁的地图（应包含当前地图） */
+  unlocked: any[];
+  currentBiomeId: string | null;
+  competition: { biomeId: string; why: string } | null;
+  minImprovePct: number;
+}): TravelDecision {
+  const { unlocked, currentBiomeId, competition } = input;
+  const priorities = input.priorities.length ? input.priorities : DEFAULT_PRIORITIES;
+
+  if (!unlocked.length) return { action: "stay", reason: null, why: "没有已解锁的地图" };
+  const current = unlocked.find((b) => b?.id === currentBiomeId) ?? null;
+
+  for (const p of priorities) {
+    if (p === "competition") {
+      if (!competition) continue; // 没比赛 → 看下一个优先级
+      if (competition.biomeId === currentBiomeId) {
+        return { action: "stay", reason: p, why: `已在比赛地图（${competition.why}）` };
+      }
+      return { action: "travel", biomeId: competition.biomeId, reason: p, why: `比赛地图：${competition.why}` };
+    }
+
+    if (p === "golden") {
+      const cands = unlocked.filter(isGolden);
+      if (!cands.length) continue;
+      const best = bestBy(cands, valueWeight, (b) => String(b?.id ?? ""));
+      if (!best) continue;
+      if (best.id === currentBiomeId) {
+        return { action: "stay", reason: p, why: `已在金风地图（鱼价值×${valueWeight(best).toFixed(2)}）` };
+      }
+      return {
+        action: "travel",
+        biomeId: best.id,
+        reason: p,
+        why: `金风天气：鱼价值×${valueWeight(best).toFixed(2)}（每杆直接金币区间提高）`,
+      };
+    }
+
+    // experience：天气经验最高的地图（只看天气）
+    const best = bestBy(unlocked, xpWeight, (b) => String(b?.id ?? ""));
+    if (!best) continue;
+    const bestXp = xpWeight(best);
+    if (best.id === currentBiomeId) {
+      return {
+        action: "stay",
+        reason: p,
+        why: `当前地图的天气经验已是最优（${weatherLabel(best)}，×${bestXp.toFixed(2)}）`,
+      };
+    }
+    const curXp = current ? xpWeight(current) : 1;
+    const improve = curXp > 0 ? bestXp / curXp - 1 : 1;
+    const threshold = Math.max(0, Number(input.minImprovePct) || 0);
+    if (improve * 100 < threshold) {
+      return {
+        action: "stay",
+        reason: p,
+        why:
+          `天气经验未达迟滞门槛：${best.name ?? best.id} ${weatherLabel(best)}×${bestXp.toFixed(2)}` +
+          ` 比当前 ${weatherLabel(current)}×${curXp.toFixed(2)} 高 ${(improve * 100).toFixed(1)}%（门槛 ${threshold}%）`,
+      };
+    }
+    return {
+      action: "travel",
+      biomeId: best.id,
+      reason: p,
+      why:
+        `天气经验更优：${weatherLabel(best)}×${bestXp.toFixed(2)}` +
+        `（当前 ${weatherLabel(current)}×${curXp.toFixed(2)}，高 ${(improve * 100).toFixed(1)}%）`,
+    };
+  }
+
+  return { action: "stay", reason: null, why: "按当前优先级没有可去的地图" };
+}
+
+/** 「晴空 ×1.00」这样的一句话（日志里比 weatherId 好读得多） */
+export function weatherLabel(biome: any): string {
+  const id = weatherIdOf(biome);
+  if (!id) return "天气未知";
+  // 不认识的天气 id 原样显示，别显示成空白
+  return weatherName(id) ?? id;
+}
+
 /** 把一张地图的加成说清楚，方便在日志里核对 */
 export function describeBiome(b: any): string {
-  const parts = [`鱼价值×${valueWeight(b).toFixed(2)}`];
-  const xp = xpWeight(b);
-  const mastery = (Number(b?.masteryXpBonusBasisPoints) || 0) / 100;
-  const guild = (Number(b?.guildXpBonusBasisPoints) || 0) / 100;
-  const weather = parsePercentFromText(b?.weather?.effect);
-  const detail = [
-    mastery ? `专精+${mastery}%` : "",
-    guild ? `公会+${guild}%` : "",
-    weather ? `天气+${weather}%` : "",
-  ].filter(Boolean);
-  parts.push(`经验×${xp.toFixed(2)}${detail.length ? `（${detail.join("，")}）` : ""}`);
-  return `${b?.name ?? b?.id} ${parts.join(" ")}`;
+  return `${b?.name ?? b?.id} 鱼价值×${valueWeight(b).toFixed(2)} 天气${weatherLabel(b)}×${xpWeight(b).toFixed(2)}`;
 }
+
+/** 优先级 → 配置值（前端下拉框的选项用它生成） */
+const PRIORITY_OPTIONS = (() => {
+  const perms: Array<[Priority, Priority, Priority]> = [];
+  for (const a of ALL_PRIORITIES) {
+    for (const b of ALL_PRIORITIES) {
+      for (const c of ALL_PRIORITIES) {
+        if (a !== b && b !== c && a !== c) perms.push([a, b, c]);
+      }
+    }
+  }
+  return perms.map(([a, b, c]) => ({
+    value: `${a},${b},${c}`,
+    label: `${PRIORITY_LABELS[a]} > ${PRIORITY_LABELS[b]} > ${PRIORITY_LABELS[c]}`,
+  }));
+})();
 
 const definition: ModuleDefinition = {
   id: "auto-travel",
   name: "自动切图",
-  version: "2.0.0",
+  version: "3.0.0",
   description:
-    "在已解锁的地图里自动挑最划算的一直待着。可选经验优先、鱼价值优先或兼顾；有比赛时先去比赛地图。",
+    "按你排的优先级在已解锁地图里挑一张待着（做法与官方航线助手的「换图优先级」一致）：比赛地图 > 金风地图 > 天气经验最高的地图，顺序可调。经验只看天气加成，不算地图专精与公会增益。",
   defaultEnabled: false,
   defaultConfig: {
-    mode: "experience",
+    priorities: "competition,golden,experience",
     fleetMode: "solo",
     checkEverySec: 120,
     minImprovePct: 3,
@@ -114,24 +229,22 @@ const definition: ModuleDefinition = {
   },
   configSchema: [
     {
-      key: "mode",
+      key: "priorities",
       type: "select",
-      label: "优先模式",
-      hint: "经验优先 = 综合「专精经验 + 公会经验增益 + 天气经验」挑最高的地图；兼顾 = 鱼价值 × 经验权重",
-      default: "experience",
-      options: [
-        { value: "experience", label: "经验优先（专精 + 公会 + 天气）" },
-        { value: "balanced", label: "兼顾（鱼价值 × 经验）" },
-        { value: "gold", label: "鱼价值优先" },
-        { value: "competition", label: "比赛优先" },
-        { value: "goldwind", label: "金风优先" },
-      ],
+      label: "换图优先级（从高到低）",
+      hint:
+        "按顺序找第一个有候选的优先级，它就是决定 —— 有比赛可去就不会因为别处天气好而跑掉。\n" +
+        "比赛 = 我已报名的个人赛 / 公会赛地图（进行中或即将开赛）；" +
+        "金风 = 正在刮金风的地图（每杆直接金币区间提高）；" +
+        "经验 = 天气经验加成最高的地图。",
+      default: "competition,golden,experience",
+      options: PRIORITY_OPTIONS,
     },
     {
       key: "fleetMode",
       type: "select",
       label: "与船队的关系",
-      hint: "跟船队走 = 完全不自己换图，船队开到哪你就在哪；自己切图 = 按上面的模式自行换图（船队自己开走时游戏仍会把你带走）",
+      hint: "跟船队走 = 完全不自己换图，船队开到哪你就在哪；自己切图 = 按上面的优先级自行换图（船队自己开走时游戏仍会把你带走）",
       default: "solo",
       options: [
         { value: "solo", label: "自己切图（默认）" },
@@ -151,7 +264,7 @@ const definition: ModuleDefinition = {
       key: "minImprovePct",
       type: "number",
       label: "切换迟滞（%）",
-      hint: "目标地图收益需比当前地图高出该百分比才切换，防止频繁横跳（比赛 / 金风命中时不适用）",
+      hint: "只作用于「经验」：目标天气倍率要高出当前这么多才切，防止来回横跳。比赛 / 金风命中时直接去，不适用。",
       default: 3,
       min: 0,
       max: 100,
@@ -187,6 +300,10 @@ const definition: ModuleDefinition = {
     S.lastTravelAt = 0;
     S.lastIdle = "";
 
+    // 优先级只在启动时解析一次（改配置会重启模块，所以不必每轮重算）
+    const priorities = parsePriorities(ctx.config.priorities);
+    const minImprovePct = Math.max(0, Number(ctx.config.minImprovePct) || 0);
+
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
       S.lastIdle = msg;
@@ -210,45 +327,45 @@ const definition: ModuleDefinition = {
 
       const cur = personal?.current;
       if (cur?.isRegistered) {
-        return { biomeId: cur.assignedBiomeId ?? cur.biomeId, why: `个人赛 #${cur.sequence} 进行中` };
+        const biomeId = cur.assignedBiomeId ?? cur.biomeId;
+        if (biomeId) return { biomeId, why: `个人赛 #${cur.sequence} 进行中` };
       }
       for (const t of personal?.upcoming ?? []) {
         if (t?.isRegistered && soon(t, "isRegistered")) {
-          return { biomeId: t.assignedBiomeId ?? t.biomeId, why: `个人赛 #${t.sequence} 即将开赛` };
+          const biomeId = t.assignedBiomeId ?? t.biomeId;
+          if (biomeId) return { biomeId, why: `个人赛 #${t.sequence} 即将开赛` };
         }
       }
       const gcur = guild?.current;
       if (gcur?.entryStatus) {
-        return { biomeId: gcur.assignedBiomeId ?? gcur.biomeId, why: `公会赛 #${gcur.sequence} 进行中` };
+        const biomeId = gcur.assignedBiomeId ?? gcur.biomeId;
+        if (biomeId) return { biomeId, why: `公会赛 #${gcur.sequence} 进行中` };
       }
       for (const t of guild?.upcoming ?? []) {
-        if (soon(t, "entryStatus")) {
-          return { biomeId: t.assignedBiomeId ?? t.biomeId, why: `公会赛 #${t.sequence} 即将开赛` };
+        if (t?.entryStatus && soon(t, "entryStatus")) {
+          const biomeId = t.assignedBiomeId ?? t.biomeId;
+          if (biomeId) return { biomeId, why: `公会赛 #${t.sequence} 即将开赛` };
         }
       }
       return null;
     };
 
-    const doTravel = async (biome: any, reason: string) => {
+    const doTravel = async (biomeId: string, name: string, reason: string) => {
       S.lastTravelAt = Date.now();
       try {
-        const r = await ctx.api.biomeTravel(biome.id);
+        const r = await ctx.api.biomeTravel(biomeId);
         const cur = r?.player?.currentBiomeId;
-        if (cur && cur !== biome.id) {
-          ctx.log.warn("自动切图", `前往 ${biome.name ?? biome.id} 未生效（当前 ${cur}），稍后重试`);
+        if (cur && cur !== biomeId) {
+          ctx.log.warn("自动切图", `前往 ${name} 未生效（当前 ${cur}），稍后重试`);
           return;
         }
-        ctx.log.info("自动切图", `⛵ ${reason} → ${biome.name ?? biome.id}`);
+        ctx.log.info("自动切图", `⛵ ${reason} → ${name}`);
       } catch (err) {
-        ctx.log.warn("自动切图", `前往 ${biome.name ?? biome.id} 失败：${err instanceof Error ? err.message : String(err)}`);
+        ctx.log.warn("自动切图", `前往 ${name} 失败：${err instanceof Error ? err.message : String(err)}`);
       }
     };
 
     const decide = async (trigger: string) => {
-      const mode: Mode = MODES.includes(String(ctx.config.mode) as Mode)
-        ? (ctx.config.mode as Mode)
-        : "experience";
-
       const data = await ctx.api.biomes();
       const biomes: any[] = (data?.biomes ?? []).filter(Boolean);
       const current = biomes.find((b) => b.isCurrent);
@@ -258,9 +375,7 @@ const definition: ModuleDefinition = {
         return;
       }
 
-      const now = Date.now();
-
-      /* ---------- 0. 「跟船队走」：完全不自己换图 ---------- */
+      /* ---------- 「跟船队走」：完全不自己换图 ---------- */
       if (ctx.config.fleetMode === "follow") {
         const party = (await ctx.api.fishingState().catch(() => null))?.party;
         if (party?.isInParty) {
@@ -277,48 +392,23 @@ const definition: ModuleDefinition = {
         return;
       }
 
-      /* ---------- 1. 比赛永远最高优先 ---------- */
-      const comp = await competitionTarget(now);
-      if (comp) {
-        if (comp.biomeId && comp.biomeId !== current.id) {
-          const target = unlocked.find((b) => b.id === comp.biomeId) ?? { id: comp.biomeId, name: comp.biomeId };
-          await doTravel(target, comp.why);
-        }
+      const competition = await competitionTarget(Date.now());
+      const decision = planTravel({
+        priorities,
+        unlocked,
+        currentBiomeId: current.id ?? null,
+        competition,
+        minImprovePct,
+      });
+
+      if (decision.action === "stay") {
+        idle(`${trigger}：${decision.why}`);
         return;
       }
 
-      /* ---------- 2. 金风优先模式下，有金风天气就去那儿 ---------- */
-      if (mode === "goldwind") {
-        const goldwind = unlocked.find((b) => b.weather?.weatherId === GOLDWIND_WEATHER_ID);
-        if (goldwind && goldwind.id !== current.id) {
-          await doTravel(goldwind, "金风天气（每杆直接金币区间 +300~500）");
-          return;
-        }
-      }
-
-      /* ---------- 3. 按模式挑最优 ---------- */
-      const best = pickBest(mode, unlocked, current.id);
-      if (!best) {
-        idle(`${trigger}：没有其他已解锁地图`);
-        return;
-      }
-
-      const curScore = primaryScore(mode, current);
-      const bestScore = primaryScore(mode, best);
-      const improve = curScore > 0 ? bestScore / curScore - 1 : 1;
-      const threshold = Number(ctx.config.minImprovePct) || 3;
-
-      if (improve * 100 < threshold) {
-        const pct = improve * 100;
-        const cmpText =
-          pct >= 0
-            ? `${best.name} 仅高 ${pct.toFixed(1)}%`
-            : `${best.name} 反而低 ${Math.abs(pct).toFixed(1)}%`;
-        idle(`${trigger}：${describeBiome(current)} 已是较优选择（${cmpText}，未达迟滞门槛 ${threshold}%）`);
-        return;
-      }
-
-      await doTravel(best, `${MODE_LABEL[mode]}更优 +${(improve * 100).toFixed(1)}%（${describeBiome(best)}）`);
+      const target = unlocked.find((b) => b.id === decision.biomeId) ?? { id: decision.biomeId, name: decision.biomeId };
+      const name = String(target.name ?? decision.biomeId);
+      await doTravel(decision.biomeId, name, `${PRIORITY_LABELS[decision.reason]}｜${decision.why}`);
     };
 
     const check = async (trigger: string) => {
@@ -350,6 +440,12 @@ const definition: ModuleDefinition = {
     });
 
     ctx.schedule(30_000, () => check("启动检查"));
+
+    ctx.log.info(
+      "自动切图",
+      `已启动：优先级 ${priorities.map((p) => PRIORITY_LABELS[p]).join(" > ")}；` +
+        `经验只看天气加成${minImprovePct ? `，迟滞 ${minImprovePct}%` : ""}`,
+    );
   },
 };
 

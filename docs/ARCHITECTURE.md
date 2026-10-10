@@ -135,7 +135,7 @@ export const MODULES: ModuleDefinition[] = [
 
 - `modules/auto-stats/index.ts` 的 `planAllocation()` / `parseRatio()`
 - `modules/auto-sell-gear/index.ts` 的 `bucketOf()`
-- `modules/auto-travel/index.ts` 的 `pickBest()` / `xpWeight()`
+- `modules/auto-travel/index.ts` 的 `planTravel()` / `parsePriorities()` / `xpWeight()`
 - `modules/keep-online/status-panel.ts` 的 `totalXpMultiplier()`
 - `modules/auto-loadout/plan.ts` 的 `parsePlan()` / `pickPlanEntry()`（文本配置的时间表）
 - `modules/shared/schedule.ts` 的 `parseSchedule()` / `parseOnOffPlan()` / `milestoneOccurrence()`

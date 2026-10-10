@@ -44,13 +44,3 @@ export function weatherName(weatherId: unknown): string | null {
 
 /** 万分比 → 倍率 */
 export const bpToMultiplier = (bp: unknown): number => 1 + (Number(bp) || 0) / 10000;
-
-/**
- * 把「文本里的百分比」解析成数值。
- * 仅用于自动切图评分这类**非权威**场景（地图列表只给文本，没有结构化分值）。
- * 权威的经验加成一律走 run.effects 的 basis points。
- */
-export function parsePercentFromText(text: unknown): number {
-  const m = String(text ?? "").match(/(\d+(?:\.\d+)?)\s*%/);
-  return m ? Number(m[1]) : 0;
-}
