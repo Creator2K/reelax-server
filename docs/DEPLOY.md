@@ -126,10 +126,10 @@ docker compose pull app && docker compose up -d
 构建 `linux/amd64` + `linux/arm64` 两种架构并推到 `ghcr.io/creator2k/reelax-server`（同时打 `sha-<短提交>` 标签便于回滚）。
 镜像里烧了提交号，所以面板的「当前版本」永远读得到。
 
-> ★ **首次使用要手动把包设为公开**：GHCR 的包默认是私有的。打开
+> ★ **只有拉取报 401 时才需要动可见性**：GHCR 的包一般继承仓库可见性（本仓库是公开的，
+> 实测推完即可匿名 `docker compose pull`）。万一你的包是私有的，去
 > `https://github.com/users/Creator2K/packages/container/reelax-server/settings`
-> → Danger Zone → Change visibility → Public。否则 `docker compose pull` 会 401。
-> （仓库是公开的，所以设为公开没有额外暴露；真要私有就得在主机上 `docker login ghcr.io`。）
+> → Danger Zone → Change visibility → Public；或者干脆在主机上 `docker login ghcr.io`。
 
 **实现要点（排障时会用到）**：
 
