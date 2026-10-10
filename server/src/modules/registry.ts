@@ -9,6 +9,7 @@
 import { rarityOptions } from "./shared/rarity.ts";
 import type { ConfigField, ConfigValues, ModuleDefinition } from "./types.ts";
 import keepOnline from "./keep-online/index.ts";
+import autoSchedule from "./auto-schedule/index.ts";
 import dailyCheckin from "./daily-checkin/index.ts";
 import autoStats from "./auto-stats/index.ts";
 import autoMastery from "./auto-mastery/index.ts";
@@ -17,21 +18,28 @@ import autoBait from "./auto-bait/index.ts";
 import autoTournament from "./auto-tournament/index.ts";
 import autoWorldBoss from "./auto-world-boss/index.ts";
 import autoSellGear from "./auto-sell-gear/index.ts";
+import autoLoadout from "./auto-loadout/index.ts";
 import autoXpBuff from "./auto-xp-buff/index.ts";
 import dailyDigest from "./daily-digest/index.ts";
 import autoPity from "./auto-pity/index.ts";
+import autoGuildBoost from "./auto-guild-boost/index.ts";
+import autoSacrifice from "./auto-sacrifice/index.ts";
 
 export const MODULES: ModuleDefinition[] = [
   keepOnline,
+  autoSchedule,
   dailyCheckin,
   autoStats,
   autoMastery,
   autoTravel,
   autoPity,
+  autoGuildBoost,
+  autoSacrifice,
   autoBait,
   autoTournament,
   autoWorldBoss,
   autoSellGear,
+  autoLoadout,
   autoXpBuff,
   dailyDigest,
 ];

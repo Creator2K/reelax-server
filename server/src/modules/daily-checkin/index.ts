@@ -1,10 +1,10 @@
 // 每日签到：每天领取签到奖励
 //
 // 游戏日为北京时间；重复领只会返回 409 ALREADY_CLAIMED，所以整体是幂等操作。
-// 与官方航线助手的「自动签到」是**软冲突**：只提示不停手
-// （助手需要游戏页面打开才会执行，而本服务 24 小时直连 API，两者不抢操作）。
+//
+// 与官方航线助手：本项目**自己签到**（助手那套要开着游戏页面才会执行，而且它做的
+// 也是同一个 /api/daily-check-in/claim —— 没有额外能力），因此不看它的开关。
 import { type ModuleDefinition } from "../types.ts";
-import { assistantTakesOver } from "../shared/conflicts.ts";
 
 const definition: ModuleDefinition = {
   id: "daily-checkin",
@@ -34,12 +34,10 @@ const definition: ModuleDefinition = {
       lastClaimedDay: string | null;
       lastCheckAt: number;
       busy: boolean;
-      warnedConflict: boolean;
     };
     S.lastClaimedDay = null;
     S.lastCheckAt = 0;
     S.busy = false;
-    S.warnedConflict = false;
 
     /** 北京时间的本地日（游戏日按北京时间算） */
     const beijingDay = (): string => {
@@ -57,18 +55,6 @@ const definition: ModuleDefinition = {
       S.lastCheckAt = now;
       S.busy = true;
       try {
-        // 官方助手也开着自动签到：只提示一次，不停手（签到幂等，谁先领都一样）
-        if (!S.warnedConflict) {
-          const taken = await assistantTakesOver(ctx.api, "isAutoCheckInEnabled");
-          if (taken) {
-            S.warnedConflict = true;
-            ctx.log.info(
-              "每日签到",
-              "检测到官方航线助手也开启了「自动签到」。两者都是幂等调用（重复领只会返回 ALREADY_CLAIMED），因此继续工作。",
-            );
-          }
-        }
-
         const day = beijingDay();
         if (S.lastClaimedDay === day) return; // 今天本进程已领过
 

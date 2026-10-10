@@ -15,6 +15,11 @@ import { attachAuth } from "./auth/middleware.ts";
 import { CredentialVault } from "./security/vault.ts";
 import { RunnerRegistry } from "./game/runner-registry.ts";
 import { AccountService } from "./services/account-service.ts";
+import {
+  AccountScheduleService,
+  SCHEDULE_FIRST_TICK_MS,
+  SCHEDULE_TICK_MS,
+} from "./services/account-schedule-service.ts";
 import { ProxyService } from "./services/proxy-service.ts";
 import { NotifyService } from "./services/notify-service.ts";
 import { UpdateService } from "./services/update-service.ts";
@@ -280,6 +285,21 @@ async function main(): Promise<void> {
   );
   maintenance.unref();
 
+  /* ---------- 账号级「定时启停」 ----------
+   * ★ 必须是服务端级的定时器：账号被停掉后模块的定时器也跟着停了，
+   *   靠模块自己永远起不来。这里直接读库里「定时挂机」模块的配置。
+   *   详见 services/account-schedule-service.ts。
+   */
+  const accountSchedule = new AccountScheduleService({ repos, registry, logger });
+  const firstScheduleTick = setTimeout(() => {
+    void accountSchedule.tick();
+  }, SCHEDULE_FIRST_TICK_MS);
+  firstScheduleTick.unref();
+  const scheduleTimer = setInterval(() => {
+    void accountSchedule.tick();
+  }, SCHEDULE_TICK_MS);
+  scheduleTimer.unref();
+
   /* ---------- 部署时的默认管理员 ----------
    * 为什么在启动时建：服务器部署时「第一个访问站点的人」未必是机主，
    * 把首注册变管理员等于把后台送给先来的人。这里用已知用户名 + 随机口令，
@@ -498,7 +518,9 @@ async function main(): Promise<void> {
       clearInterval(checkpointTimer);
       clearInterval(maintenance);
       clearInterval(logFlushTimer);
+      clearInterval(scheduleTimer);
       clearTimeout(firstSnapshotCheck);
+      clearTimeout(firstScheduleTick);
       // 先停引擎（会把状态写回数据库），再关推送、WS 与 HTTP
       await registry.stopAll();
       await notify.disposeAll().catch(() => {});

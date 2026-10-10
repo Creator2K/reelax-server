@@ -49,6 +49,26 @@ export class AccountModulesRepo extends BaseRepo {
     };
   }
 
+  /**
+   * 某模块在**全部账号**上的配置行。
+   *
+   * 给服务端级调度器用（例如「定时挂机」）：账号停着的时候模块自己也停了，
+   * 所以调度器必须直接读库，而不能走账号运行时。
+   */
+  listByModule(moduleId: string, opts: { enabledOnly?: boolean } = {}): (ModuleState & { accountId: string })[] {
+    const rows = this.db.all<AccountModuleRow>(
+      `SELECT * FROM account_modules WHERE module_id = ?${opts.enabledOnly ? " AND enabled = 1" : ""}`,
+      moduleId,
+    );
+    return rows.map((r) => ({
+      accountId: r.account_id,
+      moduleId: r.module_id,
+      enabled: Number(r.enabled) === 1,
+      config: parseJson<Record<string, unknown>>(r.config_json, {}),
+      updatedAt: Number(r.updated_at),
+    }));
+  }
+
   /** 是否存在该账号对某模块的显式记录 */
   has(accountId: string, moduleId: string): boolean {
     const r = this.db.get<{ c: number }>(

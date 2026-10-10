@@ -14,7 +14,7 @@ api/            Express 路由 + WebSocket 网关（只做参数校验、鉴权�
 security/       AES-256-GCM 加解密、凭证保管箱、scrypt 口令哈希
 auth/           注册/登录/会话/RBAC/限流/cookie 策略
 game/           签名客户端、代理层、账号运行时、运行时注册表
-modules/        11 个内置功能 + 模块定义契约
+modules/        16 个内置功能 + 模块定义契约
 ```
 
 **硬性规则**：
@@ -137,8 +137,23 @@ export const MODULES: ModuleDefinition[] = [
 - `modules/auto-sell-gear/index.ts` 的 `bucketOf()`
 - `modules/auto-travel/index.ts` 的 `pickBest()` / `xpWeight()`
 - `modules/keep-online/status-panel.ts` 的 `totalXpMultiplier()`
+- `modules/auto-loadout/plan.ts` 的 `parsePlan()` / `pickPlanEntry()`（文本配置的时间表）
+- `modules/shared/schedule.ts` 的 `parseSchedule()` / `parseOnOffPlan()` / `milestoneOccurrence()`
+  （通用时间表：三个功能共用）
+- `modules/auto-sacrifice/decide.ts` 的 `decideSacrifice()`（献祭多少：不可撤回的花费，判定要保守）
+- `modules/auto-guild-boost/decide.ts` 的 `decideGuildBoost()`（花公会金库，判定同样要保守）
+- `modules/auto-xp-buff/decide.ts` 的 `decidePurchase()`（商店商品表 + 该不该买）
+- `services/account-schedule-service.ts` 的 `applyOne()`（账号定时启停的判定，见 §9）
 
-对应测试在 `server/test/modules.test.ts`。
+对应测试在 `server/test/modules.test.ts`；模块级的「行为」测试（对着假游戏 API 跑真实
+`onStart`）见 `server/test/auto-loadout-module.test.ts`、`server/test/auto-xp-buff-module.test.ts` ——
+只测纯函数挡不住「一个商品失败把整个循环带走」这类问题，所以新模块最好两种都写。
+
+### 3.4 配置预览（可选）
+
+文本类配置（时间表、模板）光看输入框看不出效果，可以在 `modules/preview.ts` 的 `BUILDERS`
+里登记一个纯函数，前端就会在表单旁边实时渲染（`ModulePreview` 走 `POST /api/modules/:id/preview`）。
+预览**不做网络请求**、也不校验配置——它要能一边编辑一边看，非法值优雅地返回 `null` 即可。
 
 ---
 
@@ -183,36 +198,36 @@ export const MODULES: ModuleDefinition[] = [
 
 ---
 
-## 6. 官方航线助手冲突处理
+## 6. 官方航线助手：解耦，而不是协作
 
-游戏自带「航线助手」。如果它也开着相同功能，两边会互相抢操作。分级处理：
+游戏自带「航线助手」。它的**决策跑在浏览器里**（React effect + react-query 缓存 +
+`window.setTimeout`），没人开着游戏页面时它什么都不做；但它的**开关存在服务端**，
+所以「开着」这件事一直成立。详细机制见 `docs/PROTOCOL.md` §4.1 / §4.5。
 
-| 本模块 | 冲突开关 | 处理 |
+**本项目的立场：功能全部自己做，和助手零接触。**
+
+- 助手有的功能：本项目自己实现（换图、换饵、签到、围猎参战、经验 Buff、
+  **奥秘献祭**、**公会区域增益**）—— 都用游戏自己的端点，不依赖助手权益。
+- 助手没有的功能：本来就只有本项目有（保底切图、定时配装、定时挂机、卖装备、日报…）。
+- 因此代码里**没有任何**助手相关调用：不读它的开关、不接管、不代它执行、不提示。
+  历史实现见 git log —— 「硬冲突拒绝启动」「临时接管开关」「代驱动换图」「只读提示」
+  都做过，最后按「功能自己全包」这个方向逐个删掉了。
+
+> 也就是说：**`/api/convenience` 现在没有任何调用方**。唯一的动作在于用户 ——
+> 在游戏里把助手的「自动换图」关掉（否则你哪天打开游戏页面，助手会和本项目抢图）。
+
+覆盖对照（谁实现了什么）：
+
+| 助手功能 | 本项目对应模块 | 端点 |
 | --- | --- | --- |
-| `auto-travel` | `isAutoTravelEnabled` | **硬冲突**：`onStart` 拒绝启动 + 运行中每 8 分钟复查后停手 |
-| `auto-bait` | `isAutoBaitEnabled` | 软冲突：只提示不停手 |
-| `auto-world-boss` | `isAutoWorldBossRegistrationEnabled` | 软冲突：只提示（`selection` 幂等） |
-| `daily-checkin` | `isAutoCheckInEnabled` | 软冲突：只提示（签到幂等） |
-| `auto-tournament` | `isAutoTravelEnabled` | 只让出「进图」，报名照常 |
-| `auto-mastery` | — | 不冲突（助手做的是「奥秘献祭」，端点不同） |
-
-写在 `modules/shared/conflicts.ts`：
-
-```ts
-// 硬冲突：拒绝启动
-await assertNoAssistantConflict(ctx.api, "isAutoTravelEnabled", "自动切图");
-
-// 软冲突：只提示一次
-if (await assistantTakesOver(ctx.api, "isAutoCheckInEnabled")) {
-  ctx.log.info("我的功能", "官方助手也开着，但两者幂等，继续工作");
-}
-```
-
-读不到助手状态时 **fail-open**（抛带 `softWarning` 的错误，只记日志继续启动）：
-网络抖动不该导致挂机起不来。
-
-**为什么软冲突不让位**：官方助手要游戏页面打开、由前端触发；本服务直连 API，
-24 小时挂机也会执行。如果软冲突也拒绝启动，用户一开助手就永远启动失败。
+| 自动换图 | `auto-travel` / `auto-pity` | `PUT /api/player/current-biome` |
+| 场景鱼饵 | `auto-bait` | `/api/baits/{id}/purchase` + `/equip`（同样 5 个场景：个人赛/公会赛/金风/涌流/平时） |
+| 自动签到 | `daily-checkin` | `/api/daily-check-in/claim` |
+| 围猎自动报名 | `auto-world-boss` | `/api/events/world-boss/selection` |
+| 经验 Buff 自动化 | `auto-xp-buff` | `/api/shop/purchases`（还多买两种属性 Buff） |
+| **奥秘献祭** | `auto-sacrifice` | `/api/events/arcane-sacrifice/contributions` |
+| **公会区域增益** | `auto-guild-boost` | `/api/guilds/me/boosts/{biomeId}` |
+| 地图专精献祭（助手没有） | `auto-mastery` | `/api/mastery/{biomeId}/contribute-all` |
 
 ---
 
@@ -241,3 +256,42 @@ myEndpoint(arg: string) {
 - 任何挂在 `fishing:sync` 上的逻辑**必须节流**（各模块用 1~5 分钟不等）
 - 定时轮询间隔不要低于 60 秒
 - 写操作（卖装备、买 Buff、加点）建议默认关闭或有明确上限
+
+---
+
+## 9. 定时启停为什么不在模块里
+
+「定时挂机」这个功能**看起来**是个模块（它在功能列表里、有开关、有配置表单），
+但它的执行者不在模块里，而在 `services/account-schedule-service.ts`：
+
+```
+account_modules(auto-schedule 行)  ←  用户在功能卡片里填的时间表
+        │  每 30 秒读一次（enabled=1 的行）
+        ▼
+AccountScheduleService.tick()  ──►  RunnerRegistry.start() / stop()
+```
+
+原因很简单：**账号被停掉以后，模块的定时器也跟着停了**，靠模块自己永远起不来。
+所以调度器必须活在账号运行时之外，并且**直接读数据库**（不能走 `ctx.config`）。
+
+这样做的取舍：
+
+- 好处：配置界面、开关、校验、预览、持久化全部复用模块体系，**前端一行都不用改**，
+  也不需要为它加一张表 / 一次迁移。
+- 代价：「模块」这个概念在这里只是配置容器，看代码的人容易误会 —— 所以
+  `modules/auto-schedule/index.ts` 与 `services/account-schedule-service.ts` 的文件头
+  都写明了这一点，模块内的注释也标注了「不要在这里另搞一套启停逻辑」。
+
+三条语义（两边必须一致，改动时一起改）：
+
+1. **到点生效的里程碑**：当前档 = 时间 ≤ 现在的最后一条，今天没到就用昨天的最后一条。
+2. **只在跨过新的一档时执行一次**：两档之间不反复对齐状态 ——
+   否则用户手动点「停止」会在半分钟内被拉起来，看起来像关不掉。
+3. **服务重启后重新对齐一次**：`applied` 是内存态，重启后按当前档执行一次 ——
+   否则「该跑的时候一直不跑」。
+
+其它已知交互（不是缺陷，但要知道）：
+
+- 启动失败（凭证过期 / 并发上限）会冷却 5 分钟再试，同一档只警告一次。
+- 时间表优先级高于账号的「自动启动」：开机恢复会把 `auto_start` 的账号拉起来，
+  之后调度器在「off」那一档再把它停掉（最多几十秒的重合）。

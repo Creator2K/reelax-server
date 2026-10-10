@@ -12,10 +12,8 @@
 // 职责边界：本模块只做「报名 + 比赛进图」。**日常选图交给「自动切图」** ——
 // 两边都换图必然互相拽，所以这里不做「没比赛时切到收益最高的地图」。
 //
-// 与官方航线助手的关系：助手开了「自动换图」时，本模块只让出「进图」这一步，
-// 报名照常 —— 报名有时效，错过就没了。
+// 与官方航线助手：不看它的开关、不让位（本项目自己负责换图）。
 import { type ModuleDefinition } from "../types.ts";
-import { assistantTakesOver } from "../shared/conflicts.ts";
 import { sleep } from "../../lib/util.ts";
 
 /** 有资格报名公会赛的公会职位 */
@@ -77,14 +75,12 @@ const definition: ModuleDefinition = {
       lastIdle: string;
       guildRole: string | null;
       guildRoleCheckedAt: number;
-      travelDisabledByAssistant: boolean;
       warnedGuildRole: boolean;
     };
     S.registeredIds = new Set<string>();
     S.lastIdle = "";
     S.guildRole = null;
     S.guildRoleCheckedAt = 0;
-    S.travelDisabledByAssistant = false;
     S.warnedGuildRole = false;
 
     const idle = (msg: string) => {
@@ -188,17 +184,6 @@ const definition: ModuleDefinition = {
 
       /* ---------- 进比赛地图 ---------- */
       if (ctx.config.travelToBiome === false) return;
-
-      // 官方助手开着自动换图时让位（否则两边抢方向盘）
-      const takenOver = await assistantTakesOver(ctx.api, "isAutoTravelEnabled");
-      if (takenOver) {
-        if (!S.travelDisabledByAssistant) {
-          S.travelDisabledByAssistant = true;
-          ctx.log.info("报名赛事", "官方航线助手已开启「自动换图」，本模块只负责报名，不再进图");
-        }
-        return;
-      }
-      S.travelDisabledByAssistant = false;
 
       /** 该不该进这张图 */
       const shouldEnter = (t: any, registeredFlag: unknown): boolean => {

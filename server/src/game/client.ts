@@ -457,6 +457,41 @@ export class GameClient {
   gearDismantle(gearIds: string[]) {
     return this.request("/api/inventory/gear/dismantle", { method: "POST", body: { gearIds }, idempotent: true });
   }
+  /** 装备配装方案列表 `{ loadouts: [{ slot, name, gear, stats }] }` */
+  gearLoadouts() {
+    return this.request("/api/gear/loadouts");
+  }
+  /** 装载（穿上）某个配装方案 */
+  loadoutLoad(slot: number) {
+    return this.request(`/api/gear/loadouts/${encodeURIComponent(String(slot))}/load`, {
+      method: "POST",
+      idempotent: true,
+    });
+  }
+  /** 奥秘献祭总览（轮次 / 进度 / 自己的额度 / 可用资源 / 鱼的点数换算） */
+  arcaneSacrifice() {
+    return this.request("/api/events/arcane-sacrifice");
+  }
+  /** 献祭资源：fish 要带 rarity，gold / relic 不用 */
+  arcaneSacrificeContribute(body: { resourceType: string; rarity?: string; quantity: number }) {
+    return this.request("/api/events/arcane-sacrifice/contributions", {
+      method: "POST",
+      body,
+      idempotent: true,
+    });
+  }
+  /** 公会各图的区域经验增益状态 + 单价 / 时长 / 单次上限 */
+  guildBoosts() {
+    return this.request("/api/guilds/me/boosts");
+  }
+  /** 购买（或延长）某张地图的公会区域增益，消耗公会金库 */
+  guildBoostPurchase(biomeId: string, units: number) {
+    return this.request(`/api/guilds/me/boosts/${encodeURIComponent(biomeId)}`, {
+      method: "POST",
+      body: { units },
+      idempotent: true,
+    });
+  }
   guildTournamentRegister(id: string) {
     return this.request(`/api/guild-tournaments/${encodeURIComponent(id)}/register`, {
       method: "POST",

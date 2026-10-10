@@ -19,10 +19,10 @@
 //
 //   迟滞：目标收益需高出当前地图 minImprovePct 才切；每次切换有冷却，防止来回横跳。
 //
-// 与官方航线助手的「自动换图」是**硬冲突**：两边都会把你换走，结果谁也待不住。
-// 因此 onStart 拒绝启动，且运行中每 8 分钟复查，助手被打开就停手。
+// 与官方航线助手：**完全不看它**（不读它的开关、不接管、不提示）。
+// 本项目自己负责换图；助手是跑在游戏页面里的循环，挂机时它本来就不动 ——
+// 你只要在游戏里把它关掉即可（功能本项目全包了）。
 import { type ModuleDefinition } from "../types.ts";
-import { assertNoAssistantConflict, assistantTakesOver, isSoftWarning } from "../shared/conflicts.ts";
 import { parsePercentFromText } from "../keep-online/xp-multiplier.ts";
 
 const GOLDWIND_WEATHER_ID = "gilded_current";
@@ -178,25 +178,14 @@ const definition: ModuleDefinition = {
   ],
 
   async onStart(ctx) {
-    // 与官方航线助手的「自动换图」是硬冲突：两边都会换图 → 拒绝启动
-    try {
-      await assertNoAssistantConflict(ctx.api, "isAutoTravelEnabled", "自动切图");
-    } catch (err) {
-      if (!isSoftWarning(err)) throw err;
-      // 读不到助手状态时 fail-open，只记一条警告
-      ctx.log.warn("自动切图", err instanceof Error ? err.message : String(err));
-    }
-
     const S = ctx.state as {
       busy: boolean;
       lastTravelAt: number;
       lastIdle: string;
-      conflicted: boolean;
     };
     S.busy = false;
     S.lastTravelAt = 0;
     S.lastIdle = "";
-    S.conflicted = false;
 
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
@@ -333,7 +322,7 @@ const definition: ModuleDefinition = {
     };
 
     const check = async (trigger: string) => {
-      if (S.busy || S.conflicted) return;
+      if (S.busy) return;
 
       // 每次真的决定前先看冷却：避免频繁换图被服务端限流
       const cooldownMs = Math.max(120, Number(ctx.config.travelCooldownSec) || 600) * 1000;
@@ -361,19 +350,6 @@ const definition: ModuleDefinition = {
     });
 
     ctx.schedule(30_000, () => check("启动检查"));
-
-    /**
-     * 运行时软检测：官方助手中途被打开「自动换图」时自动停手。
-     * 每 8 分钟复查一次 —— 比每次 check 都问要省请求，又能及时让位。
-     */
-    ctx.every(8 * 60_000, async () => {
-      if (S.conflicted) return;
-      const taken = await assistantTakesOver(ctx.api, "isAutoTravelEnabled");
-      if (taken) {
-        S.conflicted = true;
-        ctx.log.warn("自动切图", "检测到官方航线助手已开启「自动换图」，本模块暂停工作，避免互相抢图");
-      }
-    });
   },
 };
 

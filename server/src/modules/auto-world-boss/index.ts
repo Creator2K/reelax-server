@@ -5,8 +5,9 @@
 // 快照锁定：第一次攻击产生后属性锁定（player.recentDamage > 0 或 isLocked === true），
 // 所以必须在开战前就用最强属性完成选择。
 //
-// 与官方助手的「渊潮围猎自动报名」是软冲突：两者都只是 POST selection，
-// 服务端只认第一次选择，重复提交无副作用 → 只提示不停手。
+// 与官方航线助手：不看它的开关（本项目自己报名 / 选属性；助手那套「自动报名」要开着
+// 游戏页面才会执行，而且它是在**没选属性**时就提交，属性由谁决定不明 —— 本项目
+// 自己按属性总计挑最高属性，更可控）。
 import { type ModuleDefinition } from "../types.ts";
 import { STAT_KEYS, STAT_LABELS } from "../shared/rarity.ts";
 import { jitter } from "../../lib/util.ts";
@@ -21,7 +22,6 @@ const definition: ModuleDefinition = {
   defaultConfig: {
     stat: "max",
     checkEverySec: 90,
-    minLeadSec: 60,
   },
   configSchema: [
     {

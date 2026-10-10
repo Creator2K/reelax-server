@@ -10,8 +10,9 @@
 // 选图口径：**专精等级越低越优先**（等级低时升级收益最大）。
 // 每轮只处理一张地图，避免一次打出一串请求。
 //
-// 与官方航线助手不冲突：助手做的是「奥秘献祭」（/api/events/arcane-sacrifice），
-// 和地图专精是两个不同系统。
+// 与官方航线助手的「奥秘献祭」不是一回事：那是全世界共同消耗资源激活全地图涌流
+// （/api/events/arcane-sacrifice，由本项目的「奥秘献祭」模块负责），
+// 这里做的是把鱼献给自己地图的专精等级（/api/mastery）。
 import { type ModuleDefinition } from "../types.ts";
 import { jitter } from "../../lib/util.ts";
 import { RARITIES, RARITY_LABELS } from "../shared/rarity.ts";

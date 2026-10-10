@@ -1,43 +1,79 @@
-// 自动换饵：按场景切换鱼饵（平时 / 涌流 / 比赛），并自动补货
+// 自动换饵：按场景切换鱼饵（5 个场景，与官方助手的「场景鱼饵」一一对应），并自动补货
 //
 // 协议：
 //  - GET  /api/baits                  → { baits: [{ id, tier, name, unitPrice, luck, isSelected, ownedQuantity, ... }] }
 //  - POST /api/baits/{id}/equip       → 换饵
 //  - POST /api/baits/{id}/purchase    { quantity } → 补货
 //
-// 场景优先级：比赛 > 涌流 > 平时（比赛有时间窗口，错过就没了）
-// 与官方航线助手的「自动鱼饵」功能重叠，但助手需要游戏页面打开才执行，
-// 本服务是 24 小时直连 API —— 因此按软冲突处理：只提示不停手。
+// ★ 场景与优先级（照抄游戏里助手的 baitByScene 判定顺序）：
+//     个人赛 > 公会赛 > 金风 > 奥秘涌流 > 平时
+//   比赛有时间窗口、金风与涌流都是时段性天气，所以都排在「平时」前面。
+//
+//   一处**刻意的不同**：比赛判定用「我已报名且在进行中/即将开赛」，而不是助手那种
+//   「当前地图上有比赛」——后者在你没参赛时也会让你烧高级饵。
+//
+// 与官方航线助手：本项目**自己负责换饵**（助手那套场景鱼饵是纯浏览器逻辑，
+// 挂机时它不会执行），不看它、不让位、也不提示。
 import { type ModuleDefinition } from "../types.ts";
-import { assistantTakesOver } from "../shared/conflicts.ts";
 import { baitOptions, baitName } from "../shared/rarity.ts";
 import { baitDisplayName, decideRefill, extractBaits } from "./baits.ts";
 
+/** 天气 id（游戏里叫 weatherId） */
 const ARCANE_SURGE = "arcane_surge";
+const GILDED_CURRENT = "gilded_current";
+
+type SceneKey = "personalCompetition" | "guildCompetition" | "golden" | "arcaneSurge" | "normal";
+
+/** 每个场景用哪个配置项（顺序即优先级） */
+const SCENE_FIELDS: Array<{ key: SceneKey; field: string }> = [
+  { key: "personalCompetition", field: "personalCompetitionBait" },
+  { key: "guildCompetition", field: "guildCompetitionBait" },
+  { key: "golden", field: "goldenBait" },
+  { key: "arcaneSurge", field: "surgeBait" },
+  { key: "normal", field: "normalBait" },
+];
 
 const definition: ModuleDefinition = {
   id: "auto-bait",
   name: "自动换饵",
-  version: "2.0.0",
+  version: "3.0.0",
   description:
-    "按当前场景自动切换鱼饵：平时用普通饵，奥秘涌流期间用高级饵，比赛临近换比赛饵。鱼饵不足时按设定数量自动购买。",
+    "按当前场景自动切换鱼饵，场景与官方助手的「场景鱼饵」一致：个人赛 / 公会赛 / 金风 / 奥秘涌流 / 平时。鱼饵不足时按设定数量自动购买。",
   defaultEnabled: false,
   defaultConfig: {
-    normalBait: "bait_medium",
+    personalCompetitionBait: "bait_supreme",
+    guildCompetitionBait: "bait_supreme",
+    goldenBait: "",
     surgeBait: "bait_high",
-    competitionBait: "bait_supreme",
+    normalBait: "bait_medium",
     competitionLeadSec: 180,
     buyQuantity: 200,
     checkEverySec: 120,
   },
   configSchema: [
     {
-      key: "normalBait",
+      key: "personalCompetitionBait",
       type: "select",
-      label: "平时用哪种饵",
-      hint: "没有比赛、也没有奥秘涌流时使用。「不切换」= 保持游戏里当前选中的饵。",
-      default: "bait_medium",
-      options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（手动）" }),
+      label: "个人赛期间用哪种饵",
+      hint: "已报名且比赛进行中 / 即将开赛时使用。比赛成绩看单杆质量，建议最高档。",
+      default: "bait_supreme",
+      options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（沿用平时）" }),
+    },
+    {
+      key: "guildCompetitionBait",
+      type: "select",
+      label: "公会赛期间用哪种饵",
+      hint: "已报名公会赛且比赛进行中 / 即将开赛时使用。",
+      default: "bait_supreme",
+      options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（沿用平时）" }),
+    },
+    {
+      key: "goldenBait",
+      type: "select",
+      label: "金风期间用哪种饵",
+      hint: "金风（gilded_current）时鱼价值更高、经验打折，用高档饵提高稀有度通常更划算。默认不切换。",
+      default: "",
+      options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（沿用平时）" }),
     },
     {
       key: "surgeBait",
@@ -48,12 +84,12 @@ const definition: ModuleDefinition = {
       options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（沿用平时）" }),
     },
     {
-      key: "competitionBait",
+      key: "normalBait",
       type: "select",
-      label: "比赛期间用哪种饵",
-      hint: "比赛成绩看单杆质量，建议用最高档。",
-      default: "bait_supreme",
-      options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（沿用平时）" }),
+      label: "平时用哪种饵",
+      hint: "没有比赛、也没有金风 / 涌流时使用。「不切换」= 保持游戏里当前选中的饵。",
+      default: "bait_medium",
+      options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（手动）" }),
     },
     {
       key: "competitionLeadSec",
@@ -86,10 +122,9 @@ const definition: ModuleDefinition = {
   ],
 
   async onStart(ctx) {
-    const S = ctx.state as { busy: boolean; lastIdle: string; warnedConflict: boolean; lastSwitch: string };
+    const S = ctx.state as { busy: boolean; lastIdle: string; lastSwitch: string };
     S.busy = false;
     S.lastIdle = "";
-    S.warnedConflict = false;
     S.lastSwitch = "";
 
     const idle = (msg: string) => {
@@ -98,66 +133,79 @@ const definition: ModuleDefinition = {
       ctx.log.debug("自动换饵", msg);
     };
 
-    /** 判断当前该用哪个场景 */
-    const decideScenario = async (): Promise<{ key: "competition" | "surge" | "normal"; why: string }> => {
-      const leadSec = Math.max(30, Number(ctx.config.competitionLeadSec) || 180);
-      const now = Date.now();
+    /* ---------- 场景判定（顺序 = 优先级） ---------- */
 
-      // 比赛优先：进行中或即将开赛
+    /** 个人赛 / 公会赛：已报名且进行中或即将开赛 */
+    const competitionScene = async (
+      leadSec: number,
+    ): Promise<{ key: SceneKey; why: string } | null> => {
+      const now = Date.now();
+      const leadMs = leadSec * 1000;
+      const inComp = (t: any) =>
+        t && (t.status === "active" || (t.status === "scheduled" && t.startAt && Date.parse(t.startAt) - now <= leadMs));
+
       try {
-        const [personal, guild] = await Promise.all([
-          ctx.api.tournamentsOverview().catch(() => null),
-          ctx.api.guildTournamentsOverview().catch(() => null),
-        ]);
-        const inComp = (t: any) =>
-          t && (t.status === "active" || (t.status === "scheduled" && t.startAt && Date.parse(t.startAt) - now <= leadSec * 1000));
+        const personal = await ctx.api.tournamentsOverview().catch(() => null);
         const cur = personal?.current;
-        if (cur?.isRegistered && inComp(cur)) return { key: "competition", why: `个人赛 #${cur.sequence}` };
+        if (cur?.isRegistered && inComp(cur)) return { key: "personalCompetition", why: `个人赛 #${cur.sequence}` };
         for (const t of personal?.upcoming ?? []) {
-          if (t?.isRegistered && inComp(t)) return { key: "competition", why: `个人赛 #${t.sequence} 即将开赛` };
-        }
-        const gcur = guild?.current;
-        if (gcur?.entryStatus && inComp(gcur)) return { key: "competition", why: `公会赛 #${gcur.sequence}` };
-        for (const t of guild?.upcoming ?? []) {
-          if (t?.entryStatus && inComp(t)) return { key: "competition", why: `公会赛 #${t.sequence} 即将开赛` };
+          if (t?.isRegistered && inComp(t)) return { key: "personalCompetition", why: `个人赛 #${t.sequence} 即将开赛` };
         }
       } catch {
-        /* 比赛信息拿不到就按非比赛处理 */
+        /* 拿不到就往下走 */
       }
 
-      // 涌流
+      try {
+        const guild = await ctx.api.guildTournamentsOverview().catch(() => null);
+        const gcur = guild?.current;
+        if (gcur?.entryStatus && inComp(gcur)) return { key: "guildCompetition", why: `公会赛 #${gcur.sequence}` };
+        for (const t of guild?.upcoming ?? []) {
+          if (t?.entryStatus && inComp(t)) return { key: "guildCompetition", why: `公会赛 #${t.sequence} 即将开赛` };
+        }
+      } catch {
+        /* 拿不到就往下走 */
+      }
+
+      return null;
+    };
+
+    /** 当前地图的天气 id（拿不到返回 null） */
+    const currentWeather = async (): Promise<string | null> => {
       try {
         const data = await ctx.api.biomes();
         const list: any[] = data?.biomes ?? [];
-        const current = list.find((b) => b.isCurrent);
-        // 与模拟器一致：天气 id 可能是 weatherId 或 id
-        const wid = current?.weather?.weatherId ?? current?.weather?.id;
-        if (wid === ARCANE_SURGE) return { key: "surge", why: "奥秘涌流" };
+        const current = list.find((b) => b.isCurrent) ?? null;
+        // 与状态面板一致：天气 id 可能是 weatherId 或 id
+        return current?.weather?.weatherId ?? current?.weather?.id ?? null;
       } catch {
-        /* 天气拿不到就按平时处理 */
+        return null; // 天气拿不到就按平时处理
       }
-
-      return { key: "normal", why: "平时" };
     };
+
+    /** 判断当前该用哪个场景（顺序即优先级） */
+    const decideScenario = async (): Promise<{ key: SceneKey; field: string; why: string }> => {
+      const leadSec = Math.max(30, Number(ctx.config.competitionLeadSec) || 180);
+
+      const comp = await competitionScene(leadSec);
+      if (comp) return { ...comp, field: fieldOf(comp.key) };
+
+      const weather = await currentWeather();
+      if (weather === GILDED_CURRENT) return { key: "golden", field: fieldOf("golden"), why: "金风" };
+      if (weather === ARCANE_SURGE) return { key: "arcaneSurge", field: fieldOf("arcaneSurge"), why: "奥秘涌流" };
+
+      return { key: "normal", field: fieldOf("normal"), why: "平时" };
+    };
+
+    function fieldOf(key: SceneKey): string {
+      return SCENE_FIELDS.find((s) => s.key === key)?.field ?? "normalBait";
+    }
 
     const run = async (trigger: string) => {
       if (S.busy) return;
       S.busy = true;
       try {
-        /* ---------- 与官方助手的自动鱼饵重叠时只提示一次 ---------- */
-        if (!S.warnedConflict) {
-          const taken = await assistantTakesOver(ctx.api, "isAutoBaitEnabled");
-          if (taken) {
-            S.warnedConflict = true;
-            ctx.log.info(
-              "自动换饵",
-              "检测到官方航线助手也开启了「自动鱼饵」。助手需要游戏页面打开才执行，本服务直接调 API，两者不会同时生效，因此继续工作。",
-            );
-          }
-        }
-
         const scenario = await decideScenario();
-        const wantedId = String(ctx.config[`${scenario.key}Bait`] ?? "").trim();
+        const wantedId = String(ctx.config[scenario.field] ?? "").trim();
 
         if (!wantedId) {
           idle(`${trigger}：${scenario.why} 场景未配置鱼饵，跳过`);

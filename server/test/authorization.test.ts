@@ -221,15 +221,22 @@ describe("管理员专属路由", () => {
 });
 
 describe("模块清单", () => {
-  it("返回全部 12 个内置功能，且带 configSchema", async () => {
+  it("返回全部 16 个内置功能，且带 configSchema", async () => {
     const r = await app.get<
       { id: string; name: string; defaultEnabled: boolean; defaultConfig: Record<string, unknown>; configSchema: unknown[] }[]
     >("/api/modules", A.jar);
     expect(r.status).toBe(200);
-    expect(r.body).toHaveLength(12);
+    expect(r.body).toHaveLength(16);
     const ids = r.body.map((m) => m.id);
     expect(ids).toContain("keep-online");
     expect(ids).toContain("daily-digest");
+    expect(ids).toContain("auto-loadout");
+    expect(ids).toContain("auto-schedule");
+    expect(ids).toContain("auto-sacrifice");
+    expect(ids).toContain("auto-guild-boost");
+    // 与官方助手解耦后不该再有「代驱动 / 接管」那个模块
+    expect(ids).not.toContain("auto-assistant");
+    expect(ids).toContain("auto-schedule");
     // 只有保持在线默认开启
     const defaults = r.body.filter((m) => m.defaultEnabled).map((m) => m.id);
     expect(defaults).toEqual(["keep-online"]);

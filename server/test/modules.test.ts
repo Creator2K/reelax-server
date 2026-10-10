@@ -4,6 +4,7 @@
 // 加点方案、装备分档、选图评分。算错任何一个都会静默做错事
 // （加错点、卖错装备、把号从比赛图拽走），所以必须有测试。
 import { describe, expect, it } from "vitest";
+import { MODULES, assertRegistryValid } from "../src/modules/registry.ts";
 import { investedOf, parseRatio, parseTargets, planAllocation } from "../src/modules/auto-stats/index.ts";
 import { bucketOf } from "../src/modules/auto-sell-gear/index.ts";
 import { describeBiome, pickBest, primaryScore, valueWeight, xpWeight } from "../src/modules/auto-travel/index.ts";
@@ -363,5 +364,33 @@ describe("describeBiome（日志可核对）", () => {
     expect(text).toContain("专精+21%");
     expect(text).toContain("公会+11%");
     expect(text).toContain("天气+5%");
+  });
+});
+
+/* ==================== 模块清单自检 ==================== */
+
+describe("模块清单自检", () => {
+  it("启动自检通过（id 唯一、select 有 options、min ≤ max）", () => {
+    expect(() => assertRegistryValid()).not.toThrow();
+  });
+
+  it("★ defaultConfig 与 configSchema 不漂移", () => {
+    // 两处各写一份默认值是这套设计的弱点：只在 defaultConfig 里多写一个键，
+    // 用户界面上就会多出一条「旧版本遗留配置」，而模块自己读的还是 configSchema 合并后的值。
+    for (const def of MODULES) {
+      const schemaKeys = def.configSchema.map((f) => f.key);
+      expect(Object.keys(def.defaultConfig).sort(), def.id).toEqual([...schemaKeys].sort());
+      for (const f of def.configSchema) {
+        expect(def.defaultConfig[f.key], `${def.id}.${f.key}`).toEqual(f.default);
+      }
+    }
+  });
+
+  it("每个模块的字符串字段都有 label（前端表单靠它渲染）", () => {
+    for (const def of MODULES) {
+      for (const f of def.configSchema) {
+        expect(f.label, `${def.id}.${f.key}`).toBeTruthy();
+      }
+    }
   });
 });

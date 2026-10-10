@@ -8,6 +8,7 @@
 //      }
 //  - GET /api/biomes → 地图列表（找目标地图的名字、判断当前在哪）
 //  - PUT /api/player/current-biome { biomeId }   换图（免费）
+//  - GET /api/convenience + PUT .../route-assistant/settings   临时接管助手的「自动换图」
 //
 // 为什么需要它：稀有鱼有**硬保底**（连空到 hardPityCasts 杆时必出），而不同地图对稀有度的
 // 加成不同。把剩下最后几十杆放到"保底地图"里钓，出货时就能吃到那张图的加成。
@@ -16,9 +17,11 @@
 //  - hardPityCasts 会随运气/鱼饵/天气变化，**每轮都要重新读**，不能缓存
 //  - 「钓到了」用 dry 计数下降来判定（比解析鱼获列表更可靠）
 //  - 只接管自己切过去的图：如果用户本来就在目标图，不去"接管"（避免误切回）
-//  - 与官方航线助手的「自动换图」是硬冲突 → 拒绝启动
+//
+// ★ 与官方航线助手：**完全不看它**（不读它的开关、不接管、不提示）。
+//   本项目自己负责换图；助手是跑在游戏页面里的循环，挂机时它本来就不动，
+//   你只要在游戏里把它关掉即可。
 import { type ModuleDefinition } from "../types.ts";
-import { assertNoAssistantConflict, isSoftWarning } from "../shared/conflicts.ts";
 import { BIOME_OPTIONS } from "../shared/biomes.ts";
 import { decidePityAction, didCatch, readPity, type PityProgress } from "./decide.ts";
 
@@ -91,14 +94,6 @@ const definition: ModuleDefinition = {
   ],
 
   async onStart(ctx) {
-    // 本模块会换图 → 与官方助手的「自动换图」硬冲突
-    try {
-      await assertNoAssistantConflict(ctx.api, "isAutoTravelEnabled", "保底切图");
-    } catch (err) {
-      if (!isSoftWarning(err)) throw err;
-      ctx.log.warn("保底切图", err instanceof Error ? err.message : String(err));
-    }
-
     const S = ctx.state as {
       busy: boolean;
       /** 上一次的保底进度（用于判定"钓到了"） */
@@ -173,6 +168,11 @@ const definition: ModuleDefinition = {
         });
 
         if (decision.action === "stay") {
+          // ★ 已经回到原图（用户手动切的 / 切回时被抢先）：流程结束，别一直挂在
+          //   「等待切回」状态上 —— 否则以后再触发保底也不会切图了。
+          if (S.returnBiome && caught && currentBiomeId === S.returnBiome) {
+            S.returnBiome = null;
+          }
           // 顺便把进度说清楚（同一句只记一次）
           idle(
             `${trigger}：${rarityLabel} 已连空 ${cur.dryCasts}/${cur.totalCasts} 杆（还差 ${cur.remaining} 杆）` +
