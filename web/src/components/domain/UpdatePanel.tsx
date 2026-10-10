@@ -144,7 +144,9 @@ export function UpdatePanel() {
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="bg-muted/40 rounded-xl border px-3 py-2">
                 <div className="text-muted-foreground">当前版本</div>
-                <div className="mono-num font-medium">{r.current ? r.current.short : "读不到（非 git 工作区）"}</div>
+                <div className="mono-num font-medium">
+                  {r.current ? r.current.short : "读不到（容器里没有 .git，构建时也没传 APP_COMMIT）"}
+                </div>
                 {r.current?.message ? (
                   <div className="truncate text-[11px]" title={r.current.message}>
                     {r.current.message}
@@ -174,11 +176,20 @@ export function UpdatePanel() {
                       : " 当前部署未开启自动更新，请看下方命令。"}
                 </AlertDescription>
               </Alert>
-            ) : (
+            ) : r.comparable ? (
               <Badge variant="online" className="gap-1">
                 <IconCheck className="size-3" />
                 已是最新
               </Badge>
+            ) : (
+              /* ★ 读不到当前版本时**不能**说「已是最新」：那不是「最新」，
+                 而是「没法比」—— 镜像可能已经落后很多个提交。 */
+              <Alert variant="warn">
+                <IconAlertTriangle />
+                <AlertDescription>
+                  无法判断有没有更新：当前版本读不到（见上方说明）。下次重建时带上 APP_COMMIT 就能恢复对比。
+                </AlertDescription>
+              </Alert>
             )}
 
             {r.note ? <div className="text-muted-foreground">{r.note}</div> : null}

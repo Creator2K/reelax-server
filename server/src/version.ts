@@ -11,7 +11,7 @@
 //  · 发版时在数组最前面追加一项
 
 /** 当前版本（与 package.json 的 version 同步维护） */
-export const VERSION = "1.2.0";
+export const VERSION = "1.2.1";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -26,6 +26,21 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.2.1",
+    date: "2026-10-10",
+    title: "修复「在线更新」误报已是最新",
+    changes: [
+      {
+        kind: "fix",
+        text: "在线更新：当「当前版本」读不到时（容器里没有 .git，且镜像构建时没传 APP_COMMIT），面板原来会显示「已是最新」—— 那其实只是没法比较，镜像可能已经落后很多个提交。现在会明确显示「无法判断有没有更新」并说明原因与修法",
+      },
+      {
+        kind: "fix",
+        text: "在线更新：手动更新指引里原来推荐 `docker compose pull && docker compose up -d --build`。对本地构建的镜像，pull 毫无意义，而这样重建又不会带上 APP_COMMIT —— 照做会让「当前版本」永远读不到。现在改成推荐仓库里的 scripts/update.sh（Windows： update.ps1），并明确写出手动重建时必须带 APP_COMMIT",
+      },
+    ],
+  },
   {
     version: "1.2.0",
     date: "2026-10-10",

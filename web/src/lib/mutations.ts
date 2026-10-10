@@ -409,6 +409,12 @@ export type UpdateCheck = {
   current: { sha: string; short: string; message: string; date: string | null; author: string | null } | null;
   latest: { sha: string; short: string; message: string; date: string | null; author: string | null } | null;
   hasUpdate: boolean;
+  /**
+   * ★ 当前版本与远端都拿到了才算「能比较」。
+   * 容器里没有 .git、镜像构建时又没传 APP_COMMIT 时 current 为 null ——
+   * 这时 hasUpdate 只能是 false，但界面上绝不能说「已是最新」（那是「没法比」）。
+   */
+  comparable: boolean;
   behindBy: number | null;
   branch: string | null;
   repo: string | null;

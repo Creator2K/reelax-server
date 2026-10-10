@@ -334,3 +334,87 @@ describe("apply：updater 令牌（UPDATER_TOKEN）", () => {
     expect(r.message).toContain("UPDATER_TOKEN");
   });
 });
+
+/**
+ * 真实踩过的坑：镜像构建时没传 APP_COMMIT → 容器里「当前版本」读不到 →
+ * 面板把「没法比」显示成「已是最新」，用户以为不用更新，而实际上可能落后很多个提交。
+ * 更糟的是原来的手动指引只写了 `docker compose up -d --build` —— 照做还是不带 APP_COMMIT，
+ * 这个状态会一直持续下去。
+ */
+describe("★ 当前版本读不到时不能谎报「已是最新」", () => {
+  const GH_SHA = "abcdef1234567890abcdef1234567890abcdef12";
+  const ghBody = {
+    sha: GH_SHA,
+    commit: { message: "feat: 新功能", committer: { date: "2026-10-10T08:00:00Z", name: "Creator2K" } },
+  };
+
+  const mk = (fetchImpl: typeof fetch) =>
+    new UpdateService({
+      logger,
+      repoSlug: "Creator2K/reelax-server",
+      workDir: null, // 容器里没有 .git
+      updaterUrl: null,
+      allowLocalUpdate: false,
+      fetchImpl,
+    });
+
+  it("★ APP_COMMIT 缺失 → comparable=false（不谎报最新），并说明原因与修法", async () => {
+    delete process.env.APP_COMMIT;
+    const { impl } = fakeFetch(() => ({ body: ghBody }));
+    const r = await mk(impl).check();
+
+    expect(r.current).toBeNull();
+    expect(r.latest?.short).toBe("abcdef1");
+    expect(r.comparable).toBe(false);
+    expect(r.hasUpdate).toBe(false); // 没得比 → 只能是 false（前端靠 comparable 区分）
+    expect(r.note).toContain("当前版本读不到");
+    expect(r.note).toContain("APP_COMMIT");
+    expect(r.note).toContain("无法判断"); // 文案里点明「不是最新，是没法比」
+  });
+
+  it("APP_COMMIT 是 unknown（compose 默认值）同样算读不到", async () => {
+    process.env.APP_COMMIT = "unknown";
+    const { impl } = fakeFetch(() => ({ body: ghBody }));
+    const r = await mk(impl).check();
+    expect(r.current).toBeNull();
+    expect(r.comparable).toBe(false);
+  });
+
+  it("两边都拿到 → comparable=true，且不再出现「读不到」的说明", async () => {
+    process.env.APP_COMMIT = "1111111111111111111111111111111111111111";
+    const { impl } = fakeFetch(() => ({ body: ghBody }));
+    const r = await mk(impl).check();
+    expect(r.current?.short).toBe("1111111");
+    expect(r.latest?.short).toBe("abcdef1");
+    expect(r.comparable).toBe(true);
+    expect(r.hasUpdate).toBe(true);
+    expect(r.note ?? "").not.toContain("当前版本读不到");
+  });
+
+  it("★ 手动指引必须带上 APP_COMMIT，且不再让人去 pull 本地构建的镜像", async () => {
+    delete process.env.APP_COMMIT;
+    const { impl } = fakeFetch(() => ({ body: ghBody }));
+    const r = await mk(impl).check();
+    expect(r.manualHint).toBeTruthy();
+    expect(r.manualHint).toContain("scripts/update");
+    expect(r.manualHint).toContain("APP_COMMIT");
+    // `docker compose pull` 对本地构建的镜像毫无意义（只会让人以为更新过了）
+    expect(r.manualHint).not.toContain("docker compose pull");
+  });
+
+  it("有 updater 时不给手动指引（与既有行为一致）", async () => {
+    delete process.env.APP_COMMIT;
+    const { impl } = fakeFetch((url) => (url.includes("/health") ? { body: { ok: true } } : { body: ghBody }));
+    const svc = new UpdateService({
+      logger,
+      repoSlug: "Creator2K/reelax-server",
+      workDir: null,
+      updaterUrl: "http://updater:9000",
+      allowLocalUpdate: false,
+      fetchImpl: impl,
+    });
+    const r = await svc.check();
+    expect(r.updaterAvailable).toBe(true);
+    expect(r.manualHint).toBeNull();
+  });
+});

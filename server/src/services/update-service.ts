@@ -25,6 +25,14 @@ export type UpdateCheck = {
   latest: CommitInfo | null;
   /** 是否有更新 */
   hasUpdate: boolean;
+  /**
+   * ★ 到底**能不能比较**（当前版本与远端都拿到了）。
+   *
+   * 容器里没有 .git、镜像构建时又没传 APP_COMMIT 时，当前版本读不到 ——
+   * 这时 `hasUpdate` 只能是 false，但**绝不能把它当成「已是最新」展示**：
+   * 用户会以为没必要更新，而实际上镜像可能已经落后很多个提交。
+   */
+  comparable: boolean;
   /** 落后多少个提交（拿不到为 null） */
   behindBy: number | null;
   /** 当前分支 */
@@ -378,28 +386,49 @@ export class UpdateService {
     const latest = remote.info;
     // behind 拿不到时，用 sha 是否相同来判断「有没有更新」
     const hasUpdate = behind !== null ? behind > 0 : Boolean(current && latest && current.sha !== latest.sha);
+    // ★ 两边都拿到了才算「能比较」。只有一边时 hasUpdate 无意义，
+    //   前端据此展示「无法判断」，而不是骗人的「已是最新」。
+    const comparable = Boolean(current && latest);
 
     const updaterAvailable = await this.probeUpdater();
 
     let manualHint: string | null = null;
     if (!this.deps.allowLocalUpdate && !updaterAvailable) {
       manualHint =
-        "当前部署没有开启自动更新。在容器外执行：\n" +
-        "  docker compose pull && docker compose up -d --build\n" +
-        "（或运行仓库里的 scripts/update.ps1 / update.sh）";
+        "当前部署没有开启自动更新。在容器外的仓库目录里执行：\n" +
+        "  推荐：./scripts/update.sh          （Windows PowerShell： .\\scripts\\update.ps1）\n" +
+        "  它会 git pull --ff-only → 带上 APP_COMMIT 重建镜像 → 重启容器\n" +
+        "\n" +
+        "手动重建也行，但 ★必须带上 APP_COMMIT，否则「当前版本」永远读不到：\n" +
+        "  export APP_COMMIT=$(git rev-parse HEAD)     # PowerShell: $env:APP_COMMIT = (git rev-parse HEAD)\n" +
+        "  docker compose up -d --build\n" +
+        "\n" +
+        "想让这个面板里的「立即更新」可用：docker compose --profile update up -d --build";
     }
+
+    // 当前版本读不到时说清楚原因 —— 否则「已是最新」会误导人以为不用更新
+    const notes: string[] = [];
+    if (!current) {
+      notes.push(
+        "当前版本读不到：容器里没有 .git，而且这个镜像是构建时没传 APP_COMMIT 建出来的" +
+          "（所以无法判断有没有更新，这不等于「已是最新」）。下次重建请用仓库里的 " +
+          "scripts/update.sh / update.ps1，它们会自动带上 APP_COMMIT。",
+      );
+    }
+    if (remote.note) notes.push(remote.note);
 
     return {
       current,
       latest,
       hasUpdate,
+      comparable,
       behindBy: behind,
       branch: hasGit ? branch : null,
       repo: remoteUrl ?? (this.deps.repoSlug ? `https://github.com/${this.deps.repoSlug}` : null),
       canApplyLocal: Boolean(hasGit && this.deps.allowLocalUpdate),
       updaterAvailable,
       manualHint,
-      note: remote.note,
+      note: notes.length ? notes.join("  ｜  ") : null,
     };
   }
 
@@ -434,7 +463,9 @@ export class UpdateService {
         restarting: false,
         message:
           "当前部署未开启自动更新（应用代码在镜像内，容器无法替换自己）。\n" +
-          "请在宿主机执行：docker compose pull && docker compose up -d --build",
+          "请在宿主机的仓库目录执行：./scripts/update.sh    （Windows： .\\scripts\\update.ps1）\n" +
+          "手动重建也请带上 APP_COMMIT，否则「当前版本」会读不到：\n" +
+          "  export APP_COMMIT=$(git rev-parse HEAD) && docker compose up -d --build",
       };
     }
     return await this.applyLocally(opts.reason);
