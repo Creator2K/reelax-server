@@ -61,11 +61,17 @@ step "重启容器"
 docker compose up -d "$SERVICE" || fail "容器启动失败"
 
 step "等待健康检查"
+# ★ 端口要跟着 .env 走：写死 8580 时，改了 PORT 的部署会在这里误报「未通过健康检查」
+#   （其实更新已经成功）。.env 在仓库根目录，直接读它。
+HEALTH_PORT="$(sed -n 's/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' .env | tail -n 1)"
+HEALTH_PORT="${HEALTH_PORT:-8580}"
+HEALTH_URL="http://127.0.0.1:${HEALTH_PORT}/api/health"
+
 i=0
 while [ "$i" -lt 30 ]; do
   if command -v curl >/dev/null 2>&1; then
-    if curl -fsS --max-time 3 "http://127.0.0.1:8580/api/health" >/dev/null 2>&1; then
-      printf '\n\033[32m✓ 更新完成，服务已就绪：http://127.0.0.1:8580\033[0m\n'
+    if curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then
+      printf '\n\033[32m✓ 更新完成，服务已就绪：http://127.0.0.1:%s\033[0m\n' "$HEALTH_PORT"
       exit 0
     fi
   else
@@ -78,6 +84,7 @@ while [ "$i" -lt 30 ]; do
   sleep 2
 done
 
-printf '\n\033[33m!! 服务在 60 秒内未通过健康检查，请查看日志：\033[0m\n'
+printf '\n\033[33m!! 服务在 60 秒内未通过健康检查（试的是 %s），请查看日志：\033[0m\n' "$HEALTH_URL"
 printf '   docker compose logs --tail=100 %s\n' "$SERVICE"
+printf '   端口取的是 .env 里的 PORT（没写则用 8580）\n'
 exit 1

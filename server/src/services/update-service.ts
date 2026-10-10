@@ -43,6 +43,8 @@ export type UpdateCheck = {
   canApplyLocal: boolean;
   /** 旁路 updater 是否可用（Docker 部署场景） */
   updaterAvailable: boolean;
+  /** updater 的更新模式（git = 本机构建；pull = 拉预构建镜像）；拿不到为 null */
+  updaterMode: "git" | "pull" | null;
   /** 无法自动更新时给用户的操作指引 */
   manualHint: string | null;
   /** 检查过程中的提示（例如网络不通） */
@@ -93,6 +95,8 @@ export type UpdateStep =
   | "idle"
   | "preflight"
   | "git-pull"
+  /** 拉取预构建镜像（updater 的 pull 模式） */
+  | "image-pull"
   | "install"
   | "build"
   | "recreate"
@@ -103,12 +107,36 @@ const STEP_LABELS: Record<UpdateStep, string> = {
   idle: "空闲",
   preflight: "检查环境",
   "git-pull": "拉取最新代码",
+  "image-pull": "拉取预构建镜像",
   install: "安装依赖",
   build: "构建前端",
   recreate: "重建并重启容器",
   done: "更新完成",
   failed: "更新失败",
 };
+
+/**
+ * 从 updater 报的已完成步骤推断「现在在干什么」（纯函数，可单测）。
+ *
+ * updater 的 step 只在**命令执行完之后**才进 steps，所以：
+ *   · 还没拉完 → 正在拉（git 模式拉代码、pull 模式拉镜像）
+ *   · 已经拉完 → 接下来就是重建 / 重启
+ */
+export function inferUpdateStep(input: {
+  running: boolean;
+  mode: "git" | "pull" | null;
+  done: string[];
+  ok?: boolean | null;
+}): UpdateStep {
+  if (!input.running) {
+    if (input.ok === true) return "done";
+    if (input.ok === false) return "failed";
+    return "idle";
+  }
+  const done = new Set(input.done);
+  if (done.has("image-pull") || done.has("git-pull") || done.has("compose-up")) return "recreate";
+  return input.mode === "pull" ? "image-pull" : "git-pull";
+}
 
 export type UpdateServiceDeps = {
   logger: Logger;
@@ -185,6 +213,8 @@ export class UpdateService {
               finishedAt?: string;
               ok?: boolean | null;
               reason?: string;
+              /** updater 用的模式（决定面板上显示哪条路径） */
+              mode?: string;
               steps?: { step: string; ok: boolean }[];
               log?: string[];
               error?: string;
@@ -193,17 +223,12 @@ export class UpdateService {
             };
           };
           const last = j.last ?? null;
-          // 根据已完成的步骤推断当前处于哪一步
-          const done = new Set((last?.steps ?? []).filter((s) => s.ok).map((s) => s.step));
-          const step: UpdateStep = j.running
-            ? done.has("git-pull")
-              ? "recreate"
-              : "git-pull"
-            : last?.ok === true
-              ? "done"
-              : last?.ok === false
-                ? "failed"
-                : "idle";
+          const step = inferUpdateStep({
+            running: Boolean(j.running),
+            mode: last?.mode === "pull" ? "pull" : last?.mode === "git" ? "git" : null,
+            done: (last?.steps ?? []).filter((s) => s.ok).map((s) => s.step),
+            ok: last?.ok ?? null,
+          });
 
           return {
             running: Boolean(j.running),
@@ -390,7 +415,8 @@ export class UpdateService {
     //   前端据此展示「无法判断」，而不是骗人的「已是最新」。
     const comparable = Boolean(current && latest);
 
-    const updaterAvailable = await this.probeUpdater();
+    const updater = await this.probeUpdater();
+    const updaterAvailable = updater.available;
 
     let manualHint: string | null = null;
     if (!this.deps.allowLocalUpdate && !updaterAvailable) {
@@ -398,6 +424,9 @@ export class UpdateService {
         "当前部署没有开启自动更新。在容器外的仓库目录里执行：\n" +
         "  推荐：./scripts/update.sh          （Windows PowerShell： .\\scripts\\update.ps1）\n" +
         "  它会 git pull --ff-only → 带上 APP_COMMIT 重建镜像 → 重启容器\n" +
+        "\n" +
+        "用的是预构建镜像（GHCR）时不必构建、也不需要有 .git：\n" +
+        "  docker compose pull app && docker compose up -d\n" +
         "\n" +
         "手动重建也行，但 ★必须带上 APP_COMMIT，否则「当前版本」永远读不到：\n" +
         "  export APP_COMMIT=$(git rev-parse HEAD)     # PowerShell: $env:APP_COMMIT = (git rev-parse HEAD)\n" +
@@ -411,8 +440,8 @@ export class UpdateService {
     if (!current) {
       notes.push(
         "当前版本读不到：容器里没有 .git，而且这个镜像是构建时没传 APP_COMMIT 建出来的" +
-          "（所以无法判断有没有更新，这不等于「已是最新」）。下次重建请用仓库里的 " +
-          "scripts/update.sh / update.ps1，它们会自动带上 APP_COMMIT。",
+          "（所以无法判断有没有更新，这不等于「已是最新」）。" +
+          "用预构建镜像（docker compose pull）或仓库里的 scripts/update.sh 重建都能恢复版本对比。",
       );
     }
     if (remote.note) notes.push(remote.note);
@@ -427,22 +456,29 @@ export class UpdateService {
       repo: remoteUrl ?? (this.deps.repoSlug ? `https://github.com/${this.deps.repoSlug}` : null),
       canApplyLocal: Boolean(hasGit && this.deps.allowLocalUpdate),
       updaterAvailable,
+      updaterMode: updater.mode,
       manualHint,
       note: notes.length ? notes.join("  ｜  ") : null,
     };
   }
 
-  /** 探测旁路 updater 是否在线 */
-  private async probeUpdater(): Promise<boolean> {
-    if (!this.deps.updaterUrl) return false;
+  /**
+   * 探测旁路 updater：/health 返回 200 即视为可用，并带上它的更新模式
+   * （面板据此显示「git 重建」还是「拉取镜像」那条路径）。
+   */
+  private async probeUpdater(): Promise<{ available: boolean; mode: "git" | "pull" | null }> {
+    if (!this.deps.updaterUrl) return { available: false, mode: null };
     const doFetch = this.deps.fetchImpl ?? fetch;
     try {
       const r = await doFetch(`${this.deps.updaterUrl.replace(/\/+$/, "")}/health`, {
         signal: AbortSignal.timeout(3000),
       });
-      return r.ok;
+      if (!r.ok) return { available: false, mode: null };
+      const j = (await r.json().catch(() => null)) as { mode?: unknown } | null;
+      const mode = j?.mode === "git" || j?.mode === "pull" ? j.mode : null;
+      return { available: true, mode };
     } catch {
-      return false;
+      return { available: false, mode: null };
     }
   }
 
@@ -450,7 +486,9 @@ export class UpdateService {
 
   /**
    * 触发更新。
-   *  - 有 updater → 让它去 docker compose 重建并重启（容器外动作，最干净）
+   *  - 有 updater → 交给它（容器外动作，最干净）。它自己决定走哪条路：
+   *      git 模式  ：git pull + docker compose up -d --build（在本机构建）
+   *      pull 模式 ：docker compose pull + up -d（拉 GHCR 预构建镜像，几乎不吃 CPU）
    *  - 否则（本地部署且允许） → 自行 git pull + 重建前端；重启交给进程管理器
    */
   async apply(opts: { reason: string }): Promise<ApplyResult> {

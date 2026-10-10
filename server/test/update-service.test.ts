@@ -5,7 +5,7 @@
 //   - 没有 .git（Docker 镜像）：退回构建时烧进镜像的 APP_COMMIT
 // 以及远端查询（GitHub API）、旁路 updater 探测、以及「不能自动更新时给命令」。
 import { describe, expect, it, afterEach } from "vitest";
-import { UpdateService } from "../src/services/update-service.ts";
+import { UpdateService, inferUpdateStep } from "../src/services/update-service.ts";
 import { Logger } from "../src/lib/logger.ts";
 
 const logger = new Logger({ limit: 100, minLevel: "error" });
@@ -391,15 +391,46 @@ describe("★ 当前版本读不到时不能谎报「已是最新」", () => {
     expect(r.note ?? "").not.toContain("当前版本读不到");
   });
 
-  it("★ 手动指引必须带上 APP_COMMIT，且不再让人去 pull 本地构建的镜像", async () => {
+  it("★ 手动指引给出三条路：脚本 / 预构建镜像 / 带 APP_COMMIT 的手动重建", async () => {
     delete process.env.APP_COMMIT;
     const { impl } = fakeFetch(() => ({ body: ghBody }));
     const r = await mk(impl).check();
     expect(r.manualHint).toBeTruthy();
     expect(r.manualHint).toContain("scripts/update");
+    // ★ 不带 APP_COMMIT 的裸重建会让「当前版本」永远读不到，所以必须写出来
     expect(r.manualHint).toContain("APP_COMMIT");
-    // `docker compose pull` 对本地构建的镜像毫无意义（只会让人以为更新过了）
-    expect(r.manualHint).not.toContain("docker compose pull");
+    // 没有 .git 的部署（tar）也能走预构建镜像这条路
+    expect(r.manualHint).toContain("docker compose pull app");
+  });
+
+  it("★ updater 在线时把它的模式一起带出来（面板据此选路径）", async () => {
+    delete process.env.APP_COMMIT;
+    const pull = fakeFetch((url) => (url.includes("/health") ? { body: { ok: true, mode: "pull" } } : { body: ghBody }));
+    const r1 = await new UpdateService({
+      logger,
+      repoSlug: "Creator2K/reelax-server",
+      workDir: null,
+      updaterUrl: "http://updater:9000",
+      allowLocalUpdate: false,
+      fetchImpl: pull.impl,
+    }).check();
+    expect(r1.updaterAvailable).toBe(true);
+    expect(r1.updaterMode).toBe("pull");
+    // 有 updater 时不显示手动指引（面板上的按钮就能用）
+    expect(r1.manualHint).toBeNull();
+
+    // 老版本 updater 的 /health 里没有 mode → 当成未知，不能瞎猜
+    const old = fakeFetch((url) => (url.includes("/health") ? { body: { ok: true } } : { body: ghBody }));
+    const r2 = await new UpdateService({
+      logger,
+      repoSlug: "Creator2K/reelax-server",
+      workDir: null,
+      updaterUrl: "http://updater:9000",
+      allowLocalUpdate: false,
+      fetchImpl: old.impl,
+    }).check();
+    expect(r2.updaterAvailable).toBe(true);
+    expect(r2.updaterMode).toBeNull();
   });
 
   it("有 updater 时不给手动指引（与既有行为一致）", async () => {
@@ -416,5 +447,38 @@ describe("★ 当前版本读不到时不能谎报「已是最新」", () => {
     const r = await svc.check();
     expect(r.updaterAvailable).toBe(true);
     expect(r.manualHint).toBeNull();
+  });
+});
+
+/* ==================== 更新进度的步骤推断 ==================== */
+
+/**
+ * updater 的 step 只在命令执行完之后才进 steps，所以「当前在干什么」要推断：
+ *   · 还没拉完 → 正在拉（git 模式拉代码、pull 模式拉镜像）
+ *   · 已经拉完 → 接下来就是重建 / 重启
+ * 猜错的后果是面板上显示错的那一行（例如明明在拉镜像，却写着「拉取最新代码」）。
+ */
+describe("inferUpdateStep", () => {
+  it("没在跑时按结果给终态", () => {
+    expect(inferUpdateStep({ running: false, mode: null, done: [], ok: true })).toBe("done");
+    expect(inferUpdateStep({ running: false, mode: null, done: [], ok: false })).toBe("failed");
+    expect(inferUpdateStep({ running: false, mode: null, done: [], ok: null })).toBe("idle");
+  });
+
+  it("★ pull 模式：还没拉到镜像 → image-pull；拉完 → recreate", () => {
+    expect(inferUpdateStep({ running: true, mode: "pull", done: ["preflight"] })).toBe("image-pull");
+    expect(inferUpdateStep({ running: true, mode: "pull", done: ["preflight", "image-pull"] })).toBe("recreate");
+    expect(inferUpdateStep({ running: true, mode: "pull", done: ["preflight", "image-pull", "compose-up"] })).toBe(
+      "recreate",
+    );
+  });
+
+  it("★ git 模式：还没拉到代码 → git-pull；拉完 → recreate", () => {
+    expect(inferUpdateStep({ running: true, mode: "git", done: ["preflight"] })).toBe("git-pull");
+    expect(inferUpdateStep({ running: true, mode: "git", done: ["preflight", "git-pull"] })).toBe("recreate");
+  });
+
+  it("模式未知（老版本 updater）时按 git 那条显示", () => {
+    expect(inferUpdateStep({ running: true, mode: null, done: ["preflight"] })).toBe("git-pull");
   });
 });

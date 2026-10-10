@@ -30,7 +30,10 @@ services:
         # 把当前提交烧进镜像，「在线更新」才能显示当前版本
         APP_COMMIT: "${APP_COMMIT:-unknown}"
         APP_BUILD_TIME: "${APP_BUILD_TIME:-unknown}"
-    image: reelax-server:latest
+    # 预构建镜像：GitHub Actions 每次 main 提交都会构建并推到 GHCR（见 .github/workflows/ci.yml）。
+    #   · 没有 git 的部署（tar 解压）：docker compose pull app && docker compose up -d
+    #   · 本地构建照旧可用（scripts/update.sh、updater、docker compose build），构建产物也打这个 tag
+    image: ghcr.io/creator2k/reelax-server:latest
     container_name: reelax-server
     restart: unless-stopped
     # 关停给足时间：停引擎 + 关推送 + 关 HTTP + 落最后一批日志 + WAL checkpoint。
@@ -145,6 +148,11 @@ services:
       UPDATER_PROJECT_DIR: /project
       UPDATER_COMPOSE_FILE: docker-compose.yml
       UPDATER_SERVICE: app
+      # auto（默认）：挂载目录有 .git 就走 git（git pull + 本机构建），
+      # 否则走 pull（拉 GHCR 预构建镜像，几乎不吃 CPU）—— tar 解压部署用这个。
+      UPDATER_MODE: "${UPDATER_MODE:-auto}"
+      # 只在 pull 模式下用来读「这次换到了哪个提交」；与上面 app 的 image 保持一致
+      UPDATER_IMAGE: "${UPDATER_IMAGE:-ghcr.io/creator2k/reelax-server:latest}"
       UPDATER_REBUILD: "1"
       # ★ 与上面 name: 保持一致：updater 必须操作**同一个** compose 项目，
       #   否则它会新建一套容器/网络/卷，并在 container_name 上撞车。

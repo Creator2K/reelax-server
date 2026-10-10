@@ -123,3 +123,65 @@ jobs:
             /tmp/reelax-ci-data
           if-no-files-found: ignore
           retention-days: 3
+
+  # ---------------------------------------------------------------------------
+  # 预构建镜像：把 main 上每次通过校验的提交构建成镜像推到 GHCR。
+  #
+  # 为什么要它：有些部署是**下载 tar 包**解压出来的（宿主机没有 .git），
+  # 那种情况下 scripts/update.sh 与 updater 都用不了，只能在本地重建。
+  # 有了预构建镜像之后，更新就是：
+  #     docker compose pull app && docker compose up -d
+  # 而且镜像里烧进了提交号（APP_COMMIT）→ 面板的「当前版本」永远读得到。
+  #
+  # 只在 main 的 push 上跑（PR 不推）；needs: verify → 校验不过的提交绝不发布。
+  # ---------------------------------------------------------------------------
+  publish:
+    name: 构建并推送镜像（GHCR）
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # 推 GHCR 用仓库自带的 GITHUB_TOKEN 就够，不需要额外的 PAT
+      packages: write
+    # 两次推送撞车时，取消旧的那次：否则慢的那次后完成，会把 latest 覆盖成旧代码
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR 的镜像名必须全小写（Creator2K → creator2k）
+      - name: 计算镜像名与短提交号
+        id: image
+        run: |
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "short=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      # arm64 那一腿是模拟执行的，必须先注册 QEMU
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送（amd64 + arm64）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # 双架构：不知道部署机是 x86 还是 ARM 时都能跑（QEMU 稍慢，但有缓存）
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:sha-${{ steps.image.outputs.short }}
+          build-args: |
+            APP_COMMIT=${{ github.sha }}
+            APP_BUILD_TIME=${{ github.event.head_commit.timestamp }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

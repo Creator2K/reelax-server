@@ -13,12 +13,12 @@
 | --- | --- | --- | --- |
 | 1 | 微信登录凭证是明文 | `data/wechat-creds/<通道>/credentials.json` | 上游 SDK 用 `storage: "file"` 落地会话。周边的游戏凭证/代理密码都是 AES-256-GCM 加密的，这一处是卷里的弱环节 —— **不要把 data 卷整体外发**（已在 DEPLOY.md 提示）。 |
 | 2 | 数据快照与数据库同卷 | `lib/../db/client.ts` 的 `backupNow` | 每天一份、保留 3 份，但都在同一个卷里，卷损坏会一起丢。异地备份建议见 DEPLOY.md 第 3 节。 |
-| 3 | `updater` 以 root 跑 `git` | `updater/Dockerfile`、`docker-compose.yml` | 挂载宿主机仓库后以 root 操作。在 Linux 主机上、仓库不属于 root 时 git ≥2.35 会拒绝（`dubious ownership`）。Windows/Docker Desktop 未触发过，未在真实 Linux 主机上验证过，所以没改。 |
-| 4 | 账号 `baseUrl` 没有白名单 | `services/proxy-input.ts`、`api/routes/accounts.ts` | 已登录用户可以把它指向内网地址，借此探测端口（路径固定为游戏协议）。不构成提权链条：updater 唯一的状态变更接口是 `POST /update`，客户端不会发这个请求。 |
-| 5 | 微信推送验证码是「持有即可用」 | `services/notify-service.ts` | 现在的语义是：知道验证码的人就能完成绑定。验证码只在已登录的网页端显示，所以只有机主（或能登进后台的人）拿得到。要更强就得上「网页端 + 微信端双向确认」，成本不划算。 |
-| 6 | 没有 CSP / X-Frame-Options | `api/server.ts` | 目前只设了 `X-Content-Type-Options` 与 `Referrer-Policy`。没有 XSS 注入点，点击劫持风险低；加 CSP 需要先梳理前端内联样式/脚本，单独一次改动更合适。 |
-| 7 | WebSocket 连接不会因会话失效被踢 | `api/ws-gateway.ts` | 只在升级时鉴权，之后不再校验；登出/改密不会断开已连接。推送内容仍严格按 `userId` 过滤，仅影响「攻击者已经握有会话」的场景。 |
-| 8 | 5xx 错误文本只在 `NODE_ENV=production` 时隐藏 | `api/server.ts` | 镜像里固定 production，裸机开发时不要把 8580 暴露出去即可。 |
+| 3 | 账号 `baseUrl` 没有白名单 | `services/proxy-input.ts`、`api/routes/accounts.ts` | 已登录用户可以把它指向内网地址，借此探测端口（路径固定为游戏协议）。不构成提权链条：updater 唯一的状态变更接口是 `POST /update`，客户端不会发这个请求。 |
+| 4 | 微信推送验证码是「持有即可用」 | `services/notify-service.ts` | 现在的语义是：知道验证码的人就能完成绑定。验证码只在已登录的网页端显示，所以只有机主（或能登进后台的人）拿得到。要更强就得上「网页端 + 微信端双向确认」，成本不划算。 |
+| 5 | 没有 CSP / X-Frame-Options | `api/server.ts` | 目前只设了 `X-Content-Type-Options` 与 `Referrer-Policy`。没有 XSS 注入点，点击劫持风险低；加 CSP 需要先梳理前端内联样式/脚本，单独一次改动更合适。 |
+| 6 | WebSocket 连接不会因会话失效被踢 | `api/ws-gateway.ts` | 只在升级时鉴权，之后不再校验；登出/改密不会断开已连接。推送内容仍严格按 `userId` 过滤，仅影响「攻击者已经握有会话」的场景。 |
+| 7 | 5xx 错误文本只在 `NODE_ENV=production` 时隐藏 | `api/server.ts` | 镜像里固定 production，裸机开发时不要把 8580 暴露出去即可。 |
+| 8 | updater 挂着 `docker.sock` | `docker-compose.yml` 的 `update` profile | 它等于把宿主机 root 权限交给一个容器（官方也这么建议做自更新）。缓解：不暴露端口、只在 compose 内网可达、可选 `UPDATER_TOKEN`、只在需要一键更新时才启用这个 profile。**不想承担这个风险就不要开它**，改用 `docker compose pull app && docker compose up -d` 或 `scripts/update.sh`。 |
 
 ## 二、正确性（低危，边界场景）
 

@@ -27,12 +27,21 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.t
 import { ProgressBar } from "@/components/domain/StatCard.tsx";
 import { useApplyUpdate, useCheckUpdate, useUpdateProgress, probeHealth, type UpdateStep } from "@/lib/mutations.ts";
 
-/** 更新流程的步骤顺序（用于把「进行到第几步」画成进度条） */
-const STEP_ORDER: UpdateStep[] = ["preflight", "git-pull", "install", "build", "recreate", "done"];
+/**
+ * 更新流程的步骤顺序（用于把「进行到第几步」画成进度条）。
+ *
+ * ★ 有两条路径，取决于 updater 的模式：
+ *    git  ：git pull → 本机构建 → 重建重启
+ *    pull ：拉预构建镜像 → 重启（不做本机构建，几秒钟、几乎不吃 CPU）
+ *   本地更新（裸机）也是 git 那条。
+ */
+const STEP_ORDER_GIT: UpdateStep[] = ["preflight", "git-pull", "install", "build", "recreate", "done"];
+const STEP_ORDER_PULL: UpdateStep[] = ["preflight", "image-pull", "recreate", "done"];
 const STEP_TEXT: Record<UpdateStep, string> = {
   idle: "等待开始",
   preflight: "检查环境",
   "git-pull": "拉取最新代码",
+  "image-pull": "拉取预构建镜像",
   install: "安装依赖",
   build: "构建前端",
   recreate: "重建并重启容器",
@@ -105,8 +114,9 @@ export function UpdatePanel() {
   }, [watching, restartedFresh, apply.isSuccess, p?.running]);
 
   /** 进度百分比：按步骤位置估算（无法拿到真实百分比，但足够传达「在动」） */
-  const stepIdx = p ? STEP_ORDER.indexOf(p.step) : -1;
-  const pct = p?.step === "done" ? 100 : stepIdx >= 0 ? Math.round(((stepIdx + 0.5) / (STEP_ORDER.length - 1)) * 100) : 5;
+  const stepOrder = r?.updaterMode === "pull" ? STEP_ORDER_PULL : STEP_ORDER_GIT;
+  const stepIdx = p ? stepOrder.indexOf(p.step) : -1;
+  const pct = p?.step === "done" ? 100 : stepIdx >= 0 ? Math.round(((stepIdx + 0.5) / (stepOrder.length - 1)) * 100) : 5;
 
   return (
     <Card className="gap-4">
@@ -273,8 +283,8 @@ export function UpdatePanel() {
 
                   {/* 步骤清单 */}
                   <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] sm:grid-cols-3">
-                    {STEP_ORDER.filter((s) => s !== "done").map((s) => {
-                      const idx = STEP_ORDER.indexOf(s);
+                    {stepOrder.filter((s) => s !== "done").map((s) => {
+                      const idx = stepOrder.indexOf(s);
                       const state = stepIdx > idx ? "done" : stepIdx === idx ? "active" : "pending";
                       return (
                         <div

@@ -389,7 +389,17 @@ export function useBulkUpdateUsers() {
 
 /* ---------------- 在线更新 ---------------- */
 
-export type UpdateStep = "idle" | "preflight" | "git-pull" | "install" | "build" | "recreate" | "done" | "failed";
+export type UpdateStep =
+  | "idle"
+  | "preflight"
+  | "git-pull"
+  /** 拉取预构建镜像（updater 的 pull 模式） */
+  | "image-pull"
+  | "install"
+  | "build"
+  | "recreate"
+  | "done"
+  | "failed";
 
 export type UpdateProgress = {
   running: boolean;
@@ -420,6 +430,8 @@ export type UpdateCheck = {
   repo: string | null;
   canApplyLocal: boolean;
   updaterAvailable: boolean;
+  /** updater 的更新模式：git = 本机构建；pull = 拉预构建镜像；拿不到为 null */
+  updaterMode: "git" | "pull" | null;
   manualHint: string | null;
   note: string | null;
 };

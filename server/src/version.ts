@@ -11,7 +11,7 @@
 //  · 发版时在数组最前面追加一项
 
 /** 当前版本（与 package.json 的 version 同步维护） */
-export const VERSION = "1.2.1";
+export const VERSION = "1.2.2";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -26,6 +26,37 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.2.2",
+    date: "2026-10-10",
+    title: "预构建镜像 + 更新器「拉取模式」：面板一键更新不再吃本机资源",
+    notice:
+      "compose 里 app 的 image 改成了 ghcr.io/creator2k/reelax-server:latest（本地构建照旧可用）。" +
+      "★ 想用 `docker compose pull` 或面板的「立即更新」（pull 模式），需要先在 GitHub 把包设为 Public：" +
+      "https://github.com/users/Creator2K/packages/container/reelax-server/settings → Change visibility → Public。",
+    changes: [
+      {
+        kind: "feature",
+        text: "预构建镜像：GitHub Actions 每次 main 提交通过校验后，自动构建 linux/amd64 + linux/arm64 镜像推到 ghcr.io/creator2k/reelax-server（另打 sha-<短提交> 标签便于回滚），提交号已烧进镜像 —— 没有 git 的部署（tar 解压那种）现在更新只需 `docker compose pull app && docker compose up -d`，几秒钟、几乎不吃 CPU",
+      },
+      {
+        kind: "feature",
+        text: "更新器新增「拉取模式」（UPDATER_MODE=auto/git/pull，默认 auto：有 .git 走 git，否则走 pull）。tar 部署也能在面板上点「立即更新」——它只拉预构建镜像并重启，不再在本机跑 npm ci + vite + docker build",
+      },
+      {
+        kind: "fix",
+        text: "Linux 上更新器以 root 操作挂载进来的仓库时会被 git 拒绝（detected dubious ownership in repository at '/project'）—— 现在会用 GIT_CONFIG_* 带上 safe.directory，git 模式在 Linux 上可用",
+      },
+      {
+        kind: "fix",
+        text: "scripts/update.sh 的健康检查端口原来写死 8580，改了 PORT 的部署会误报「未通过健康检查」（其实更新成功）—— 现在跟着 .env 里的 PORT 走",
+      },
+      {
+        kind: "improve",
+        text: "更新面板按更新器的模式显示对应步骤（「拉取预构建镜像」/「拉取最新代码」），进度条与步骤清单不再出现空标签、也不会一直停在 5%",
+      },
+    ],
+  },
   {
     version: "1.2.1",
     date: "2026-10-10",
