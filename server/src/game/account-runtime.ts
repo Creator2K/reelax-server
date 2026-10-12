@@ -999,6 +999,20 @@ export class AccountRuntime {
     return this.status !== "stopped";
   }
 
+  /**
+   * 用本账号兑换 CDK（服务端「CDK 兑换」用）。
+   *
+   * 复用本账号已有的会话、代理与重试逻辑；客户端会在需要时自动 ensureSession，
+   * 所以账号处于停止状态也能兑换（这是用户主动发起的动作，不该被挂机开关拦住）。
+   */
+  async redeemCdks(codes: string[]): Promise<{ redeemedCount?: number; invalidCount?: number; redemptions?: unknown[] }> {
+    return (await this.client.redeemCdks(codes)) as {
+      redeemedCount?: number;
+      invalidCount?: number;
+      redemptions?: unknown[];
+    };
+  }
+
   get proxyFingerprint(): string {
     return this.proxyHolder.currentFingerprint;
   }

@@ -28,6 +28,7 @@ const AccountsPage = lazy(() => import("./pages/Accounts.tsx"));
 const AccountDetailPage = lazy(() => import("./pages/AccountDetail.tsx"));
 const ProxiesPage = lazy(() => import("./pages/Proxies.tsx"));
 const NotifyPage = lazy(() => import("./pages/Notify.tsx"));
+const CdkPage = lazy(() => import("./pages/Cdk.tsx"));
 const LogsPage = lazy(() => import("./pages/Logs.tsx"));
 const SettingsPage = lazy(() => import("./pages/Settings.tsx"));
 const ChangelogPage = lazy(() => import("./pages/Changelog.tsx"));
@@ -104,6 +105,7 @@ export default function App() {
           <Route path="/dashboard" element={<Navigate to="/accounts" replace />} />
           <Route path="/proxies" element={userOnly(createElement(ProxiesPage))} />
           <Route path="/notify" element={userOnly(createElement(NotifyPage))} />
+          <Route path="/cdk" element={userOnly(createElement(CdkPage))} />
           <Route path="/logs" element={userOnly(createElement(LogsPage))} />
 
           {/* 两者都能访问 */}

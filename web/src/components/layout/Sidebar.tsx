@@ -16,6 +16,7 @@ import {
   IconBroadcast,
   IconChartDots,
   IconCloudNetwork,
+  IconGift,
   IconHistory,
   IconInfoCircle,
   IconListDetails,
@@ -42,6 +43,7 @@ export type NavItem = {
 export const USER_NAV_ITEMS: NavItem[] = [
   { to: "/accounts", label: "账号", icon: IconUsers, end: true },
   { to: "/proxies", label: "代理", icon: IconCloudNetwork },
+  { to: "/cdk", label: "CDK 兑换", icon: IconGift },
   { to: "/notify", label: "推送", icon: IconBroadcast },
   { to: "/logs", label: "运行日志", icon: IconListDetails },
   { to: "/changelog", label: "更新记录", icon: IconHistory },

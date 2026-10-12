@@ -35,6 +35,8 @@ import { createAccountsRouter } from "./api/routes/accounts.ts";
 import { createProxiesRouter } from "./api/routes/proxy-routes.ts";
 import { createModulesRouter } from "./api/routes/modules.ts";
 import { createLogsRouter } from "./api/routes/logs-routes.ts";
+import { createCdkRouter } from "./api/routes/cdk-routes.ts";
+import { CdkService } from "./services/cdk-service.ts";
 import { createStatsRouter } from "./api/routes/stats-routes.ts";
 import { createAdminRouter } from "./api/routes/admin-routes.ts";
 import { WsGateway } from "./api/ws-gateway.ts";
@@ -423,6 +425,8 @@ async function main(): Promise<void> {
       a.use("/api/accounts", createAccountsRouter({ accounts, registry, audit: repos.audit }));
       a.use("/api/proxies", createProxiesRouter({ proxies, accounts, audit: repos.audit, limiters }));
       a.use("/api/logs", createLogsRouter({ logger, logs: repos.logs }));
+      // CDK 公共库：提交时用指定账号试领验证，兑换时复用该账号的会话与代理
+      a.use("/api/cdk", createCdkRouter({ cdk: new CdkService({ repos, registry, logger }) }));
       a.use(
         "/api/stats",
         createStatsRouter({

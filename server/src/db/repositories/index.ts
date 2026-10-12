@@ -10,6 +10,7 @@ import { LogsRepo } from "./logs.ts";
 import { StatsRepo } from "./stats.ts";
 import { AuditRepo } from "./audit.ts";
 import { NotifyRepo } from "./notify.ts";
+import { CdkRepo } from "./cdk.ts";
 
 export type Repos = {
   users: UsersRepo;
@@ -22,6 +23,7 @@ export type Repos = {
   stats: StatsRepo;
   audit: AuditRepo;
   notify: NotifyRepo;
+  cdk: CdkRepo;
 };
 
 export function createRepos(db: Db): Repos {
@@ -36,6 +38,7 @@ export function createRepos(db: Db): Repos {
     stats: new StatsRepo(db),
     audit: new AuditRepo(db),
     notify: new NotifyRepo(db),
+    cdk: new CdkRepo(db),
   };
 }
 
@@ -49,6 +52,7 @@ export * from "./logs.ts";
 export * from "./stats.ts";
 export * from "./audit.ts";
 export * from "./notify.ts";
+export * from "./cdk.ts";
 
 /**
  * 测试/开发辅助：建一个内存库并跑迁移。

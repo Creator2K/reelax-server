@@ -529,6 +529,22 @@ export class GameClient {
     return this.request("/api/convenience");
   }
 
+  /**
+   * 批量兑换 CDK（活动码与赞助礼包码都走这里）。
+   *
+   * 响应：{ redemptions: [{ rewards: { gold?, relics?, fragments?, itemQuantity?, chestQuantity? } }],
+   *         redeemedCount, invalidCount }
+   * 失败的码**不在** redemptions 里，原因看错误码：CDK_ALREADY_REDEEMED / CDK_DISABLED /
+   * CDK_NOT_STARTED / CDK_USAGE_LIMIT_REACHED / SPONSORSHIP_CODE_INVALID。
+   */
+  redeemCdks(codes: string[]) {
+    return this.request("/api/sponsorship/cdks/redeem-batch", {
+      method: "POST",
+      body: { codes },
+      idempotent: true,
+    });
+  }
+
   /* ---------- 底层 ---------- */
 
   async raw(

@@ -241,6 +241,35 @@ ALTER TABLE users ADD COLUMN quota_override INTEGER;
 ALTER TABLE account_modules ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}';
 `,
   },
+
+  // ---------- CDK 公共库 ----------
+  // 为什么需要独立一张表：CDK 是"跨用户共享的资源池"——任何人提交、任何人兑换，
+  // 不属于某个账号的配置，所以不能塞进 account_modules。
+  //
+  // normalized 上的唯一约束是重复提交的唯一防线：`moyu666` / `MOYU-666` / `moyu 666`
+  // 归一化后同一个值，插入时直接撞唯一键（不靠先查后插的竞态判断）。
+  {
+    id: "0007_cdk_codes",
+    sql: `
+CREATE TABLE cdk_codes (
+  id               TEXT PRIMARY KEY,
+  code             TEXT NOT NULL,                    -- 展示用（提交者的原始写法，大写）
+  normalized       TEXT NOT NULL UNIQUE,             -- 归一化：去空格/连字符 + 大写
+  status           TEXT NOT NULL DEFAULT 'available',-- available | not_started | exhausted
+  reward_json      TEXT,                             -- 兑换成功后实际到账的奖励摘要
+  submitted_by     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  submitted_at     INTEGER NOT NULL,
+  account_id       TEXT,                             -- 提交时用于验证的账号
+  last_error       TEXT,                             -- 最近一次失败原因（未开始 / 已领取过 / 失效）
+  success_count    INTEGER NOT NULL DEFAULT 0,       -- 成功兑换次数（每账号一次可重复领）
+  last_redeemed_by TEXT,
+  last_redeemed_at INTEGER,
+  updated_at       INTEGER NOT NULL
+);
+CREATE INDEX idx_cdk_status ON cdk_codes (status, submitted_at DESC);
+CREATE INDEX idx_cdk_submitter ON cdk_codes (submitted_by, submitted_at DESC);
+`,
+  },
 ];
 
 /** 供 migrate.ts 记录已应用版本 */
