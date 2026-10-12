@@ -1,18 +1,25 @@
 // 保底切图：模块行为（对着假游戏 API 跑真实 onStart）
 //
-// 本项目**自己负责换图**，与官方助手零接触（不读它的开关、不接管、不提示）——
-// 这里钉住的正是「一次助手接口都不发」，以及切图 / 切回 / 流程结束的链路：
+// 本项目**自己负责换图**，与官方助手零接触（不读它的开关、不接管、不提示）。
+// 这里钉住的是完整链路与两个踩过的坑：
 //   · 快触发保底 → 切到保底图；出货 → 切回原图
-//   · 中途用户自己切回原图并出货 → 流程要能自己结束（否则以后再也不会切图）
+//   · ★ 出货后即使过了缓冲期也要切回（旧版因为下一轮 caught 变 false，永远不切回）
+//   · ★ 保底期间暂停「自动切图」，出货切回后恢复（B1：不让它把人从保底图拽走）
+//   · ★ 被别的东西挪走后抢回一次（自愈），再被挪走就不抢了
+//   · 保底数据为 null（当前条件无保底）时给出能看懂的 info 提示
 import { describe, expect, it } from "vitest";
 import type { ModuleContext } from "../src/modules/types.ts";
 import autoPity from "../src/modules/auto-pity/index.ts";
 
 const BIOME_HOME = "b_001";
 const BIOME_PITY = "b_015";
+/** 第三方地图：模拟"被别的东西挪走"后的落点 */
+const BIOME_OTHER = "b_009";
 
 type FakeOpts = {
   config?: Record<string, unknown>;
+  /** 假运行时的模块实例列表（不含 auto-travel 就等于它没开） */
+  moduleInstances?: string[];
 };
 
 function makeCtx(opts: FakeOpts = {}) {
@@ -30,6 +37,7 @@ function makeCtx(opts: FakeOpts = {}) {
     biomes: async () => ({
       biomes: [
         { id: BIOME_HOME, name: "月落溪谷", isCurrent: world.currentBiome === BIOME_HOME },
+        { id: BIOME_OTHER, name: "极昼冰湾", isCurrent: world.currentBiome === BIOME_OTHER },
         { id: BIOME_PITY, name: "星渊圣海", isCurrent: world.currentBiome === BIOME_PITY },
       ],
     }),
@@ -54,6 +62,7 @@ function makeCtx(opts: FakeOpts = {}) {
       targetBiome: BIOME_PITY,
       checkEverySec: 60,
       returnDelaySec: 0,
+      pauseAutoTravel: true,
       ...(opts.config ?? {}),
     },
     state: {},
@@ -64,7 +73,17 @@ function makeCtx(opts: FakeOpts = {}) {
       error: (_t: string, m: string) => log.warn.push(m),
     },
     api,
-    account: {},
+    // 账号运行时：只用到「模块实例列表 + 停/重启某模块」
+    account: {
+      moduleInstances: opts.moduleInstances ?? ["keep-online", "auto-travel"],
+      stopModule: async (id: string) => {
+        calls.push(`STOP ${id}`);
+      },
+      restartModule: async (id: string) => {
+        calls.push(`RESTART ${id}`);
+        return { ok: true, enabled: true };
+      },
+    },
     on: () => () => {},
     every: () => ({}) as NodeJS.Timeout,
     schedule: (ms: number, fn: () => unknown) => {
@@ -90,6 +109,10 @@ function makeCtx(opts: FakeOpts = {}) {
 }
 
 const count = (calls: string[], needle: string) => calls.filter((c) => c === needle).length;
+/** 把"出货后的缓冲截止时间"拨到过去，等价于等够了 returnDelaySec 秒 */
+const passReturnBuffer = (ctx: ModuleContext) => {
+  (ctx.state as { returnAt?: number }).returnAt = Date.now() - 1;
+};
 
 describe("保底切图模块", () => {
   it("★ 快触发保底 → 切进保底地图，出货 → 切回原图", async () => {
@@ -116,8 +139,8 @@ describe("保底切图模块", () => {
     await run(); // 再检查一次
     expect(calls.filter((c) => c.includes("convenience"))).toEqual([]);
     expect(calls.filter((c) => c.startsWith("REQUEST"))).toEqual([]);
-    // 只剩换图这一件事
-    expect(calls.every((c) => c.startsWith("TRAVEL"))).toBe(true);
+    // 只剩「换图」与「暂停/恢复自动切图」这类模块间协调
+    expect(calls.every((c) => c.startsWith("TRAVEL") || c.startsWith("STOP ") || c.startsWith("RESTART "))).toBe(true);
     expect(log.warn).toEqual([]);
   });
 
@@ -154,6 +177,89 @@ describe("保底切图模块", () => {
     const run = await start();
 
     await run();
+    expect(calls.filter((c) => c.startsWith("TRAVEL"))).toEqual([]);
+  });
+
+  it("★ 出货后即使过了缓冲期也照样切回原图（旧版这里永远不切回）", async () => {
+    // 用真实默认值 returnDelaySec=5：出货那一轮因为要等缓冲什么都不做，
+    // 而下一轮 caught 已经被重算成 false（dry 从 0 涨回去了）→ 旧版切回分支永远进不去。
+    const { ctx, calls, world, log, start } = makeCtx({ config: { returnDelaySec: 5 } });
+    const run = await start();
+
+    await run(); // 进保底图
+    expect(count(calls, `TRAVEL ${BIOME_PITY}`)).toBe(1);
+
+    world.dry = 0; // 出货
+    await run();
+    expect(log.info.some((m) => m.includes("🎉"))).toBe(true);
+    expect(count(calls, `TRAVEL ${BIOME_HOME}`)).toBe(0); // 还在缓冲期，不该立刻切
+
+    passReturnBuffer(ctx); // 等价于等够了 5 秒
+    await run();
+    expect(count(calls, `TRAVEL ${BIOME_HOME}`)).toBe(1); // ★ 该切回了
+    expect(world.currentBiome).toBe(BIOME_HOME);
+  });
+
+  it("★ 进保底图时暂停「自动切图」，出货切回原图后恢复（B1）", async () => {
+    const { calls, world, start } = makeCtx();
+    const run = await start();
+
+    await run(); // 进保底图 → 让路
+    expect(calls).toContain("STOP auto-travel");
+
+    world.dry = 0; // 出货 → 切回原图（returnDelaySec=0）
+    await run();
+    expect(calls).toContain("RESTART auto-travel");
+  });
+
+  it("「自动切图」没开时不去动它", async () => {
+    const { calls, start } = makeCtx({ moduleInstances: ["keep-online"] });
+    const run = await start();
+
+    await run();
+    expect(calls).not.toContain("STOP auto-travel");
+  });
+
+  it("把「保底期间暂停自动切图」关掉就不暂停（老行为）", async () => {
+    const { calls, start } = makeCtx({ config: { pauseAutoTravel: false } });
+    const run = await start();
+
+    await run();
+    expect(calls).not.toContain("STOP auto-travel");
+  });
+
+  it("★ 被别的东西挪走后抢回保底图一次；再被挪走就不抢了", async () => {
+    const { calls, log, world, start } = makeCtx();
+    const run = await start();
+
+    await run(); // 进保底图（returnBiome = 原图）
+    expect(count(calls, `TRAVEL ${BIOME_PITY}`)).toBe(1);
+
+    // 例如「自动报名赛事」把你带去比赛图 —— 旧版这里只会"等待出货"，永远不切回
+    world.currentBiome = BIOME_OTHER;
+    await run();
+    expect(count(calls, `TRAVEL ${BIOME_PITY}`)).toBe(2); // 抢回来
+    expect(world.currentBiome).toBe(BIOME_PITY);
+    expect(log.info.some((m) => m.includes("被挪走"))).toBe(true);
+
+    // 又被挪走 → 只提示，不再抢（可能你在手动操作）
+    world.currentBiome = BIOME_OTHER;
+    await run();
+    expect(count(calls, `TRAVEL ${BIOME_PITY}`)).toBe(2);
+    expect(log.info.some((m) => m.includes("不再抢"))).toBe(true);
+  });
+
+  it("★ 当前条件无保底（hardPityCasts 为 null）→ 用 info 讲清楚，而不是含糊的「接口可能变了」", async () => {
+    const { ctx, calls, log, start } = makeCtx();
+    (ctx.api as unknown as { statistics: () => Promise<unknown> }).statistics = async () => ({
+      pity: { arcane: { hardPityCasts: null, currentDryCasts: 12 } },
+    });
+    const run = await start();
+
+    await run();
+    const line = log.info.find((m) => m.includes("没有硬保底"));
+    expect(line).toBeTruthy();
+    expect(line).not.toContain("改版");
     expect(calls.filter((c) => c.startsWith("TRAVEL"))).toEqual([]);
   });
 });

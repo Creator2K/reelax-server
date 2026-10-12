@@ -61,7 +61,29 @@ export function didCatch(prev: PityProgress | null, cur: PityProgress | null): b
 export type PityDecision =
   | { action: "enter"; biomeId: string; reason: string }
   | { action: "return"; biomeId: string; reason: string }
+  /**
+   * 已经在保底流程里、但人已经不在保底图上（被别的模块 / 手动挪走）→ 抢回来。
+   * 与 enter 的区别：**不要覆盖"原地图"的记忆**（原地图仍然是最早那张）。
+   */
+  | { action: "reenter"; biomeId: string; reason: string }
   | { action: "stay"; reason: string };
+
+/**
+ * 读不到保底进度时，说清楚到底是哪一种。
+ *
+ * ★ 原来一律记「读不到保底数据（游戏接口可能变了）」，但真实情况常常是
+ *   `hardPityCasts === null` —— 游戏里显示「当前条件无保底」，接口一点问题都没有。
+ *   排查时被这句话带偏过，所以单独拆出来。
+ */
+export function pityUnavailableReason(pity: unknown, rarity: "exotic" | "arcane"): string {
+  const label = rarity === "arcane" ? "奥秘鱼" : "奇异鱼";
+  const block = (pity as Record<string, { hardPityCasts?: unknown } | undefined> | null | undefined)?.[rarity];
+  if (!block) return `读不到${label}的保底数据（响应里没有 pity.${rarity}，游戏可能改版了）`;
+  if (block.hardPityCasts === null) {
+    return `当前条件下${label}没有硬保底（游戏里显示「当前条件无保底」），本功能暂不动作`;
+  }
+  return `${label}保底数据异常：hardPityCasts=${String(block.hardPityCasts)}（应为正数）`;
+}
 
 /**
  * 决策（纯函数，便于单测）。
@@ -71,7 +93,7 @@ export type PityDecision =
  * @param opts.currentBiome  当前地图 id
  * @param opts.targetBiome   指定的保底地图 id
  * @param opts.returnBiome   之前记住的「原地图」（null 表示没在保底流程里）
- * @param opts.caught        本轮是否钓到了目标稀有度
+ * @param opts.caught        是否确认钓到了目标稀有度（**含"欠着的那次切回"**，见模块里的说明）
  */
 export function decidePityAction(opts: {
   remaining: number | null;
@@ -86,6 +108,12 @@ export function decidePityAction(opts: {
   // 在保底流程里：钓到了就切回原图
   if (returnBiome) {
     if (!caught) {
+      // ★ 没钓到、但人已经不在保底图上 —— 被别的模块（自动报名赛事的进图 / 官方助手）
+      //   或手动挪走了。旧版这里只说「已在保底地图，等待出货」，于是会一直等到钓到为止，
+      //   剩下那几十杆就白打在别的图上了。这里明确要求切回（模块侧限一次，避免与手动操作拉锯）。
+      if (targetBiome && currentBiome && currentBiome !== targetBiome) {
+        return { action: "reenter", biomeId: targetBiome, reason: "已不在保底地图（被挪走了），重新切回" };
+      }
       return { action: "stay", reason: `已在保底地图，等待出货（原地图 ${returnBiome} 已记住）` };
     }
     // 已经回到原图了（或原图就是当前图）
