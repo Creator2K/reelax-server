@@ -1,44 +1,42 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { IconArrowDown, IconSearch } from "@tabler/icons-react";
+import { IconArrowDown, IconSearch, IconTrash } from "@tabler/icons-react";
 import { PageContainer } from "@/components/layout/PageContainer.tsx";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
+import { LogRows, LEVEL_LABEL, type LogLevel, type LogRow } from "@/components/domain/LogRows.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { useLiveLogs, type Account } from "@/lib/queries.ts";
 import { useAccounts } from "@/lib/queries.ts";
 import { useRealtime, type LogEntry } from "@/lib/realtime.tsx";
 import { api } from "@/lib/api.ts";
-import { cn, fmtClock } from "@/lib/utils.ts";
+import { cn } from "@/lib/utils.ts";
 
-const LEVELS = ["debug", "info", "warn", "error"] as const;
-type Level = (typeof LEVELS)[number];
-
-const LEVEL_CLASS: Record<Level, string> = {
-  debug: "log-level-debug",
-  info: "log-level-info",
-  warn: "log-level-warn",
-  error: "log-level-error",
-};
-
-const LEVEL_LABEL: Record<Level, string> = {
-  debug: "调试",
-  info: "信息",
-  warn: "警告",
-  error: "错误",
-};
+const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 
 export default function LogsPage() {
   const logs = useLiveLogs();
   const { logStore } = useRealtime();
   const { data: accounts } = useAccounts();
-  const [minLevel, setMinLevel] = useState<Level>("debug");
+  const [minLevel, setMinLevel] = useState<LogLevel>("debug");
   const [search, setSearch] = useState("");
   const [accountId, setAccountId] = useState("");
   const [follow, setFollow] = useState(true);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const seededRef = useRef(false);
 
-  usePageHeader("运行日志", "实时推送；刷新页面会自动回填最近 1000 条");
+  usePageHeader("运行日志", "实时推送，最新在最上面；刷新页面会自动回填最近 1000 条");
 
   /**
    * ★ 刷新后回填：以前刷新一下就空白了（日志只存在浏览器内存里，全靠 WebSocket 现推）。
@@ -69,26 +67,48 @@ export default function LogsPage() {
     return map;
   }, [accounts]);
 
-  const filtered = useMemo(() => {
+  /**
+   * 过滤 + **最新在最上面**。
+   *
+   * 为什么要反过来：日志是持续追加的，旧顺序（旧→新）每次都得手动拉到最下面才看得到最新，
+   * 手机尤其难受。列表内部仍然按时间升序保存（`LogStore` 的语义），只在渲染前反一次。
+   */
+  const rows = useMemo<LogRow[]>(() => {
     const minIdx = LEVELS.indexOf(minLevel);
     const needle = search.trim().toLowerCase();
-    return logs.filter((e) => {
-      if (LEVELS.indexOf(e.level) < minIdx) return false;
-      if (accountId && e.accountId !== accountId) return false;
+    const out: LogRow[] = [];
+    for (let i = logs.length - 1; i >= 0; i--) {
+      const e = logs[i]!;
+      if (LEVELS.indexOf(e.level) < minIdx) continue;
+      if (accountId && e.accountId !== accountId) continue;
       if (needle) {
         const hay = `${e.tag} ${e.moduleId ?? ""} ${e.msg}`.toLowerCase();
-        if (!hay.includes(needle)) return false;
+        if (!hay.includes(needle)) continue;
       }
-      return true;
-    });
-  }, [logs, minLevel, search, accountId]);
+      const who = [e.moduleId, e.accountId ? accountName.get(e.accountId) : null].filter(Boolean).join(" ");
+      out.push({ key: `${e.t}-${i}`, t: e.t, level: e.level, who: who || null, tag: e.tag, msg: e.msg });
+    }
+    return out;
+  }, [logs, minLevel, search, accountId, accountName]);
 
-  // 跟随模式：新日志到达时滚到底
+  // 跟随模式：最新在最上面，所以新日志到达时滚到**顶部**
   useEffect(() => {
     if (!follow) return;
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [filtered.length, follow]);
+    if (el) el.scrollTop = 0;
+  }, [rows.length, follow]);
+
+  /** 清除当前保留的日志：服务端删自己的（内存 + 库），前端同时清空缓冲 */
+  const clearLogs = async () => {
+    setClearing(true);
+    try {
+      await api.del<{ removed: number; forgotten: number }>("/api/logs");
+      logStore.clear();
+      setConfirmClear(false);
+    } finally {
+      setClearing(false);
+    }
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -137,10 +157,21 @@ export default function LogsPage() {
             variant={follow ? "secondary" : "outline"}
             size="sm"
             onClick={() => setFollow((v) => !v)}
-            title="开启后自动滚动到最新"
+            title="开启后自动滚到最新"
           >
             <IconArrowDown className="size-3.5" />
             {follow ? "跟随中" : "已暂停"}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setConfirmClear(true)}
+            disabled={logs.length === 0}
+            title="清除已保留的日志（只清自己的）"
+          >
+            <IconTrash className="size-3.5" />
+            清除
           </Button>
         </div>
       </PageContainer>
@@ -151,44 +182,33 @@ export default function LogsPage() {
           onWheel={() => setFollow(false)}
           className="border-border bg-card scroll-slim h-full overflow-y-auto rounded-xl border font-mono text-[12px] leading-relaxed"
         >
-          {filtered.length === 0 ? (
+          {rows.length === 0 ? (
             <div className="text-muted-foreground p-4">
               {logs.length === 0 ? "暂无日志。引擎启动后这里会实时显示。" : "没有匹配当前筛选条件的日志。"}
             </div>
           ) : (
-            <ul className="divide-border divide-y">
-              {filtered.map((e, i) => {
-                const who = [e.moduleId, e.accountId ? accountName.get(e.accountId) : null].filter(Boolean).join(" ");
-                return (
-                  // 手机：元信息一行 + 消息整行铺满（原来 4 个固定宽度列会把消息挤成一两个字宽，
-                  // 中文就会被竖着排成一列）；桌面：sm:contents 让包装层"消失"，回到原来的多列一行
-                  <li
-                    key={`${e.t}-${i}`}
-                    className="flex flex-col gap-0.5 px-3 py-1.5 sm:flex-row sm:gap-3"
-                  >
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 sm:contents">
-                      <span className="text-muted-foreground shrink-0 tabular-nums">{fmtClock(e.t)}</span>
-                      <span className={cn("w-8 shrink-0", LEVEL_CLASS[e.level])}>{LEVEL_LABEL[e.level]}</span>
-                      <span
-                        className="text-muted-foreground max-w-36 shrink-0 truncate sm:w-28"
-                        title={who}
-                      >
-                        {who || "—"}
-                      </span>
-                      <span className="text-muted-foreground max-w-24 shrink-0 truncate sm:w-16" title={e.tag}>
-                        {e.tag}
-                      </span>
-                    </div>
-                    <span className={cn("min-w-0 flex-1 break-words whitespace-pre-wrap", LEVEL_CLASS[e.level])}>
-                      {e.msg}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
+            <LogRows rows={rows} />
           )}
         </div>
       </div>
+
+      <AlertDialog open={confirmClear} onOpenChange={(o) => !o && setConfirmClear(false)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>清除运行日志？</AlertDialogTitle>
+            <AlertDialogDescription>
+              会删除「你自己的」已保留日志（内存与数据库都清），别人的日志不受影响，
+              服务启动那类系统级日志也会保留。清空后无法恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void clearLogs()} disabled={clearing}>
+              {clearing ? "清除中…" : "确认清除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -138,6 +138,48 @@ describe("decideGuildBoost", () => {
     const d = decide({ targetBiome: "b_012", currentBiomeId: null });
     expect(d.action === "activate" && d.biomeId).toBe("b_012");
   });
+
+  /* ---------- 用户实测反馈：「明明有时间为什么还买」---------- */
+
+  it("★ 生效中但 endsAt 读不到 → 不买（旧版会当成已过期，每次检查都买一次）", () => {
+    const d = decide({ boosts: [{ biomeId: "b_009", isActive: true, endsAt: null }] });
+    expect(d.action).toBe("skip");
+    expect(d.action === "skip" && d.reason).toContain("读不到结束时间");
+  });
+
+  it("★ 生效中但 endsAt 字段整个缺失 → 同样不买", () => {
+    const d = decide({ boosts: [{ biomeId: "b_009", isActive: true }] });
+    expect(d.action).toBe("skip");
+  });
+
+  it("★ 剩余时间按服务端时间算：本机时钟快 20 分钟也不能提前续买", () => {
+    // 服务端时间 = NOW；增益到 NOW+25min 结束；本机时钟比服务端快 20 分钟
+    const d = decide({
+      boosts: [{ biomeId: "b_009", isActive: true, endsAt: new Date(NOW + 25 * MIN).toISOString() }],
+      renewAheadMs: 10 * MIN,
+      serverTimeMs: NOW,
+      now: NOW + 20 * MIN, // 用本机时钟会把「还剩 25 分钟」算成「还剩 5 分钟」→ 提前买
+    });
+    expect(d.action).toBe("skip");
+    expect(d.action === "skip" && d.reason).toContain("25");
+  });
+
+  it("拿不到服务端时间时退回本机时钟（老行为）", () => {
+    const d = decide({
+      boosts: [{ biomeId: "b_009", isActive: true, endsAt: new Date(NOW + 25 * MIN).toISOString() }],
+      renewAheadMs: 10 * MIN,
+      serverTimeMs: null,
+      now: NOW + 20 * MIN,
+    });
+    expect(d.action).toBe("activate"); // 只剩 5 分钟 < 阈值 10 分钟 → 续
+  });
+
+  it("有未来结束时间就按时间判，不看 isActive（避免标志不同步时误买）", () => {
+    const d = decide({
+      boosts: [{ biomeId: "b_009", isActive: false, isQueued: false, endsAt: new Date(NOW + 30 * MIN).toISOString() }],
+    });
+    expect(d.action).toBe("skip");
+  });
 });
 
 /* ==================== 模块行为 ==================== */

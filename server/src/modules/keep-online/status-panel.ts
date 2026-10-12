@@ -162,6 +162,8 @@ export type SyncHealthView = {
   timeouts: number;
   /** 0~100；**没有样本时为 null**（界面显示「—」，不能谎报 100%） */
   successRate: number | null;
+  /** 当前连续失败次数（0 = 正常） */
+  failStreak?: number;
   lastOkAt: number | null;
   lastErrorAt: number | null;
   lastError: string | null;

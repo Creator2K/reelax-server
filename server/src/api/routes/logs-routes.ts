@@ -73,6 +73,20 @@ export function createLogsRouter(deps: { logger: Logger; logs: LogsRepo }): Rout
     });
   });
 
+  /**
+   * 清空自己的运行日志（页面上那个「清除」按钮）。
+   *
+   * 同时清内存环形缓冲与数据库里的记录，且**只清自己的**：
+   *  - 按 user_id 过滤，别人的日志一条也动不了；
+   *  - 无归属的系统级日志（服务启动 / 迁移 / 引擎摘要）保留 —— 它们是公共信息。
+   */
+  router.delete("/", (req, res) => {
+    const userId = currentUserId(req);
+    const removed = deps.logs.deleteForUser(userId);
+    const forgotten = deps.logger.forgetUser(userId);
+    res.json({ removed, forgotten });
+  });
+
   return router;
 }
 

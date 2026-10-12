@@ -51,8 +51,12 @@ export function boostOf(rows: GuildBoostRow[] | null | undefined, biomeId: strin
 /**
  * 决策。
  *
- * @param input.targetBiome   "current" = 跟随当前地图；否则是具体 biomeId
- * @param input.renewAheadMs  已有增益剩余时间少于这么多才续买（0 = 等它结束再买）
+ * @param input.targetBiome    "current" = 跟随当前地图；否则是具体 biomeId
+ * @param input.renewAheadMs   已有增益剩余时间少于这么多才续买（0 = 等它结束再买）
+ * @param input.serverTimeMs   响应里的 `serverTime`。**剩余时间按它算**，不要用本机时钟 ——
+ *                             官方客户端也是这么做的（`Date.parse(endsAt) - Date.parse(serverTime)`）。
+ *                             本机时钟偏快十几分钟时，用本机时钟会把"还剩 25 分钟"算成"还剩 5 分钟"，
+ *                             于是提前续买（用户实测反馈：明明有时间却又买了）。
  */
 export function decideGuildBoost(input: {
   boosts: GuildBoostRow[] | null | undefined;
@@ -66,8 +70,10 @@ export function decideGuildBoost(input: {
   unitsWanted: number;
   renewAheadMs: number;
   now: number;
+  /** 服务端时间（拿不到就用 now） */
+  serverTimeMs?: number | null;
 }): GuildBoostDecision {
-  const { boosts, maxUnits, canActivate, treasuryGold, minimumTreasuryGold, currentBiomeId, targetBiome, renewAheadMs, now } =
+  const { boosts, maxUnits, canActivate, treasuryGold, minimumTreasuryGold, currentBiomeId, targetBiome, renewAheadMs } =
     input;
 
   const biomeId = targetBiome === "current" ? (currentBiomeId ?? "") : String(targetBiome ?? "").trim();
@@ -101,13 +107,29 @@ export function decideGuildBoost(input: {
 
   const cur = boostOf(boosts, biomeId);
   const ends = parseTime(cur?.endsAt);
-  const remain = ends === null ? 0 : Math.max(0, ends - now);
-  if (cur && remain > renewAheadMs) {
-    const min = Math.max(1, Math.round(remain / 60_000));
-    return { action: "skip", reason: `该地图的增益还在（还剩约 ${min} 分钟），不重复买` };
-  }
-  if (cur?.isQueued === true && remain > 0) {
+  // ★ 基准时间优先用服务端时间：本机时钟偏差会直接把"还剩多久"算错
+  const serverNow = num(input.serverTimeMs);
+  const baseNow = serverNow > 0 ? serverNow : input.now;
+  const remain = ends === null ? null : Math.max(0, ends - baseNow);
+
+  // 已经有一笔排在队里 → 不叠加（不管还剩多久、也不管续买阈值）
+  if (cur?.isQueued === true && (remain === null || remain > 0)) {
     return { action: "skip", reason: "该地图已有一笔增益排队生效中" };
+  }
+
+  if (remain !== null) {
+    // 结束时间最可靠：还有时间就不买（到点前 renewAheadMs 内才续）
+    if (remain > renewAheadMs) {
+      const min = Math.max(1, Math.round(remain / 60_000));
+      return { action: "skip", reason: `该地图的增益还在（还剩约 ${min} 分钟），不重复买` };
+    }
+  } else if (cur?.isActive === true) {
+    // ★ 生效中但读不到结束时间 → **保守不买**。
+    //   旧版把"读不到结束时间"当成"已经过期"（remain=0）→ 每次检查都买一次，把公会金库花光。
+    return {
+      action: "skip",
+      reason: "增益生效中，但读不到结束时间 —— 先不买（避免重复花公会金库）",
+    };
   }
 
   return {

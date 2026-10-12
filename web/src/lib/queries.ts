@@ -54,6 +54,8 @@ export type SyncHealth = {
   timeouts: number;
   /** 0~100；没有样本时为 null（显示「—」，不是 100%） */
   successRate: number | null;
+  /** 当前连续失败次数（0 = 正常） */
+  failStreak?: number;
   lastOkAt: number | null;
   lastErrorAt: number | null;
   lastError: string | null;

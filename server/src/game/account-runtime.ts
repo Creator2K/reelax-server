@@ -239,6 +239,8 @@ export class AccountRuntime {
   private lastSyncOkAt: number | null = null;
   private lastSyncErrorAt: number | null = null;
   private lastSyncError: string | null = null;
+  /** 同步连续失败次数（日志只在第 1 次与每 10 次时记一条，避免坏链路刷屏） */
+  private syncFailStreak = 0;
 
   constructor(deps: AccountRuntimeDeps) {
     this.deps = deps;
@@ -464,11 +466,30 @@ export class AccountRuntime {
       this.syncSamples.splice(0, this.syncSamples.length - SYNC_SAMPLE_LIMIT);
     }
     if (ok) {
+      const prevErr = this.lastSyncError;
+      const streak = this.syncFailStreak;
       this.lastSyncOkAt = Date.now();
       this.lastSyncError = null;
-    } else {
-      this.lastSyncErrorAt = Date.now();
-      this.lastSyncError = describe(err).slice(0, 200);
+      this.syncFailStreak = 0;
+      // ★ 从"连续失败"里恢复也要留一条：否则日志里只有一串失败，看不出什么时候好的
+      if (streak > 0) {
+        this.log.info(
+          "保持在线",
+          `同步已恢复（此前连续失败 ${streak} 次${prevErr ? `，最近原因：${prevErr}` : ""}）`,
+        );
+      }
+      return;
+    }
+
+    this.lastSyncErrorAt = Date.now();
+    this.lastSyncError = describe(err).slice(0, 200);
+    this.syncFailStreak++;
+    // ★ 失败必须在日志里看得见 —— 状态面板会显示"超时 N 次"，日志里却什么都没有的话没法排查。
+    //   但不能每次刷屏（坏链路下每 6 秒一条）：只在**第一次**和**每 10 次**记一条 warn。
+    if (this.syncFailStreak === 1) {
+      this.log.warn("保持在线", `同步失败（瞬时错误会自动重试一次）：${this.lastSyncError}`);
+    } else if (this.syncFailStreak % 10 === 0) {
+      this.log.warn("保持在线", `同步已连续失败 ${this.syncFailStreak} 次（最近：${this.lastSyncError}）`);
     }
   }
 
@@ -488,6 +509,8 @@ export class AccountRuntime {
     failed: number;
     timeouts: number;
     successRate: number | null;
+    /** 当前连续失败次数（0 = 正常） */
+    failStreak: number;
     lastOkAt: number | null;
     lastErrorAt: number | null;
     lastError: string | null;
@@ -502,6 +525,7 @@ export class AccountRuntime {
       failed: win.length - ok,
       timeouts: win.filter((s) => !s.ok && s.timeout).length,
       successRate: win.length ? Math.round((ok / win.length) * 100) : null,
+      failStreak: this.syncFailStreak,
       lastOkAt: this.lastSyncOkAt,
       lastErrorAt: this.lastSyncErrorAt,
       lastError: this.lastSyncError,

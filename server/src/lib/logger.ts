@@ -141,6 +141,19 @@ export class Logger {
   clear() {
     this.buffer = [];
   }
+
+  /**
+   * 丢掉某个用户的内存日志（返回丢掉条数），用于「清除日志」按钮。
+   *
+   * 只动**属于该用户**的条目：无归属的系统级日志（服务启动、数据库迁移、引擎摘要）
+   * 是所有人的公共信息，不动 —— 否则一个用户点一次清除，别人就再也看不到启动日志了。
+   */
+  forgetUser(userId: string | null): number {
+    if (!userId) return 0;
+    const before = this.buffer.length;
+    this.buffer = this.buffer.filter((e) => e.userId !== userId);
+    return before - this.buffer.length;
+  }
 }
 
 export class ChildLogger {

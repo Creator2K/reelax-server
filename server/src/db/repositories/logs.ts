@@ -63,10 +63,55 @@ export class LogsRepo extends BaseRepo {
       before?: number;
     } = {},
   ): LogRow[] {
-    const { limit, offset } = pageParams(opts.limit, opts.offset, 500);
-    const where: string[] = ["user_id = ?"];
-    const params: (string | number)[] = [userId];
+    return this.selectRows(opts, userId);
+  }
 
+  /**
+   * ★ 跨用户查询：**只给管理员日志页用**。
+   *
+   * 普通路径一律走 `query(userId, …)`（它强制叠加 `user_id = ?`，这是越权防线）。
+   * 这个方法故意不要求 userId —— 调用点必须自己保证处在管理员上下文里
+   * （目前只有 `api/routes/admin-routes.ts` 的 `/logs`）。
+   */
+  queryAll(
+    opts: {
+      userId?: string | null;
+      accountId?: string | null;
+      moduleId?: string | null;
+      minLevel?: LogLevel | null;
+      search?: string;
+      limit?: number;
+      offset?: number;
+      before?: number;
+    } = {},
+  ): LogRow[] {
+    return this.selectRows(opts, opts.userId ?? null);
+  }
+
+  /** 共用的 WHERE 组装：`scopeUserId` 非空时强制 `user_id = ?` */
+  private selectRows(
+    opts: {
+      accountId?: string | null;
+      moduleId?: string | null;
+      minLevel?: LogLevel | null;
+      search?: string;
+      limit?: number;
+      offset?: number;
+      before?: number;
+    },
+    scopeUserId: string | null,
+  ): LogRow[] {
+    const { limit, offset } = pageParams(opts.limit, opts.offset, 500);
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (scopeUserId) {
+      // ★ 与内存路径（Logger.recent）保持一致：自己的 + 无归属的系统级日志。
+      //   系统级日志（服务启动、数据库迁移、引擎摘要）故意不设 user_id，对所有用户可见，
+      //   而且不含任何用户数据。少了这一条，"刷新回填"会比"实时"少掉启动那几行。
+      where.push("(user_id = ? OR user_id IS NULL)");
+      params.push(scopeUserId);
+    }
     if (opts.accountId) {
       where.push("account_id = ?");
       params.push(opts.accountId);
@@ -92,8 +137,9 @@ export class LogsRepo extends BaseRepo {
     }
 
     params.push(limit, offset);
+    const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
     return this.db.all<LogRow>(
-      `SELECT * FROM logs WHERE ${where.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+      `SELECT * FROM logs ${clause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
       ...params,
     );
   }

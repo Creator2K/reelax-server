@@ -27,20 +27,25 @@ describe("运行日志 API", () => {
 
     const r = await app.get<Entry[]>("/api/logs?history=1&limit=1000", A.jar);
     expect(r.status).toBe(200);
-    expect(r.body.map((e) => e.msg)).toEqual(["第 0 条", "第 1 条", "第 2 条", "第 3 条", "第 4 条"]);
-    expect(r.body[0]?.accountId).toBe(accountId);
+    // 只看这个用例自己插的 5 条（服务启动那几行是系统级日志，也会一起返回）
+    const mine = r.body.filter((e) => e.msg.startsWith("第 ")).map((e) => e.msg);
+    expect(mine).toEqual(["第 0 条", "第 1 条", "第 2 条", "第 3 条", "第 4 条"]);
+    expect(r.body.find((e) => e.msg === "第 0 条")?.accountId).toBe(accountId);
   });
 
-  it("★ 只看得到自己的日志（别人一条都拿不到）", async () => {
+  it("★ 只看得到自己的日志 + 系统级（别人一条都拿不到）", async () => {
     const A = app.seedApprovedUser("logs-a2@example.com");
     const B = app.seedApprovedUser("logs-b2@example.com");
     app.repos.logs.insert({ userId: A.id, level: "info", tag: "测试", msg: "甲的日志" });
     app.repos.logs.insert({ userId: B.id, level: "info", tag: "测试", msg: "乙的日志" });
-    // 没归属（系统级）的日志也不该漏给别人
+    // 无归属（系统级）的日志：服务启动/迁移这类，对所有用户可见、且不含用户数据
     app.repos.logs.insert({ userId: null, level: "error", tag: "系统", msg: "系统级日志" });
 
     const rb = await app.get<Entry[]>("/api/logs?history=1&limit=1000", B.jar);
-    expect(rb.body.map((e) => e.msg)).toEqual(["乙的日志"]);
+    const msgs = rb.body.map((e) => e.msg);
+    expect(msgs).toContain("乙的日志");
+    expect(msgs).toContain("系统级日志");
+    expect(msgs).not.toContain("甲的日志"); // ★ 别人的一条都不能有
   });
 
   it("limit 允许到 1000，超过就拒绝（前端一次拉满 1000 条）", async () => {
@@ -66,7 +71,39 @@ describe("运行日志 API", () => {
     app.repos.logs.insert({ userId: A.id, level: "info", tag: "测试", msg: "普通信息" });
     app.repos.logs.insert({ userId: A.id, level: "warn", tag: "测试", msg: "警告信息" });
 
-    const r = await app.get<Entry[]>("/api/logs?history=1&level=warn", A.jar);
-    expect(r.body.map((e) => e.msg)).toEqual(["警告信息"]);
+    const r = await app.get<Entry[]>("/api/logs?history=1&level=warn&limit=1000", A.jar);
+    const msgs = r.body.map((e) => e.msg);
+    expect(msgs).toContain("警告信息");
+    expect(msgs).not.toContain("普通信息");
+  });
+
+  it("★ 清除日志只清自己的（别人的和系统级的都留着）", async () => {
+    const A = app.seedApprovedUser("logs-clear-a@example.com");
+    const B = app.seedApprovedUser("logs-clear-b@example.com");
+    app.repos.logs.insert({ userId: A.id, level: "info", tag: "测试", msg: "甲要清掉的" });
+    app.repos.logs.insert({ userId: B.id, level: "info", tag: "测试", msg: "乙的日志" });
+    app.repos.logs.insert({ userId: null, level: "info", tag: "引擎", msg: "系统级日志" });
+    app.logger.push("error", "测试", "甲的内存日志", { userId: A.id });
+    app.logger.push("error", "测试", "乙的内存日志", { userId: B.id });
+
+    const r = await app.del<{ removed: number; forgotten: number }>("/api/logs", A.jar);
+    expect(r.status).toBe(200);
+    expect(r.body.removed).toBe(1);
+    expect(r.body.forgotten).toBe(1);
+
+    // 甲的没了
+    const a = await app.get<Entry[]>("/api/logs?history=1&limit=1000", A.jar);
+    expect(a.body.some((e) => e.msg === "甲要清掉的")).toBe(false);
+    // 别人的与系统级的都还在
+    const b = await app.get<Entry[]>("/api/logs?history=1&limit=1000", B.jar);
+    expect(b.body.some((e) => e.msg === "乙的日志")).toBe(true);
+    expect(b.body.some((e) => e.msg === "系统级日志")).toBe(true);
+    // 内存缓冲同样只丢自己的
+    expect(app.logger.recent({ userId: A.id, limit: 100 }).some((e) => e.msg === "甲的内存日志")).toBe(false);
+    expect(app.logger.recent({ userId: B.id, limit: 100 }).some((e) => e.msg === "乙的内存日志")).toBe(true);
+  });
+
+  it("清除日志需要登录", async () => {
+    expect((await app.del("/api/logs")).status).toBe(401);
   });
 });

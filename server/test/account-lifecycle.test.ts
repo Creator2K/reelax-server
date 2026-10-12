@@ -30,9 +30,9 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
  *  - nextCastAt 故意给「已经过期」，这样循环会立刻走到 sync（否则要等 60 秒）
  *  - stateDelayMs / syncDelayMs / meDelayMs 用来制造「请求在飞」的窗口
  */
-function makeGameFetch(opts: { meDelayMs?: number; syncDelayMs?: number; syncFailsOnce?: boolean; overdueSyncs?: number } = {}) {
+function makeGameFetch(opts: { meDelayMs?: number; syncDelayMs?: number; syncFailTimes?: number; overdueSyncs?: number } = {}) {
   const calls: string[] = [];
-  let syncFailed = false;
+  let syncFailed = 0;
   let syncCount = 0;
   /** 前几次 state 把 nextCastAt 说成「已过期」，让循环立刻走到 sync；之后给未来时间，避免测试里空转 */
   const overdue = opts.overdueSyncs ?? 1;
@@ -73,9 +73,9 @@ function makeGameFetch(opts: { meDelayMs?: number; syncDelayMs?: number; syncFai
     }
     if (path === "/api/fishing/sync") {
       syncCount++;
-      // 模拟一次瞬时超时（代理抖动最常见的样子）
-      if (opts.syncFailsOnce && !syncFailed) {
-        syncFailed = true;
+      // 模拟瞬时超时（代理抖动最常见的样子）；syncFailTimes 控制失败几次
+      if (syncFailed < (opts.syncFailTimes ?? 0)) {
+        syncFailed++;
         throw Object.assign(new Error("Connect Timeout Error (timeout: 10000ms)"), { name: "TimeoutError" });
       }
       if (opts.syncDelayMs) await sleep(opts.syncDelayMs);
@@ -155,7 +155,7 @@ describe("启动过程中被停止不能「复活」", () => {
 
 describe("瞬时网络错误：立刻重试一次（不退避 5 秒）", () => {
   it("★ 第一次同步超时 → 秒级内重试成功，且健康度里记到这次超时", async () => {
-    const { impl, calls } = makeGameFetch({ syncFailsOnce: true, overdueSyncs: 2 });
+    const { impl, calls } = makeGameFetch({ syncFailTimes: 1, overdueSyncs: 2 });
     const app = await buildFullApp({ fetchImpl: impl });
     try {
       const { id: userId } = app.seedApprovedUser("quick1@example.com");
@@ -174,6 +174,44 @@ describe("瞬时网络错误：立刻重试一次（不退避 5 秒）", () => {
       const s = rt.syncStats;
       expect(s.timeouts).toBe(1);
       expect(s.ok).toBeGreaterThanOrEqual(1);
+
+      await rt.stop("测试结束");
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("同步失败必须在日志里看得见（链路问题排查）", () => {
+  /**
+   * 状态面板会显示「链路（近 10 分钟同步）· 超时 N 次」，但**日志里必须能找到对应的一条**，
+   * 否则用户只能看到数字却无从排查（这是用户实测反馈）。
+   * 又不能坏链路时每 6 秒刷一条 —— 所以是"第 1 次 + 每 10 次"记 warn，恢复了记一条 info。
+   */
+  it("★ 第一次失败记 warn，恢复后记 info（说明此前连续失败几次）", async () => {
+    const { impl } = makeGameFetch({ syncFailTimes: 1, overdueSyncs: 2 });
+    const app = await buildFullApp({ fetchImpl: impl, logLevel: "debug" });
+    try {
+      const entries: { level: string; tag: string; msg: string }[] = [];
+      app.logger.subscribe((e) => entries.push({ level: e.level, tag: e.tag, msg: e.msg }));
+
+      const { id: userId } = app.seedApprovedUser("sync-log@example.com");
+      const accountId = app.seedAccount(userId, "同步日志");
+      const rt = app.registry.require(accountId);
+
+      await rt.start();
+      await waitFor(() => entries.some((e) => e.level === "warn" && e.msg.includes("同步失败")), 4000);
+      await waitFor(() => entries.some((e) => e.msg.includes("同步已恢复")), 4000);
+
+      const warn = entries.find((e) => e.msg.includes("同步失败"));
+      expect(warn?.level).toBe("warn");
+      expect(warn?.tag).toBe("保持在线");
+      expect(warn?.msg).toContain("超时"); // 原因原文带上，便于区分超时与代理拒绝
+
+      const recovered = entries.find((e) => e.msg.includes("同步已恢复"));
+      expect(recovered?.level).toBe("info");
+      expect(recovered?.msg).toContain("此前连续失败 1 次");
+      expect(rt.syncStats.failStreak).toBe(0);
 
       await rt.stop("测试结束");
     } finally {

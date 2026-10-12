@@ -13,6 +13,7 @@
 //    所以默认关闭；「金库下限」默认 0，建议调高一点，别把公会的钱花光。
 import { type ModuleDefinition } from "../types.ts";
 import { BIOME_OPTIONS } from "../shared/biomes.ts";
+import { parseTime } from "../../lib/util.ts";
 import { decideGuildBoost, readGuildFunds } from "./decide.ts";
 
 const definition: ModuleDefinition = {
@@ -145,6 +146,9 @@ const definition: ModuleDefinition = {
           unitsWanted,
           renewAheadMs,
           now: ctx.api.now(),
+          // ★ 剩余时间按**服务端时间**算：本机时钟偏快会把"还剩 25 分钟"算成"还剩 5 分钟"，
+          //   于是提前续买（用户反馈的"明明有时间还买"）。官方客户端同样以 serverTime 为基准。
+          serverTimeMs: parseTime((boostsData as { serverTime?: unknown })?.serverTime),
         });
 
         if (decision.action === "skip") {

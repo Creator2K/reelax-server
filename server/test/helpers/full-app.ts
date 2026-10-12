@@ -95,11 +95,16 @@ export async function buildFullApp(
      * 但一个测试文件里注册十几次会被拦，需要放宽。
      */
     limits?: Partial<Record<"register" | "login" | "loginByIp" | "inviteGuess", { windowMs: number; max: number }>>;
+    /**
+     * 内存日志级别。默认 `error`（保持测试安静）；要断言 info/warn 的行为时传 `debug`，
+     * 然后用 `app.logger.subscribe(...)` 直接收条目（不必等落库）。
+     */
+    logLevel?: "debug" | "info" | "warn" | "error";
   } = {},
 ): Promise<FullApp> {
   bootstrapModules();
   const env = testEnv(opts.env);
-  const logger = new Logger({ limit: 1000, minLevel: "error" });
+  const logger = new Logger({ limit: 1000, minLevel: opts.logLevel ?? "error" });
   const bus = new Bus();
   const db = openDb(":memory:");
   db.migrate();

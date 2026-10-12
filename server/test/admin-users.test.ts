@@ -153,3 +153,69 @@ describe("编辑用户：显示名与单独额度", () => {
     expect(audit.body.some((a) => a.target === u.id)).toBe(true);
   });
 });
+
+/* ==================== 管理员日志页（跨用户 + 脱敏） ==================== */
+
+type AdminLogEntry = { t: number; level: string; userId: string | null; tag: string; msg: string };
+
+describe("管理员日志页", () => {
+  it("★ 能看所有人的日志，且最新在最前", async () => {
+    const u = seedUser("logs-all@example.com");
+    app.repos.logs.insert({ userId: u.id, level: "info", tag: "测试", msg: "较早的日志", createdAt: 1000 });
+    app.repos.logs.insert({ userId: u.id, level: "warn", tag: "测试", msg: "较新的日志", createdAt: 2000 });
+
+    const r = await app.get<{ entries: AdminLogEntry[]; totalInDb: number }>("/api/admin/logs?limit=50", admin.jar);
+    expect(r.status).toBe(200);
+    const msgs = r.body.entries.map((e) => e.msg);
+    expect(msgs).toContain("较早的日志");
+    expect(msgs).toContain("较新的日志");
+    expect(msgs.indexOf("较新的日志")).toBeLessThan(msgs.indexOf("较早的日志"));
+    expect(r.body.totalInDb).toBeGreaterThan(0);
+  });
+
+  it("★ 脱敏：密码 / token / 邮箱被遮，但错误原文、IP 与模块 id 保留", async () => {
+    const u = seedUser("logs-redact@example.com");
+    app.repos.logs.insert({
+      userId: u.id,
+      accountId: "acc-1",
+      moduleId: "auto-bait",
+      level: "error",
+      tag: "代理",
+      msg: "连接失败 password=hunter2xyz token=SCTabcdefghijklmn 账号 someone@example.com 出口 103.85.24.7:10800",
+      createdAt: 3000,
+    });
+
+    const r = await app.get<{ entries: AdminLogEntry[] }>(
+      `/api/admin/logs?limit=20&search=${encodeURIComponent("连接失败")}`,
+      admin.jar,
+    );
+    const entry = r.body.entries.find((e) => e.msg.includes("连接失败"));
+    expect(entry).toBeTruthy();
+    const msg = entry?.msg ?? "";
+    expect(msg).not.toContain("hunter2xyz");
+    expect(msg).not.toContain("SCTabcdefghijklmn");
+    expect(msg).not.toContain("someone@example.com");
+    expect(msg).toContain("s***@example.com");
+    // 排查要用的信息必须留着
+    expect(msg).toContain("103.85.24.7:10800");
+    expect(entry?.moduleId).toBe("auto-bait");
+  });
+
+  it("按用户筛选（不给 userId 就是所有人）", async () => {
+    const u1 = seedUser("logs-filter-a@example.com");
+    const u2 = seedUser("logs-filter-b@example.com");
+    app.repos.logs.insert({ userId: u1.id, level: "info", tag: "测试", msg: "只属于甲", createdAt: 4000 });
+    app.repos.logs.insert({ userId: u2.id, level: "info", tag: "测试", msg: "只属于乙", createdAt: 4001 });
+
+    const r = await app.get<{ entries: AdminLogEntry[] }>(`/api/admin/logs?userId=${u1.id}&limit=50`, admin.jar);
+    const msgs = r.body.entries.map((e) => e.msg);
+    expect(msgs).toContain("只属于甲");
+    expect(msgs).not.toContain("只属于乙");
+  });
+
+  it("★ 普通用户访问不了（越权防线）", async () => {
+    const u = seedUser("logs-forbidden@example.com");
+    expect((await app.get("/api/admin/logs", u.jar)).status).toBe(403);
+    expect((await app.get("/api/admin/logs")).status).toBe(401);
+  });
+});

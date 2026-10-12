@@ -28,6 +28,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.t
 import { DashboardTab } from "@/components/domain/DashboardTab.tsx";
 import { UsersTab } from "@/components/domain/UsersTab.tsx";
 import { AdminSettingsTab } from "@/components/domain/AdminSettingsTab.tsx";
+import { AdminLogsTab } from "@/components/domain/AdminLogsTab.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { api } from "@/lib/api.ts";
 import { useSession } from "@/lib/session.ts";
@@ -84,9 +85,10 @@ export default function AdminPage() {
   return (
     <PageContainer wide>
       {/*
-        四个页签，按「日常要做的事」分组（原来 6 个太多、职责重叠）：
+        五个页签，按「日常要做的事」分组（原来 6 个太多、职责重叠）：
           概览   —— 一眼看状态 + 待办（系统信息也在这里，它本来就是"看一眼"的东西）
           用户   —— 找人、编辑、批量处理
+          日志   —— 跨用户运行日志（已脱敏），排查用户反馈的问题用
           邀请码 —— 发注册名额
           设置   —— 在线改运行参数、在线更新（都是运维动作）
         详细变更历史在侧边栏的「更新记录」，不占后台页签。
@@ -95,6 +97,7 @@ export default function AdminPage() {
         <TabsList>
           <TabsTrigger value="overview">概览</TabsTrigger>
           <TabsTrigger value="users">用户</TabsTrigger>
+          <TabsTrigger value="logs">日志</TabsTrigger>
           <TabsTrigger value="invites">邀请码</TabsTrigger>
           <TabsTrigger value="settings">设置</TabsTrigger>
         </TabsList>
@@ -111,6 +114,9 @@ export default function AdminPage() {
         </TabsContent>
         <TabsContent value="users" className="pt-4">
           <UsersTab />
+        </TabsContent>
+        <TabsContent value="logs" className="pt-4">
+          <AdminLogsTab />
         </TabsContent>
         <TabsContent value="invites" className="pt-4">
           <InvitesTab />

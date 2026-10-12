@@ -16,6 +16,7 @@ import { body, query } from "../middleware/validate.ts";
 import { clientIp, Limiters } from "../../auth/ratelimit.ts";
 import { AUDIT_ACTIONS } from "../../db/repositories/audit.ts";
 import { HttpError } from "../server.ts";
+import { redactLogRow } from "../../lib/log-redact.ts";
 import type { Env } from "../../env.ts";
 
 const statusSchema = z.object({ status: z.enum(["pending", "approved", "banned"]) });
@@ -314,6 +315,44 @@ export function createAdminRouter(deps: {
         offset: q.offset ?? 0,
       }),
     );
+  });
+
+  /* ---------- 运行日志（跨用户 + 脱敏） ---------- */
+
+  const adminLogsSchema = z.object({
+    userId: z.string().max(64).optional(),
+    accountId: z.string().max(64).optional(),
+    moduleId: z.string().max(64).optional(),
+    level: z.enum(["debug", "info", "warn", "error"]).optional(),
+    search: z.string().max(200).optional(),
+    limit: z.coerce.number().int().min(1).max(1000).optional(),
+    offset: z.coerce.number().int().min(0).max(100000).optional(),
+  });
+
+  /**
+   * 管理员日志页：看**所有人**的运行日志（最新在最前）。
+   *
+   * ★ 用 `queryAll`（不叠加 user_id 约束）—— 这个调用点是它唯一允许出现的地方。
+   * ★ 返回前一律过 `redactLogRow`：密码 / token / cookie / 签名 / 邮箱会被遮掉，
+   *   但错误原文、出口 IP、`host:port`、模块与地图 id 都保留（否则排查就没意义）。
+   *   数据源是数据库（每人保留策略见 settings.logRetentionDays），落库有秒级延迟。
+   */
+  router.get("/logs", query(adminLogsSchema), (req, res) => {
+    const q = res.locals.query as z.infer<typeof adminLogsSchema>;
+    const rows = deps.repos.logs.queryAll({
+      ...(q.userId ? { userId: q.userId } : {}),
+      ...(q.accountId ? { accountId: q.accountId } : {}),
+      ...(q.moduleId ? { moduleId: q.moduleId } : {}),
+      ...(q.level ? { minLevel: q.level } : {}),
+      ...(q.search?.trim() ? { search: q.search.trim() } : {}),
+      limit: q.limit ?? 200,
+      offset: q.offset ?? 0,
+    });
+    res.json({
+      // 仓储返回「新 → 旧」，页面就是最新在最上面，不需要再反转
+      entries: rows.map(redactLogRow),
+      totalInDb: deps.repos.logs.countAll(),
+    });
   });
 
   /* ---------- 在线更新 ---------- */
