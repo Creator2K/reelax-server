@@ -35,7 +35,7 @@ import type { ChildLogger } from "../lib/logger.ts";
 import type { Bus } from "../lib/bus.ts";
 import { EVENTS } from "../lib/bus.ts";
 import { TimerPool, TtlCache } from "../lib/timers.ts";
-import { clamp, jitter, parseTime, sleepUntil } from "../lib/util.ts";
+import { clamp, jitter, parseTime, randomStaggerMs, sleepUntil } from "../lib/util.ts";
 import { GameClient } from "./client.ts";
 import { GAME_ERROR_CODES, GameClientError } from "./errors.ts";
 import { ProxyDispatcherHolder, type ProxyConfig } from "./proxy.ts";
@@ -91,6 +91,44 @@ export type DigestPayload = {
 
 /** 补杆/退避序列（沿用实测可用值） */
 const BACKOFF_SEC = [5, 10, 20, 45, 60];
+
+/**
+ * ★ 启动错峰：多个账号同时启动（一起点「启动」、代理抖动后集体重连）会同时打代理，
+ * 而廉价代理常有并发连接数上限 —— 于是互相把对方拖成 connect timeout。
+ * 给每个账号的**每轮引擎启动**加一点随机延迟，把连接摊开。
+ *
+ * 上限刻意取得小（1.5s）：开机恢复那条路已经有 2.5s 的固定间隔（`startAutoStartAccounts`），
+ * 这里主要覆盖"手动连续启动多个账号"；重连风暴另由退避随机化处理（见下面的 backoff）。
+ */
+const START_STAGGER_MAX_MS = 1_500;
+
+/** 同步健康度窗口（状态面板显示「近 N 分钟」） */
+const SYNC_HEALTH_WINDOW_MS = 10 * 60_000;
+/** 滚动样本上限（10 分钟内正常也就几十条，留足余量又不占内存） */
+const SYNC_SAMPLE_LIMIT = 300;
+
+/**
+ * 两次同步之间的最小间隔。
+ *
+ * ★ 为什么需要：同步时机由服务端给的 `nextCastAt` 决定，但如果它滞后（或本机时钟比服务端快），
+ *   那就永远是"已过期" → 循环会以网络允许的最快速度反复 POST /api/fishing/sync。
+ *   实测用假数据跑时就出现过 50 次调用挤在几百毫秒内。留一个下限，最坏也只是"每 N 秒一次"。
+ */
+const MIN_SYNC_GAP_MS = 1_200;
+
+/**
+ * 瞬时网络错误：这些不值得等 5 秒退避 —— 先原地快速重试一次，仍失败才进退避。
+ * （会话失效 / 凭证错误之类**不**在这里，它们要挂起等用户处理。）
+ */
+const TRANSIENT_ERROR_CODES = new Set([
+  GAME_ERROR_CODES.TIMEOUT,
+  GAME_ERROR_CODES.NETWORK,
+  "PROXY_UNREACHABLE",
+  "PROXY_TIMEOUT",
+  "PROXY_DNS",
+  "PROXY_TLS",
+  "PROXY_ERROR",
+]);
 
 /** 展示数据刷新间隔 */
 const BIOMES_TTL_MS = 5 * 60_000;
@@ -190,6 +228,17 @@ export class AccountRuntime {
   private chestsCache = new TtlCache<any>(BIOMES_TTL_MS);
   /** 灯塔神器保底 */
   private lighthouseCache = new TtlCache<any>(BIOMES_TTL_MS);
+
+  /**
+   * 最近的同步结果（滚动窗口）——状态面板据此显示「近 10 分钟同步成功率 / 超时次数」。
+   *
+   * ★ 为什么要它：链路不好时表现只是「结算杆数比另一个号少」，而日志里一堆 connect timeout
+   *   需要自己数。有了这个窗口，面板上一眼就能看出是链路问题还是配置问题。
+   */
+  private syncSamples: { t: number; ok: boolean; timeout: boolean }[] = [];
+  private lastSyncOkAt: number | null = null;
+  private lastSyncErrorAt: number | null = null;
+  private lastSyncError: string | null = null;
 
   constructor(deps: AccountRuntimeDeps) {
     this.deps = deps;
@@ -365,6 +414,7 @@ export class AccountRuntime {
   }): void {
     this.reportRun(input.run ?? null);
     this.lastSyncAt = Date.now();
+    this.recordSync(true);
     const settlement = input.settlement ?? null;
     this.lastSettlement = settlement;
 
@@ -405,6 +455,57 @@ export class AccountRuntime {
       settlement,
       playerPatch: input.playerPatch ?? null,
     });
+  }
+
+  /** 记一次同步结果（成功 / 失败 + 是否超时），失败的原文留给面板显示 */
+  private recordSync(ok: boolean, timeout = false, err?: unknown): void {
+    this.syncSamples.push({ t: Date.now(), ok, timeout });
+    if (this.syncSamples.length > SYNC_SAMPLE_LIMIT) {
+      this.syncSamples.splice(0, this.syncSamples.length - SYNC_SAMPLE_LIMIT);
+    }
+    if (ok) {
+      this.lastSyncOkAt = Date.now();
+      this.lastSyncError = null;
+    } else {
+      this.lastSyncErrorAt = Date.now();
+      this.lastSyncError = describe(err).slice(0, 200);
+    }
+  }
+
+  /** 供钓鱼循环在同步失败时调用 */
+  reportSyncFailure(timeout: boolean, err?: unknown): void {
+    this.recordSync(false, timeout, err);
+  }
+
+  /**
+   * 近 10 分钟的同步健康度（状态面板显示）。
+   * `successRate` 在没有样本时为 null —— 面板显示「—」，不要谎报 100%。
+   */
+  get syncStats(): {
+    windowSec: number;
+    attempts: number;
+    ok: number;
+    failed: number;
+    timeouts: number;
+    successRate: number | null;
+    lastOkAt: number | null;
+    lastErrorAt: number | null;
+    lastError: string | null;
+  } {
+    const since = Date.now() - SYNC_HEALTH_WINDOW_MS;
+    const win = this.syncSamples.filter((s) => s.t >= since);
+    const ok = win.filter((s) => s.ok).length;
+    return {
+      windowSec: Math.round(SYNC_HEALTH_WINDOW_MS / 1000),
+      attempts: win.length,
+      ok,
+      failed: win.length - ok,
+      timeouts: win.filter((s) => !s.ok && s.timeout).length,
+      successRate: win.length ? Math.round((ok / win.length) * 100) : null,
+      lastOkAt: this.lastSyncOkAt,
+      lastErrorAt: this.lastSyncErrorAt,
+      lastError: this.lastSyncError,
+    };
   }
 
   reportOnlineCount(count: unknown): void {
@@ -733,6 +834,19 @@ export class AccountRuntime {
     const syncJitterMs = clamp(Number(cfg.syncJitterMs) || 0, 0, 3000);
     const retrySec = clamp(Number(cfg.retrySec) || 30, 1, 600);
 
+    /* ---------- ★ 启动错峰：把多账号的连接摊开，别一起打代理 ---------- */
+    const staggerMs = randomStaggerMs(START_STAGGER_MAX_MS);
+    if (staggerMs > 0) {
+      this.log.info("保持在线", `错峰 ${(staggerMs / 1000).toFixed(1)}s 后开始（避免多账号同时打代理）`);
+      await sleepUntil(Date.now() + staggerMs, () => this.isAborted(), 500);
+      if (this.isAborted()) return;
+    }
+
+    /** 本轮错误发生在「同步」这一步吗（决定要不要计入同步健康度） */
+    let phase: "other" | "sync" = "other";
+    /** 本轮是否已经做过一次"瞬时错误立刻重试" */
+    let quickRetried = false;
+
     while (!this.isAborted()) {
       try {
         const st = await this.client.fishingState();
@@ -773,13 +887,19 @@ export class AccountRuntime {
         // 2. 等到下一次结算 + 抖动
         const cycle = Number(run.cycleDurationMs) || 6000;
         const nextCastAt = parseTime(run.nextCastAt) ?? Date.now() + cycle;
-        const wakeAt = nextCastAt + (syncJitterMs > 0 ? jitter(syncJitterMs) : 0);
+        // ★ 最小间隔：服务端的 nextCastAt 滞后（或本机时钟比服务端快）时，它会一直是"已过期"，
+        //   循环就会以网络允许的最快速度反复同步 —— 既是请求风暴，也会让结算口径变乱。
+        //   留一个下限后，最坏情况也只是"最多每 N 秒同步一次"。
+        const floorAt = this.lastSyncAt ? this.lastSyncAt + MIN_SYNC_GAP_MS : 0;
+        const wakeAt = Math.max(nextCastAt + (syncJitterMs > 0 ? jitter(syncJitterMs) : 0), floorAt);
         await sleepUntil(wakeAt, () => this.isAborted(), 800);
         if (this.isAborted()) return;
 
         // 3. 同步（run 换代时用 missing，与官方客户端一致）
         const key = keyRunId === run.id ? snapshotKey : "missing";
+        phase = "sync";
         const resp = await this.client.fishingSync(key);
+        phase = "other";
         // ★ 关键：同步期间被停止时不能再往下走 —— 下面会 setStatus("online")，
         //   而那时 stop() 早已把状态写成 stopped 并返回，账号于是变成
         //   「显示在线、其实没在钓、还占着一个全局并发名额」的僵尸状态。
@@ -803,6 +923,7 @@ export class AccountRuntime {
         }
 
         backoffIdx = 0;
+        quickRetried = false;
       } catch (err) {
         if (this.isAborted()) break;
 
@@ -819,11 +940,30 @@ export class AccountRuntime {
           return;
         }
 
+        // 同步这一步失败 → 计入「同步健康度」（面板上能看到近 10 分钟的成功率/超时次数）
+        if (phase === "sync") {
+          const timeout = err instanceof GameClientError && err.code === GAME_ERROR_CODES.TIMEOUT;
+          this.reportSyncFailure(timeout, err);
+          phase = "other";
+        }
+
+        // ★ 瞬时网络错误（超时 / 连接被重置 / 代理抖动）：先原地立刻重试一次。
+        //   这类抖动往往几百毫秒就恢复了，而 5 秒退避会白丢一整轮 —— 面板上还看不出原因。
+        //   只重试一次；仍失败就走原来的退避，并把状态切成「重连中」。
+        if (err instanceof GameClientError && TRANSIENT_ERROR_CODES.has(err.code) && !quickRetried) {
+          quickRetried = true;
+          this.log.debug("保持在线", `瞬时网络错误（${describe(err)}），立刻重试一次`);
+          continue;
+        }
+
         const sec = clamp(BACKOFF_SEC[Math.min(backoffIdx, BACKOFF_SEC.length - 1)] ?? retrySec, 1, retrySec);
         backoffIdx++;
         this.setStatus("reconnecting", describe(err));
         this.log.warn("保持在线", `异常：${describe(err)}，${sec}s 后重试`);
-        await sleepUntil(Date.now() + sec * 1000, () => this.isAborted(), 800);
+        // ★ 退避加抖动：链路抖一下经常是"所有账号同时掉、同时重连"，固定 5/10/20 秒会让它们
+        //   永远同步着打代理（正是并发超时的来源）。抖动后各自散开，且不超过 retrySec。
+        const waitMs = Math.min(retrySec * 1000, jitter(sec * 1000));
+        await sleepUntil(Date.now() + waitMs, () => this.isAborted(), 800);
       }
     }
 

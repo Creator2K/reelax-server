@@ -6,12 +6,14 @@ import http from "node:http";
 import net from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  DIRECT_DISPATCHER_OPTIONS,
   ProxyDispatcherHolder,
   ProxyError,
   classifyProxyError,
   checkProxy,
   connectHostname,
   connectTarget,
+  createDirectDispatcher,
   createProxyDispatcher,
   describeProxyError,
   extractIp,
@@ -448,12 +450,18 @@ describe("ProxyDispatcherHolder", () => {
     expect(logs.some((l) => l.includes("切换"))).toBe(true);
   });
 
-  it("从有代理切回直连会清空并关闭旧 Agent", async () => {
+  it("★ 从有代理切回直连：旧 Agent 关掉，换成直连用的保活 Agent（不再是 undefined）", async () => {
     const h = new ProxyDispatcherHolder();
     h.set({ protocol: "http", host: "127.0.0.1", port: 8080, username: null, password: null });
-    expect(h.current).toBeDefined();
+    const proxied = h.current;
+    expect(proxied).toBeDefined();
+
     expect(h.set(null)).toBe(true);
-    expect(h.current).toBeUndefined();
+    // 直连也用我们自己的 dispatcher：undici 全局 agent 的 keepAliveTimeout 只有 4 秒，
+    // 短于钓鱼周期 6 秒 → 每轮都要重新 TCP+TLS 握手（抖动时更容易 connect timeout）
+    expect(h.current).toBeDefined();
+    expect(h.current).not.toBe(proxied);
+    expect(h.currentFingerprint).toBe("direct");
     await h.close();
   });
 
@@ -461,5 +469,20 @@ describe("ProxyDispatcherHolder", () => {
     const h = new ProxyDispatcherHolder();
     await expect(h.close()).resolves.toBeUndefined();
     await expect(h.close()).resolves.toBeUndefined();
+  });
+});
+
+describe("直连保活（链路抖动的常见来源）", () => {
+  it("★ 保活时间必须长于一个钓鱼周期（6 秒），否则每轮都要重新握手", () => {
+    expect(DIRECT_DISPATCHER_OPTIONS.keepAliveTimeout).toBeGreaterThan(6000);
+    expect(DIRECT_DISPATCHER_OPTIONS.keepAliveMaxTimeout).toBeGreaterThan(DIRECT_DISPATCHER_OPTIONS.keepAliveTimeout);
+    expect(DIRECT_DISPATCHER_OPTIONS.connectTimeout).toBeGreaterThanOrEqual(10_000);
+    expect(DIRECT_DISPATCHER_OPTIONS.pipelining).toBe(1);
+  });
+
+  it("createDirectDispatcher 造得出可用的 dispatcher", () => {
+    const d = createDirectDispatcher();
+    expect(d).toBeDefined();
+    expect(typeof (d as unknown as { dispatch?: unknown }).dispatch).toBe("function");
   });
 });

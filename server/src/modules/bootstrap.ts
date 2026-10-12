@@ -28,6 +28,8 @@ export function bootstrapModules(): void {
       statistics: rt.statistics,
       chests: rt.chests,
       lighthouse: rt.lighthouse,
+      // 同步健康度（近 10 分钟成功率 / 超时次数）：判断「结算变少」是不是链路问题
+      sync: rt.syncStats,
     }) as unknown as Record<string, unknown>,
   );
 }

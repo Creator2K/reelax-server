@@ -37,6 +37,25 @@ export class LogStore {
     for (const l of this.listeners) l();
   }
 
+  /**
+   * 用服务端最近日志回填（★ 刷新页面后不该什么都看不到）。
+   *
+   * 细节：
+   *  - **去重**：回填请求返回之前可能已经通过 WebSocket 收到同一条（键 = 时间+标签+内容）。
+   *  - **顺序**：统一按时间升序，实时条目天然在后面。
+   *  - **上限**：仍然只保留最近 `limit` 条（默认 1000，每个用户各自一份页面缓冲）。
+   */
+  seed(entries: LogEntry[]): void {
+    if (!entries.length) return;
+    const keyOf = (e: LogEntry) => `${e.t}|${e.tag}|${e.msg}`;
+    const seen = new Set(this.entries.map(keyOf));
+    const merged = [...entries.filter((e) => !seen.has(keyOf(e))), ...this.entries];
+    merged.sort((a, b) => a.t - b.t);
+    this.entries = merged.slice(-this.limit);
+    this.dirty = true;
+    for (const l of this.listeners) l();
+  }
+
   /** 清空（切换用户 / 退出登录时调用） */
   clear(): void {
     this.entries = [];

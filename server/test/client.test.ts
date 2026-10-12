@@ -5,7 +5,7 @@
 //     算法写错会表现为「所有请求都 403」，但没有明显提示。
 //  2) 行为层：用假 fetch 验证 proof 续期、失效重登、幂等键复用、错误分类。
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GameClient } from "../src/game/client.ts";
 import { GAME_ERROR_CODES, GameClientError } from "../src/game/errors.ts";
 
@@ -737,5 +737,65 @@ describe("登录被拒 vs 会话失效（曾经把口令错报成「会话已失
     // 业务接口被调了两次（失败 → 续期 → 重试），中间夹着一次 /api/me
     expect(stateCalls).toBe(2);
     expect(calls.some((u) => u.endsWith("/api/me"))).toBe(true);
+  });
+});
+
+/* ---------------- 单请求超时（per-request timeout） ---------------- */
+
+/**
+ * 钓鱼循环的周期约 6 秒。请求超时必须**真的短于一个周期**，否则一次卡住会吃掉好几轮
+ * （面板上的表现是「这个号结算杆数莫名变少」，日志里只有一句 timeout）。
+ *
+ * ★ 这里曾有个隐蔽的 bug：`opts.timeoutMs` 只被用在错误文案里，`raw()` 拿到的仍是默认 30s ——
+ *   也就是「per-request 超时」从未生效，而报错却写着 6s，排查时会以为已经生效了。
+ */
+describe("单请求超时", () => {
+  it("★ 同步用 6s，且真的传到了 raw（旧代码只改了错误文案）", async () => {
+    const { impl } = makeFetch(() => ({ body: { ok: true } }));
+    const c = newClient(impl);
+    // 先把会话准备好：否则第一个请求会是会话引导用的 /api/me（它不需要这个超时）
+    c.setProof(makeProof(Date.now() + 3_600_000));
+    const spy = vi.spyOn(c, "raw");
+
+    await c.fishingSync("k");
+
+    expect(spy).toHaveBeenCalled();
+    for (const call of spy.mock.calls) {
+      expect(call[0]).toBe("/api/fishing/sync");
+      expect((call[1] as { timeoutMs?: number } | undefined)?.timeoutMs).toBe(6000);
+    }
+    spy.mockRestore();
+  });
+
+  it("读状态 8s、开始/补杆 12s、其它接口沿用默认（不覆盖）", async () => {
+    const { impl } = makeFetch(() => ({ body: {} }));
+    const c = newClient(impl);
+    c.setProof(makeProof(Date.now() + 3_600_000));
+    const spy = vi.spyOn(c, "raw");
+
+    await c.fishingState();
+    expect((spy.mock.calls.at(-1)?.[1] as { timeoutMs?: number } | undefined)?.timeoutMs).toBe(8000);
+
+    await c.fishingStart();
+    expect((spy.mock.calls.at(-1)?.[1] as { timeoutMs?: number } | undefined)?.timeoutMs).toBe(12_000);
+
+    await c.fishingRefill();
+    expect((spy.mock.calls.at(-1)?.[1] as { timeoutMs?: number } | undefined)?.timeoutMs).toBe(12_000);
+
+    await c.statistics();
+    expect((spy.mock.calls.at(-1)?.[1] as { timeoutMs?: number } | undefined)?.timeoutMs).toBeUndefined();
+
+    spy.mockRestore();
+  });
+
+  it("超时错误里带上真实的超时值（排查时不会再被误导）", async () => {
+    const { impl } = makeFetch(() => ({ throwError: Object.assign(new Error("aborted"), { name: "TimeoutError" }) }));
+    const c = newClient(impl);
+    c.setProof(makeProof(Date.now() + 3_600_000));
+
+    await expect(c.fishingSync("k")).rejects.toMatchObject({
+      code: GAME_ERROR_CODES.TIMEOUT,
+      message: expect.stringContaining("6000"),
+    });
   });
 });

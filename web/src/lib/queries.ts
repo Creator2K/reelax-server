@@ -45,6 +45,20 @@ export type PityProgress = {
   ready: boolean;
 };
 
+/** 近 10 分钟同步健康度（服务端滚动窗口算好） */
+export type SyncHealth = {
+  windowSec: number;
+  attempts: number;
+  ok: number;
+  failed: number;
+  timeouts: number;
+  /** 0~100；没有样本时为 null（显示「—」，不是 100%） */
+  successRate: number | null;
+  lastOkAt: number | null;
+  lastErrorAt: number | null;
+  lastError: string | null;
+};
+
 export type StatusPanel = {
   biomeId: string | null;
   biomeName: string | null;
@@ -67,6 +81,8 @@ export type StatusPanel = {
   baitUnitPrice: number | null;
   /** 保底进度（拿不到的项不出现） */
   pity: PityProgress[];
+  /** 近 10 分钟的同步健康度（判断「结算变少」是不是链路问题） */
+  sync: SyncHealth | null;
   /** 当前是第几轮转生 */
   reincarnationRound?: number | null;
   fleet: { boatName: string | null; boatBiomeName: string | null; sameAsCurrent: boolean } | null;

@@ -34,6 +34,21 @@ const PROOF_REFRESH_MARGIN_MS = 60_000;
 /** 默认前端版本（游戏版本更新后可在账号配置里覆盖） */
 const DEFAULT_FRONTEND_VERSION = "0.24.3";
 
+/**
+ * 单次请求超时（毫秒）。
+ *
+ * ★ 为什么要分开：钓鱼循环的周期是 `run.cycleDurationMs`（约 6 秒）。如果同步请求能挂到
+ *   默认的 30 秒，一次卡住就吃掉五轮 —— 面板上表现为「结算杆数莫名变少」，日志里只有
+ *   一句 timeout。所以：
+ *     · 收竿同步   → 必须短于一个周期（6s），失败就立刻走重试/退避
+ *     · 读状态     → 略宽松（8s）
+ *     · 开始/补杆  → 低频动作，允许更慢（12s）
+ *   其它接口沿用 30s 兜底。
+ */
+const TIMEOUT_SYNC_MS = 6_000;
+const TIMEOUT_STATE_MS = 8_000;
+const TIMEOUT_MUTATE_MS = 12_000;
+
 export type GameClientOptions = {
   baseUrl: string;
   email?: string;
@@ -258,7 +273,9 @@ export class GameClient {
 
       let resp: Response;
       try {
-        resp = await this.raw(path, { method, headers, body: opts.body !== undefined ? bodyStr : undefined });
+        // ★ 必须把单请求超时传下去：早期只把它用在错误文案里（raw 里仍用默认 30s），
+        //   于是“per-request 超时”其实从未生效。
+        resp = await this.raw(path, { method, headers, body: opts.body !== undefined ? bodyStr : undefined, timeoutMs: opts.timeoutMs });
       } catch (err) {
         throw this.toNetworkError(err, opts.timeoutMs);
       }
@@ -343,22 +360,25 @@ export class GameClient {
     return this.request("/api/me");
   }
   fishingState() {
-    return this.request("/api/fishing/state");
+    // 每轮循环的第一件事；卡住同样会拖掉一整个周期
+    return this.request("/api/fishing/state", { timeoutMs: TIMEOUT_STATE_MS });
   }
   fishingStart() {
-    return this.request("/api/fishing/start", { method: "POST", idempotent: true });
+    return this.request("/api/fishing/start", { method: "POST", idempotent: true, timeoutMs: TIMEOUT_MUTATE_MS });
   }
   fishingStop() {
-    return this.request("/api/fishing/stop", { method: "POST", idempotent: true });
+    return this.request("/api/fishing/stop", { method: "POST", idempotent: true, timeoutMs: TIMEOUT_MUTATE_MS });
   }
   fishingRefill() {
-    return this.request("/api/fishing/refill", { method: "POST", idempotent: true });
+    return this.request("/api/fishing/refill", { method: "POST", idempotent: true, timeoutMs: TIMEOUT_MUTATE_MS });
   }
   fishingSync(snapshotKey?: string) {
+    // ★ 收竿同步用比周期更短的超时：失败要能在一个周期内进入重试，而不是把几轮都挂住
     return this.request("/api/fishing/sync", {
       method: "POST",
       idempotent: true,
       extraHeaders: { "X-Fishing-Run-Snapshot-Key": snapshotKey || "missing" },
+      timeoutMs: TIMEOUT_SYNC_MS,
     });
   }
   biomes() {

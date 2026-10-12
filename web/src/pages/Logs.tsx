@@ -6,6 +6,8 @@ import { Input } from "@/components/ui/input.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { useLiveLogs, type Account } from "@/lib/queries.ts";
 import { useAccounts } from "@/lib/queries.ts";
+import { useRealtime, type LogEntry } from "@/lib/realtime.tsx";
+import { api } from "@/lib/api.ts";
 import { cn, fmtClock } from "@/lib/utils.ts";
 
 const LEVELS = ["debug", "info", "warn", "error"] as const;
@@ -27,14 +29,39 @@ const LEVEL_LABEL: Record<Level, string> = {
 
 export default function LogsPage() {
   const logs = useLiveLogs();
+  const { logStore } = useRealtime();
   const { data: accounts } = useAccounts();
   const [minLevel, setMinLevel] = useState<Level>("debug");
   const [search, setSearch] = useState("");
   const [accountId, setAccountId] = useState("");
   const [follow, setFollow] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const seededRef = useRef(false);
 
-  usePageHeader("运行日志", "实时推送，页面上最多保留最近 1000 条");
+  usePageHeader("运行日志", "实时推送；刷新页面会自动回填最近 1000 条");
+
+  /**
+   * ★ 刷新后回填：以前刷新一下就空白了（日志只存在浏览器内存里，全靠 WebSocket 现推）。
+   *
+   * 走**数据库历史**而不是内存缓冲：内存缓冲是全局 5000 条（多个账号一起写，开久了
+   * 只剩最近几分钟），而数据库里每个用户保留 2 万条，能稳定给满 1000 条。
+   */
+  useEffect(() => {
+    if (seededRef.current) return;
+    seededRef.current = true;
+    let cancelled = false;
+    void api
+      .get<LogEntry[]>("/api/logs", { history: 1, limit: 1000 })
+      .then((list) => {
+        if (!cancelled && Array.isArray(list)) logStore.seed(list);
+      })
+      .catch(() => {
+        /* 回填失败不影响实时流 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [logStore]);
 
   const accountName = useMemo(() => {
     const map = new Map<string, string>();
@@ -133,15 +160,25 @@ export default function LogsPage() {
               {filtered.map((e, i) => {
                 const who = [e.moduleId, e.accountId ? accountName.get(e.accountId) : null].filter(Boolean).join(" ");
                 return (
-                  <li key={`${e.t}-${i}`} className="flex gap-3 px-3 py-1.5">
-                    <span className="text-muted-foreground shrink-0 tabular-nums">{fmtClock(e.t)}</span>
-                    <span className={cn("w-8 shrink-0", LEVEL_CLASS[e.level])}>{LEVEL_LABEL[e.level]}</span>
-                    <span className="text-muted-foreground w-28 shrink-0 truncate" title={who}>
-                      {who || "—"}
-                    </span>
-                    <span className="text-muted-foreground w-16 shrink-0 truncate" title={e.tag}>
-                      {e.tag}
-                    </span>
+                  // 手机：元信息一行 + 消息整行铺满（原来 4 个固定宽度列会把消息挤成一两个字宽，
+                  // 中文就会被竖着排成一列）；桌面：sm:contents 让包装层"消失"，回到原来的多列一行
+                  <li
+                    key={`${e.t}-${i}`}
+                    className="flex flex-col gap-0.5 px-3 py-1.5 sm:flex-row sm:gap-3"
+                  >
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 sm:contents">
+                      <span className="text-muted-foreground shrink-0 tabular-nums">{fmtClock(e.t)}</span>
+                      <span className={cn("w-8 shrink-0", LEVEL_CLASS[e.level])}>{LEVEL_LABEL[e.level]}</span>
+                      <span
+                        className="text-muted-foreground max-w-36 shrink-0 truncate sm:w-28"
+                        title={who}
+                      >
+                        {who || "—"}
+                      </span>
+                      <span className="text-muted-foreground max-w-24 shrink-0 truncate sm:w-16" title={e.tag}>
+                        {e.tag}
+                      </span>
+                    </div>
                     <span className={cn("min-w-0 flex-1 break-words whitespace-pre-wrap", LEVEL_CLASS[e.level])}>
                       {e.msg}
                     </span>

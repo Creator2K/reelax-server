@@ -532,6 +532,29 @@ function maybeWrapTls(
 }
 
 /**
+ * dispatcher 的连接保活参数。
+ *
+ * ★ 为什么要显式设置：undici 全局 agent 的 `keepAliveTimeout` 默认只有 **4 秒**，
+ *   而钓鱼周期约 6 秒 —— 也就是**每个周期都要重新做一次 TCP + TLS 握手**：
+ *   慢、而且链路抖动时更容易 connect timeout（表现为「结算杆数莫名比别的号少」）。
+ *   30 秒保活之后，周期之间复用同一条连接。
+ */
+const KEEPALIVE_TIMEOUT_MS = 30_000;
+const KEEPALIVE_MAX_TIMEOUT_MS = 120_000;
+
+/** 直连用的 dispatcher（长连接保活；没有代理时也用它，而不是全局默认 agent） */
+export const DIRECT_DISPATCHER_OPTIONS = {
+  keepAliveTimeout: KEEPALIVE_TIMEOUT_MS,
+  keepAliveMaxTimeout: KEEPALIVE_MAX_TIMEOUT_MS,
+  connectTimeout: DEFAULT_CONNECT_TIMEOUT_MS,
+  pipelining: 1,
+} as const;
+
+export function createDirectDispatcher(): Dispatcher {
+  return new Agent({ ...DIRECT_DISPATCHER_OPTIONS });
+}
+
+/**
  * 按代理配置造一个 dispatcher。
  * 无代理时返回 undefined —— 调用方此时应使用全局默认 dispatcher（直连）。
  */
@@ -544,8 +567,8 @@ export function createProxyDispatcher(config: ProxyConfig | null): Dispatcher | 
   const options = {
     connect,
     pipelining: 1,
-    keepAliveTimeout: 10_000,
-    keepAliveMaxTimeout: 30_000,
+    keepAliveTimeout: KEEPALIVE_TIMEOUT_MS,
+    keepAliveMaxTimeout: KEEPALIVE_MAX_TIMEOUT_MS,
     connectTimeout: DEFAULT_CONNECT_TIMEOUT_MS,
   } as unknown as ConstructorParameters<typeof Agent>[0];
 
@@ -581,7 +604,9 @@ export class ProxyDispatcherHolder {
     this.fingerprint = next;
 
     if (!config) {
-      this.dispatcher = undefined;
+      // ★ 直连也要用**我们自己的** dispatcher（而不是 undici 全局默认 agent）：
+      //   全局 agent 的 keepAliveTimeout 只有 4 秒 < 钓鱼周期 6 秒 → 每轮都重新握手。
+      this.dispatcher = createDirectDispatcher();
     } else {
       this.dispatcher = createProxyDispatcher(config);
     }

@@ -30,8 +30,12 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
  *  - nextCastAt 故意给「已经过期」，这样循环会立刻走到 sync（否则要等 60 秒）
  *  - stateDelayMs / syncDelayMs / meDelayMs 用来制造「请求在飞」的窗口
  */
-function makeGameFetch(opts: { meDelayMs?: number; syncDelayMs?: number } = {}) {
+function makeGameFetch(opts: { meDelayMs?: number; syncDelayMs?: number; syncFailsOnce?: boolean; overdueSyncs?: number } = {}) {
   const calls: string[] = [];
+  let syncFailed = false;
+  let syncCount = 0;
+  /** 前几次 state 把 nextCastAt 说成「已过期」，让循环立刻走到 sync；之后给未来时间，避免测试里空转 */
+  const overdue = opts.overdueSyncs ?? 1;
   const json = (body: unknown) =>
     new Response(JSON.stringify(body), {
       status: 200,
@@ -61,14 +65,19 @@ function makeGameFetch(opts: { meDelayMs?: number; syncDelayMs?: number } = {}) 
           id: "run-1",
           status: "running",
           cycleDurationMs: 60_000,
-          // 已经到期 → sleepUntil 立即返回，循环马上进入 sync
-          nextCastAt: new Date(Date.now() - 1_000).toISOString(),
+          nextCastAt: new Date(syncCount < overdue ? Date.now() - 1_000 : Date.now() + 60_000).toISOString(),
           totalCasts: 10,
           remainingCasts: 9,
         },
       });
     }
     if (path === "/api/fishing/sync") {
+      syncCount++;
+      // 模拟一次瞬时超时（代理抖动最常见的样子）
+      if (opts.syncFailsOnce && !syncFailed) {
+        syncFailed = true;
+        throw Object.assign(new Error("Connect Timeout Error (timeout: 10000ms)"), { name: "TimeoutError" });
+      }
       if (opts.syncDelayMs) await sleep(opts.syncDelayMs);
       return json({
         run: {
@@ -100,7 +109,8 @@ describe("停止时在飞的请求不能把状态改回 online", () => {
       expect(rt.status).toBe("online");
 
       // 等到循环真的进入 sync（此时请求会挂 2500ms）
-      await waitFor(() => calls.includes("/api/fishing/sync"));
+      // 超时给宽一点：引擎启动有 0~1.5s 的随机错峰
+      await waitFor(() => calls.includes("/api/fishing/sync"), 4000);
 
       // stop 最多等 2 秒就会返回，而请求还要 ~450ms 才回来 —— 正是出问题的窗口
       await rt.stop("测试停止");
@@ -137,6 +147,35 @@ describe("启动过程中被停止不能「复活」", () => {
       expect(rt.status).toBe("stopped");
       expect(rt.moduleInstances).toEqual([]);
       expect(app.repos.accounts.findById(accountId)?.status).toBe("stopped");
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("瞬时网络错误：立刻重试一次（不退避 5 秒）", () => {
+  it("★ 第一次同步超时 → 秒级内重试成功，且健康度里记到这次超时", async () => {
+    const { impl, calls } = makeGameFetch({ syncFailsOnce: true, overdueSyncs: 2 });
+    const app = await buildFullApp({ fetchImpl: impl });
+    try {
+      const { id: userId } = app.seedApprovedUser("quick1@example.com");
+      const accountId = app.seedAccount(userId, "瞬时重试");
+      const rt = app.registry.require(accountId);
+
+      const t0 = Date.now();
+      await rt.start();
+      await waitFor(() => calls.filter((c) => c === "/api/fishing/sync").length >= 2, 4000);
+      const elapsed = Date.now() - t0;
+
+      // 退避第一档是 5 秒 → 秒级内就出现第二次同步，说明走的是「立刻重试」
+      expect(elapsed).toBeLessThan(4000);
+      // 没有因为一次抖动就被切成「重连中」（那会让界面闪一下，看上去像掉线）
+      expect(rt.status).toBe("online");
+      const s = rt.syncStats;
+      expect(s.timeouts).toBe(1);
+      expect(s.ok).toBeGreaterThanOrEqual(1);
+
+      await rt.stop("测试结束");
     } finally {
       await app.close();
     }

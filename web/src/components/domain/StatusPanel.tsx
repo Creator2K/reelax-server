@@ -23,7 +23,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.t
 import { Badge } from "@/components/ui/badge.tsx";
 import { Separator } from "@/components/ui/separator.tsx";
 import { StatCard, ProgressBar } from "@/components/domain/StatCard.tsx";
-import type { PityProgress, StatusPanel } from "@/lib/queries.ts";
+import type { PityProgress, StatusPanel, SyncHealth } from "@/lib/queries.ts";
 import { fmtCompact, fmtExact, fmtNum, fmtPct, fmtRelative } from "@/lib/utils.ts";
 
 /** 等级上限（游戏内满级）。用于等级进度条。 */
@@ -339,8 +339,59 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
             </details>
           </>
         ) : null}
+
+        {/* ---------- 同步健康度（近 10 分钟） ---------- */}
+        {panel.sync && panel.sync.attempts > 0 ? (
+          <>
+            <Separator />
+            <SyncHealthSection health={panel.sync} />
+          </>
+        ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * 链路质量：近 10 分钟的同步成功率 / 超时次数。
+ *
+ * 为什么值得单独一块：链路抖动时的**唯一表现**常常只是「这个号结算杆数比别的号少」，
+ * 而日志里是一堆 connect timeout。有这块就能直接判断该去修代理，还是去调玩法配置。
+ */
+function SyncHealthSection({ health }: { health: SyncHealth }) {
+  const rate = health.successRate;
+  const tone =
+    rate === null
+      ? "bg-muted"
+      : rate >= 95
+        ? "bg-emerald-500/10 ring-1 ring-emerald-500/25"
+        : rate >= 80
+          ? "bg-amber-500/10 ring-1 ring-amber-500/25"
+          : "bg-rose-500/10 ring-1 ring-rose-500/25";
+
+  return (
+    <div className={`rounded-2xl px-3.5 py-3 ${tone}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 text-xs font-medium">
+          <IconGauge className="size-3.5" />
+          链路（近 {Math.round(health.windowSec / 60)} 分钟同步）
+        </span>
+        <span className="text-sm font-semibold tabular-nums">{rate === null ? "—" : `${rate}%`}</span>
+      </div>
+      <div className="text-muted-foreground mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px]">
+        <span>尝试 {health.attempts}</span>
+        <span>成功 {health.ok}</span>
+        <span>失败 {health.failed}</span>
+        <span className={health.timeouts > 0 ? "text-amber-600 dark:text-amber-500" : undefined}>
+          超时 {health.timeouts}
+        </span>
+      </div>
+      {health.lastError ? (
+        <div className="text-muted-foreground mt-1 text-[11px] break-words">
+          最近一次失败{health.lastErrorAt ? `（${fmtRelative(health.lastErrorAt)}）` : ""}：{health.lastError}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

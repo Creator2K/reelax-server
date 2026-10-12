@@ -25,6 +25,16 @@ import { weatherMultiplier, weatherName } from "../keep-online/xp-multiplier.ts"
 
 const GOLDEN_WEATHER_ID = "gilded_current";
 
+/** 比赛的终态：这些状态下的场次不能再当成「该去的比赛图」 */
+const TERMINAL_TOURNAMENT_STATUSES = new Set(["ended", "finished", "settled", "settling", "canceled", "cancelled", "closed"]);
+
+/**
+ * 已经开赛、但接口状态还没翻成 active 的宽限窗口。
+ * 只用于 `upcoming` 里的场次：比这更早的（startAt 更久以前）一律当历史场次丢掉 ——
+ * 否则打完之后它还会一直霸占最高优先级，人就永远不回天气图了。
+ */
+const STARTED_GRACE_MS = 10 * 60_000;
+
 /** 三个优先级（与官方航线助手一致） */
 export type Priority = "competition" | "golden" | "experience";
 
@@ -320,31 +330,50 @@ const definition: ModuleDefinition = {
         ctx.api.guildTournamentsOverview().catch(() => null),
       ]);
 
-      const soon = (t: any, key: string) => {
-        if (!t?.[key] || t.status !== "scheduled" || !t.startAt) return false;
-        return Date.parse(String(t.startAt)) - now <= leadMs;
+      /**
+       * 这场值不值得为它换图（★ 三处校验缺一不可 —— 这里踩过坑：
+       * 比赛结束后人永远留在比赛图，天气再好也不切）：
+       *
+       *  1. `status` 不能是终态（ended / settled / settling…）。旧版 `current` 只看
+       *     `isRegistered`，于是「已结束但仍是 current」的场次会一直算「进行中」。
+       *  2. 开赛时间必须**有下界**。只判 `startAt - now <= leadMs` 的话，**任何历史场次**
+       *     都满足（过去越久差得越负），于是 `upcoming` 里残留的旧场次会永久霸占最高优先级。
+       *  3. 公会赛看 `entryStatus` 只代表「我报了名」，同样得配状态与时间判断。
+       */
+      const worthy = (t: any, registeredKey: string): boolean => {
+        if (!t?.[registeredKey]) return false;
+        const status = String(t?.status ?? "").toLowerCase();
+        if (TERMINAL_TOURNAMENT_STATUSES.has(status)) return false;
+        if (status === "active") return true;
+        if (status && status !== "scheduled") return false; // 不认识的中间状态不当目标
+        const at = Date.parse(String(t?.startAt ?? ""));
+        if (!Number.isFinite(at)) return false;
+        const delta = at - now;
+        return delta <= leadMs && delta > -STARTED_GRACE_MS;
       };
+      /** 日志里说清是「进行中」还是「即将开赛」 */
+      const phase = (t: any) => (String(t?.status ?? "").toLowerCase() === "active" ? "进行中" : "即将开赛");
 
       const cur = personal?.current;
-      if (cur?.isRegistered) {
+      if (worthy(cur, "isRegistered")) {
         const biomeId = cur.assignedBiomeId ?? cur.biomeId;
-        if (biomeId) return { biomeId, why: `个人赛 #${cur.sequence} 进行中` };
+        if (biomeId) return { biomeId, why: `个人赛 #${cur.sequence} ${phase(cur)}` };
       }
       for (const t of personal?.upcoming ?? []) {
-        if (t?.isRegistered && soon(t, "isRegistered")) {
+        if (worthy(t, "isRegistered")) {
           const biomeId = t.assignedBiomeId ?? t.biomeId;
-          if (biomeId) return { biomeId, why: `个人赛 #${t.sequence} 即将开赛` };
+          if (biomeId) return { biomeId, why: `个人赛 #${t.sequence} ${phase(t)}` };
         }
       }
       const gcur = guild?.current;
-      if (gcur?.entryStatus) {
+      if (worthy(gcur, "entryStatus")) {
         const biomeId = gcur.assignedBiomeId ?? gcur.biomeId;
-        if (biomeId) return { biomeId, why: `公会赛 #${gcur.sequence} 进行中` };
+        if (biomeId) return { biomeId, why: `公会赛 #${gcur.sequence} ${phase(gcur)}` };
       }
       for (const t of guild?.upcoming ?? []) {
-        if (t?.entryStatus && soon(t, "entryStatus")) {
+        if (worthy(t, "entryStatus")) {
           const biomeId = t.assignedBiomeId ?? t.biomeId;
-          if (biomeId) return { biomeId, why: `公会赛 #${t.sequence} 即将开赛` };
+          if (biomeId) return { biomeId, why: `公会赛 #${t.sequence} ${phase(t)}` };
         }
       }
       return null;

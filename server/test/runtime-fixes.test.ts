@@ -11,6 +11,7 @@ import type { ModuleDefinition } from "../src/modules/types.ts";
 import { statIndex } from "../src/modules/auto-stats/index.ts";
 import { isFreshDay, isReportDue, parseReportAt } from "../src/modules/daily-digest/index.ts";
 import { shouldSnapshot, SNAPSHOT_INTERVAL_MS } from "../src/lib/maintenance.ts";
+import { randomStaggerMs } from "../src/lib/util.ts";
 
 let app: FullApp;
 let admin: ReturnType<FullApp["seedApprovedUser"]>;
@@ -307,5 +308,65 @@ describe("登录态有效期是运行时设置（曾经冻结在启动值）", (
 
     // 收尾：还原成 30 天，避免影响同文件其他用例
     await app.patch("/api/admin/settings", { patch: { sessionTtlDays: 30 } }, admin.jar);
+  });
+});
+
+/* ==================== 链路抖动排查：同步健康度 + 启动错峰 ==================== */
+
+describe("同步健康度窗口 + 启动错峰（链路抖动排查用）", () => {
+  it("★ 没有样本时 successRate 是 null（面板显示「—」，不能谎报 100%）", () => {
+    const { id: userId } = app.seedApprovedUser("health0@example.com");
+    const accountId = app.seedAccount(userId, "健康度0");
+    const rt = app.registry.require(accountId);
+
+    const s = rt.syncStats;
+    expect(s.attempts).toBe(0);
+    expect(s.successRate).toBeNull();
+    expect(s.lastOkAt).toBeNull();
+  });
+
+  it("★ 成功 / 失败 / 超时分别计数，成功率按窗口内样本算", () => {
+    const { id: userId } = app.seedApprovedUser("health1@example.com");
+    const accountId = app.seedAccount(userId, "健康度1");
+    const rt = app.registry.require(accountId);
+
+    rt.reportSync({ run: null, settlement: null });
+    rt.reportSync({ run: null, settlement: null });
+    rt.reportSyncFailure(false, new Error("ECONNRESET"));
+    rt.reportSyncFailure(true, new Error("Connect Timeout Error"));
+
+    const s = rt.syncStats;
+    expect(s.attempts).toBe(4);
+    expect(s.ok).toBe(2);
+    expect(s.failed).toBe(2);
+    expect(s.timeouts).toBe(1);
+    expect(s.successRate).toBe(50);
+    expect(s.lastOkAt).not.toBeNull();
+    expect(s.lastError).toContain("Connect Timeout");
+  });
+
+  it("★ 窗口是滚动的：10 分钟以外的样本不再计入（抖过一阵、现在好了要能看出来）", () => {
+    const { id: userId } = app.seedApprovedUser("health2@example.com");
+    const accountId = app.seedAccount(userId, "健康度2");
+    const rt = app.registry.require(accountId);
+
+    rt.reportSync({ run: null, settlement: null });
+    const samples = (rt as unknown as { syncSamples: { t: number }[] }).syncSamples;
+    for (const smp of samples) smp.t = Date.now() - 11 * 60_000;
+
+    const s = rt.syncStats;
+    expect(s.attempts).toBe(0);
+    expect(s.successRate).toBeNull();
+  });
+
+  it("randomStaggerMs 落在 [0, max) 内，非法 max 退化为 0", () => {
+    for (let i = 0; i < 50; i++) {
+      const v = randomStaggerMs(8000);
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThan(8000);
+    }
+    expect(randomStaggerMs(0)).toBe(0);
+    expect(randomStaggerMs(-1)).toBe(0);
+    expect(randomStaggerMs(Number.NaN)).toBe(0);
   });
 });

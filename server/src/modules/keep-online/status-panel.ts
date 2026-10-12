@@ -103,6 +103,9 @@ export type StatusPanel = {
   /** 保底进度（稀有鱼 / 宝箱 / 神器），拿不到的项不出现 */
   pity: PityProgressView[];
 
+  /** 同步健康度（近 10 分钟）：一眼看出「结算少」是不是链路问题 */
+  sync: SyncHealthView | null;
+
   fleet: {
     boatName: string | null;
     boatBiomeId: string | null;
@@ -141,6 +144,27 @@ export type StatusPanelInputs = {
   chests?: any;
   /** GET /api/lighthouse-lottery 的响应（神器保底） */
   lighthouse?: any;
+  /** 同步健康度（由 AccountRuntime 提供；纯函数不自己去算） */
+  sync?: SyncHealthView | null;
+};
+
+/**
+ * 同步健康度：近 10 分钟的同步尝试 / 成功 / 超时。
+ *
+ * 为什么放在状态面板：链路抖动时表现只是「结算杆数变少」，日志里却是一堆 connect timeout，
+ * 得自己数。有了这个窗口，能直接区分「链路问题」与「配置/玩法问题」。
+ */
+export type SyncHealthView = {
+  windowSec: number;
+  attempts: number;
+  ok: number;
+  failed: number;
+  timeouts: number;
+  /** 0~100；**没有样本时为 null**（界面显示「—」，不能谎报 100%） */
+  successRate: number | null;
+  lastOkAt: number | null;
+  lastErrorAt: number | null;
+  lastError: string | null;
 };
 
 /**
@@ -359,6 +383,8 @@ export function buildStatusPanel(inputs: StatusPanelInputs): StatusPanel {
       chestPityOf(chests),
       lighthousePityOf(lighthouse),
     ].filter((p): p is PityProgressView => p !== null),
+
+    sync: inputs.sync ?? null,
 
     fleet,
 

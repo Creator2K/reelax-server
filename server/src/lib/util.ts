@@ -6,6 +6,19 @@ export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 /** 抖动：在 [0.5x, 1.5x] 之间随机，用于模拟真人节奏 */
 export const jitter = (ms: number): number => Math.round(ms * (0.5 + Math.random()));
 
+/**
+ * 启动错峰：返回 [0, maxMs] 的随机毫秒数。
+ *
+ * 多个账号同时启动（开机恢复、一起点「启动」、或代理抖动后集体重连）会同时打代理，
+ * 而廉价代理常有并发连接数上限 —— 互相把对方拖成 connect timeout。
+ * 把它抽成纯函数是为了能测边界（永远落在 [0, max] 内、max 非法时退化为 0）。
+ */
+export const randomStaggerMs = (maxMs: number): number => {
+  const max = Number.isFinite(maxMs) && maxMs > 0 ? Math.floor(maxMs) : 0;
+  if (max === 0) return 0;
+  return Math.floor(Math.random() * max);
+};
+
 export const clamp = (v: number, min: number, max: number): number => Math.min(max, Math.max(min, v));
 
 /** 12 字节随机 id（与旧实现一致，24 位十六进制） */
