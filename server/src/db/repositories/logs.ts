@@ -106,10 +106,10 @@ export class LogsRepo extends BaseRepo {
     const params: (string | number)[] = [];
 
     if (scopeUserId) {
-      // ★ 与内存路径（Logger.recent）保持一致：自己的 + 无归属的系统级日志。
-      //   系统级日志（服务启动、数据库迁移、引擎摘要）故意不设 user_id，对所有用户可见，
-      //   而且不含任何用户数据。少了这一条，"刷新回填"会比"实时"少掉启动那几行。
-      where.push("(user_id = ? OR user_id IS NULL)");
+      // ★ 用户路径只返回自己的日志（与内存路径 Logger.recent 口径一致）。
+      //   系统级日志（user_id IS NULL：服务启动、迁移、引擎摘要）不给普通用户看 ——
+      //   它们没有归属，展示出来就像"看到了别人的东西"，那是管理员日志页的职责。
+      where.push("user_id = ?");
       params.push(scopeUserId);
     }
     if (opts.accountId) {

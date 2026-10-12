@@ -33,19 +33,19 @@ describe("运行日志 API", () => {
     expect(r.body.find((e) => e.msg === "第 0 条")?.accountId).toBe(accountId);
   });
 
-  it("★ 只看得到自己的日志 + 系统级（别人一条都拿不到）", async () => {
+  it("★ 只看得到自己的日志（别人的、系统级的一条都没有）", async () => {
     const A = app.seedApprovedUser("logs-a2@example.com");
     const B = app.seedApprovedUser("logs-b2@example.com");
     app.repos.logs.insert({ userId: A.id, level: "info", tag: "测试", msg: "甲的日志" });
     app.repos.logs.insert({ userId: B.id, level: "info", tag: "测试", msg: "乙的日志" });
-    // 无归属（系统级）的日志：服务启动/迁移这类，对所有用户可见、且不含用户数据
+    // 无归属（系统级）的日志：服务启动/迁移这类，**只在管理员日志页可见**
     app.repos.logs.insert({ userId: null, level: "error", tag: "系统", msg: "系统级日志" });
 
     const rb = await app.get<Entry[]>("/api/logs?history=1&limit=1000", B.jar);
     const msgs = rb.body.map((e) => e.msg);
     expect(msgs).toContain("乙的日志");
-    expect(msgs).toContain("系统级日志");
-    expect(msgs).not.toContain("甲的日志"); // ★ 别人的一条都不能有
+    expect(msgs).not.toContain("甲的日志"); // ★ 别人的不能有
+    expect(msgs).not.toContain("系统级日志"); // ★ 系统级也不给普通用户看（用户反馈过"怎么显示管理员的东西"）
   });
 
   it("limit 允许到 1000，超过就拒绝（前端一次拉满 1000 条）", async () => {
@@ -59,11 +59,14 @@ describe("运行日志 API", () => {
     // 测试环境的 Logger 只记 error 及以上（保持测试安静），所以这里用 error 级别
     app.logger.push("error", "测试", "内存里的甲日志", { userId: A.id });
     app.logger.push("error", "测试", "内存里的乙日志", { userId: "别的人" });
+    app.logger.push("error", "测试", "内存里的系统日志");
 
     const r = await app.get<Entry[]>("/api/logs?limit=100&level=error", A.jar);
     expect(r.status).toBe(200);
     expect(r.body.some((e) => e.msg === "内存里的甲日志")).toBe(true);
     expect(r.body.some((e) => e.msg === "内存里的乙日志")).toBe(false);
+    // 系统级（无归属）也不出现在普通用户的实时视图里
+    expect(r.body.some((e) => e.msg === "内存里的系统日志")).toBe(false);
   });
 
   it("按级别筛选：只要 warn 以上时 info 不返回", async () => {
@@ -94,10 +97,10 @@ describe("运行日志 API", () => {
     // 甲的没了
     const a = await app.get<Entry[]>("/api/logs?history=1&limit=1000", A.jar);
     expect(a.body.some((e) => e.msg === "甲要清掉的")).toBe(false);
-    // 别人的与系统级的都还在
+    // 别人的与系统级的日志都还在（只是普通用户看不到系统级）
     const b = await app.get<Entry[]>("/api/logs?history=1&limit=1000", B.jar);
     expect(b.body.some((e) => e.msg === "乙的日志")).toBe(true);
-    expect(b.body.some((e) => e.msg === "系统级日志")).toBe(true);
+    expect(b.body.some((e) => e.msg === "系统级日志")).toBe(false);
     // 内存缓冲同样只丢自己的
     expect(app.logger.recent({ userId: A.id, limit: 100 }).some((e) => e.msg === "甲的内存日志")).toBe(false);
     expect(app.logger.recent({ userId: B.id, limit: 100 }).some((e) => e.msg === "乙的内存日志")).toBe(true);

@@ -177,10 +177,11 @@ export class RunnerRegistry {
         started++;
       } catch (err) {
         failed++;
-        this.deps.logger.warn(
-          "引擎",
-          `账号「${rt.label}」自动启动失败：${err instanceof Error ? err.message : String(err)}`,
-        );
+        // ★ 带上该账号的归属：这是"某个用户的账号起不来"，
+        //   应该出现在那个用户的运行日志里，而不是变成所有人都看不到的系统日志
+        this.deps.logger
+          .child({ userId: rt.userId, accountId: rt.accountId })
+          .warn("引擎", `账号「${rt.label}」自动启动失败：${err instanceof Error ? err.message : String(err)}`);
       }
     }
     return { started, failed };

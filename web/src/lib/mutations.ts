@@ -432,6 +432,17 @@ export type UpdateCheck = {
   updaterAvailable: boolean;
   /** updater 的更新模式：git = 本机构建；pull = 拉预构建镜像；拿不到为 null */
   updaterMode: "git" | "pull" | null;
+  /**
+   * 新版说明（"这次修了什么"）：服务端从仓库根目录的 `changelog.json` 取，
+   * 只包含**本地还没有的版本**；拿不到时是空数组（不影响更新提示本身）。
+   */
+  upcomingChanges: {
+    version: string;
+    date: string;
+    title: string;
+    notice?: string;
+    changes: { kind: "feature" | "improve" | "fix"; text: string }[];
+  }[];
   manualHint: string | null;
   note: string | null;
 };

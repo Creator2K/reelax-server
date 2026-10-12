@@ -22,9 +22,11 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
+import { Button } from "@/components/ui/button.tsx";
 import { StatCard, ProgressBar } from "@/components/domain/StatCard.tsx";
 import { CountingNumber } from "@/components/animate-ui/counting-number.tsx";
 import { api } from "@/lib/api.ts";
+import type { UpdateCheck } from "@/lib/mutations.ts";
 import { fmtDuration, fmtRelative } from "@/lib/utils.ts";
 
 type AdminUsersResponse = {
@@ -95,11 +97,14 @@ export function DashboardTab({
   myId,
   onGoUsers,
   onGoInvites,
+  onGoSettings,
 }: {
   myId: string;
   onGoUsers: () => void;
   /** 仪表盘里的待办可以直接跳到对应页签 */
   onGoInvites?: () => void;
+  /** 「有新版本」提示跳到设置页签（更新面板在那里） */
+  onGoSettings?: () => void;
 }) {
   // myId 目前只用于「最近动态」里标记自己；保留参数以免调用方按需扩展时改签名
   void myId;
@@ -118,6 +123,16 @@ export function DashboardTab({
   const sysQ = useQuery({
     queryKey: ["admin", "system"],
     queryFn: () => api.get<SystemInfo>("/api/admin/system"),
+  });
+  /**
+   * 版本检测：有新版时在概览最上面给一条提示（点「查看更新说明」跳到设置页签，
+   * 那里的更新面板会列出新版改了什么）。失败就静默 —— 它只是锦上添花。
+   */
+  const updateQ = useQuery({
+    queryKey: ["admin", "update", "check"],
+    queryFn: () => api.get<UpdateCheck>("/api/admin/update/check"),
+    staleTime: 5 * 60_000,
+    retry: false,
   });
 
   if (usersQ.isPending || sysQ.isPending) {
@@ -162,6 +177,22 @@ export function DashboardTab({
 
   return (
     <div className="space-y-4">
+      {/* ---------- 版本检测提示 ---------- */}
+      {updateQ.data?.hasUpdate ? (
+        <Alert variant="warn">
+          <IconAlertTriangle />
+          <AlertDescription className="flex flex-wrap items-center gap-2">
+            <span>
+              有新版本可用：{updateQ.data.latest?.short ?? "最新提交"} {updateQ.data.latest?.message ?? ""}
+              {updateQ.data.behindBy ? `（落后 ${updateQ.data.behindBy} 个提交）` : ""}
+            </span>
+            <Button variant="outline" size="sm" onClick={onGoSettings}>
+              查看更新说明
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       {/* ---------- 关键指标 ---------- */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard

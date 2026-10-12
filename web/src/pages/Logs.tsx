@@ -36,7 +36,7 @@ export default function LogsPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const seededRef = useRef(false);
 
-  usePageHeader("运行日志", "实时推送，最新在最上面；刷新页面会自动回填最近 1000 条");
+  usePageHeader("运行日志", "实时推送，最新在最上面");
 
   /**
    * ★ 刷新后回填：以前刷新一下就空白了（日志只存在浏览器内存里，全靠 WebSocket 现推）。

@@ -394,9 +394,6 @@ function SyncHealthSection({ health }: { health: SyncHealth }) {
           最近一次失败{health.lastErrorAt ? `（${fmtRelative(health.lastErrorAt)}）` : ""}：{health.lastError}
         </div>
       ) : null}
-      <div className="text-muted-foreground mt-1 text-[11px]">
-        每次失败都会在「运行日志」里留下记录（连续失败只记第 1 次与每 10 次，恢复时也有一条）
-      </div>
     </div>
   );
 }

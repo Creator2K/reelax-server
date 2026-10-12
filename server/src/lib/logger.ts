@@ -122,10 +122,11 @@ export class Logger {
     const min = LEVELS[opts.minLevel ?? "debug"];
     let out = this.buffer;
     if (opts.userId) {
-      // 带上 userId 时同时返回「该用户自己的」与「无归属的系统级」日志
-      // （服务启动、数据库迁移这类日志没有归属，对所有用户都该可见）。
-      // 关键：绝不会返回**其他用户**的日志。
-      out = out.filter((e) => e.userId === opts.userId || e.userId === null);
+      // ★ 只返回**该用户自己的**日志。
+      //   （早期这里把「无归属的系统级日志」也一并返回，理由是"服务启动对所有用户都该可见"——
+      //    实际效果是普通用户在运行日志页看到「服务已启动」「恢复 2 个自动启动账号」这类
+      //    引擎/管理信息，像是看到了别人的东西。现在系统级日志只在管理员日志页看。）
+      out = out.filter((e) => e.userId === opts.userId);
     }
     if (opts.accountId) out = out.filter((e) => e.accountId === opts.accountId);
     if (opts.moduleId) out = out.filter((e) => e.moduleId === opts.moduleId);

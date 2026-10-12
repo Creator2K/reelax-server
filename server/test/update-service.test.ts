@@ -482,3 +482,85 @@ describe("inferUpdateStep", () => {
     expect(inferUpdateStep({ running: true, mode: null, done: ["preflight"] })).toBe("git-pull");
   });
 });
+
+/* ==================== 新版说明（远端 changelog.json） ==================== */
+
+/**
+ * 面板要能说清"这次修了什么"。旧版本的服务端不可能知道新版本改了什么，
+ * 所以从仓库根目录的 `changelog.json` 取，挑出**本地还没有的版本**。
+ */
+describe("upcomingChanges（新版说明）", () => {
+  const GH_SHA = "abcdef1234567890abcdef1234567890abcdef12";
+  const ghBody = {
+    sha: GH_SHA,
+    commit: { message: "feat: 新功能", committer: { date: "2026-10-13T08:00:00Z", name: "Creator2K" } },
+  };
+  const mk = (fetchImpl: typeof fetch) =>
+    new UpdateService({
+      logger,
+      repoSlug: "Creator2K/reelax-server",
+      workDir: "/tmp/does-not-exist", // 没有 .git → 用 APP_COMMIT
+      updaterUrl: null,
+      allowLocalUpdate: false,
+      fetchImpl,
+    });
+
+  it("★ 只返回本地还没有的版本（本地已有的那些不重复展示）", async () => {
+    process.env.APP_COMMIT = "1111111111111111111111111111111111111111"; // 与远端不同 → hasUpdate
+    const { impl, calls } = fakeFetch((url) => {
+      if (url.includes("raw.githubusercontent.com")) {
+        return {
+          body: {
+            entries: [
+              { version: "1.4.0", date: "2026-10-13", title: "本地已有", changes: [{ kind: "fix", text: "旧的" }] },
+              { version: "9.9.9", date: "2026-11-01", title: "未来版", changes: [{ kind: "fix", text: "修了什么" }] },
+            ],
+          },
+        };
+      }
+      return { body: ghBody };
+    });
+
+    const r = await mk(impl).check();
+    expect(r.hasUpdate).toBe(true);
+    expect(r.upcomingChanges.map((e) => e.version)).toEqual(["9.9.9"]);
+    expect(r.upcomingChanges[0]?.changes[0]?.text).toBe("修了什么");
+    expect(calls.some((c) => c.url.includes("changelog.json"))).toBe(true);
+  });
+
+  it("没有更新时不去取，也不展示", async () => {
+    process.env.APP_COMMIT = GH_SHA; // 与远端一致 → 没有更新
+    const { impl, calls } = fakeFetch(() => ({ body: ghBody }));
+
+    const r = await mk(impl).check();
+    expect(r.hasUpdate).toBe(false);
+    expect(r.upcomingChanges).toEqual([]);
+    expect(calls.some((c) => c.url.includes("changelog.json"))).toBe(false);
+  });
+
+  it("远端文件取不到（404 / 超时）只是空数组，不影响「有更新」的判断", async () => {
+    process.env.APP_COMMIT = "2222222222222222222222222222222222222222";
+    const { impl } = fakeFetch((url) => {
+      if (url.includes("raw.githubusercontent.com")) return { status: 404, body: "" };
+      return { body: ghBody };
+    });
+
+    const r = await mk(impl).check();
+    expect(r.hasUpdate).toBe(true);
+    expect(r.upcomingChanges).toEqual([]);
+  });
+
+  it("远端文件形状不对（不是数组 / 缺字段）时挑得出来，不炸", async () => {
+    process.env.APP_COMMIT = "3333333333333333333333333333333333333333";
+    const { impl } = fakeFetch((url) => {
+      if (url.includes("raw.githubusercontent.com")) {
+        return { body: { entries: [null, "x", { version: "9.9.9" }, { version: "8.8.8", changes: [] }] } };
+      }
+      return { body: ghBody };
+    });
+
+    const r = await mk(impl).check();
+    // 只有 version + changes 都对的那条被采纳
+    expect(r.upcomingChanges.map((e) => e.version)).toEqual(["8.8.8"]);
+  });
+});

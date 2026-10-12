@@ -108,6 +108,7 @@ export default function AdminPage() {
               myId={me?.id ?? ""}
               onGoUsers={() => setTab("users")}
               onGoInvites={() => setTab("invites")}
+              onGoSettings={() => setTab("settings")}
             />
             <SystemPanel />
           </div>

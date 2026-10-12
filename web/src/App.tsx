@@ -32,6 +32,7 @@ const NotifyPage = lazy(() => import("./pages/Notify.tsx"));
 const LogsPage = lazy(() => import("./pages/Logs.tsx"));
 const SettingsPage = lazy(() => import("./pages/Settings.tsx"));
 const ChangelogPage = lazy(() => import("./pages/Changelog.tsx"));
+const AboutPage = lazy(() => import("./pages/About.tsx"));
 const AdminPage = lazy(() => import("./pages/Admin.tsx"));
 const NotFoundPage = lazy(() => import("./pages/NotFound.tsx"));
 
@@ -108,6 +109,7 @@ export default function App() {
           {/* 两者都能访问 */}
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/changelog" element={<ChangelogPage />} />
+          <Route path="/about" element={<AboutPage />} />
 
           {/* 纯后台：仅管理员 */}
           <Route path="/admin" element={adminOnly(createElement(AdminPage))} />

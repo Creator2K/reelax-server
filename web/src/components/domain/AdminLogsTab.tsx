@@ -85,7 +85,7 @@ export function AdminLogsTab() {
           <CardTitle className="text-sm">
             运行日志
             <span className="text-muted-foreground ml-2 text-xs font-normal">
-              跨用户 · 已脱敏（凭证/token/邮箱） · 库里共 {logs.data?.totalInDb ?? 0} 条
+              全部用户 · 已脱敏 · 共 {logs.data?.totalInDb ?? 0} 条
             </span>
           </CardTitle>
           <div className="flex items-center gap-2">

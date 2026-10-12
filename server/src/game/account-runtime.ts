@@ -487,7 +487,7 @@ export class AccountRuntime {
     // ★ 失败必须在日志里看得见 —— 状态面板会显示"超时 N 次"，日志里却什么都没有的话没法排查。
     //   但不能每次刷屏（坏链路下每 6 秒一条）：只在**第一次**和**每 10 次**记一条 warn。
     if (this.syncFailStreak === 1) {
-      this.log.warn("保持在线", `同步失败（瞬时错误会自动重试一次）：${this.lastSyncError}`);
+      this.log.warn("保持在线", `同步失败：${this.lastSyncError}`);
     } else if (this.syncFailStreak % 10 === 0) {
       this.log.warn("保持在线", `同步已连续失败 ${this.syncFailStreak} 次（最近：${this.lastSyncError}）`);
     }

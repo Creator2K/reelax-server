@@ -19,12 +19,14 @@ import {
   IconRefresh,
   IconRocket,
   IconSearch,
+  IconSparkles,
 } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { ProgressBar } from "@/components/domain/StatCard.tsx";
+import { cn } from "@/lib/utils.ts";
 import { useApplyUpdate, useCheckUpdate, useUpdateProgress, probeHealth, type UpdateStep } from "@/lib/mutations.ts";
 
 /**
@@ -203,6 +205,44 @@ export function UpdatePanel() {
             )}
 
             {r.note ? <div className="text-muted-foreground">{r.note}</div> : null}
+
+            {/* ---------- 新版说明（从仓库 changelog.json 取，只含本地还没有的版本） ---------- */}
+            {r.upcomingChanges?.length ? (
+              <div className="space-y-2 rounded-2xl border px-3.5 py-3">
+                <div className="flex items-center gap-1.5 text-sm font-medium">
+                  <IconSparkles className="size-4" />
+                  新版修了什么
+                  <span className="text-muted-foreground text-xs font-normal">（更新后生效）</span>
+                </div>
+                {r.upcomingChanges.map((v) => (
+                  <div key={v.version} className="space-y-1">
+                    <div className="text-xs font-medium">
+                      {v.version}
+                      {v.title ? ` · ${v.title}` : ""}
+                    </div>
+                    <ul className="text-muted-foreground space-y-0.5 text-[11px] leading-relaxed">
+                      {v.changes.map((c, i) => (
+                        <li key={i} className="flex gap-1.5">
+                          <span
+                            className={cn(
+                              "shrink-0 rounded px-1",
+                              c.kind === "fix"
+                                ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                                : c.kind === "feature"
+                                  ? "bg-sky-500/15 text-sky-600 dark:text-sky-400"
+                                  : "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+                            )}
+                          >
+                            {c.kind === "fix" ? "修复" : c.kind === "feature" ? "新增" : "优化"}
+                          </span>
+                          <span className="break-words">{c.text}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            ) : null}
 
             <div className="text-muted-foreground space-y-1">
               <div>

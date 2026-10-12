@@ -15,6 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Logger } from "../lib/logger.ts";
+import { CHANGELOG, type ChangelogEntry } from "../version.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -45,6 +46,11 @@ export type UpdateCheck = {
   updaterAvailable: boolean;
   /** updater 的更新模式（git = 本机构建；pull = 拉预构建镜像）；拿不到为 null */
   updaterMode: "git" | "pull" | null;
+  /**
+   * 新版说明（"这次修了什么"）：从仓库里的 `changelog.json` 取，只挑**本地还没有的版本**。
+   * 拿不到就是空数组 —— 更新提示本身不受影响。
+   */
+  upcomingChanges: ChangelogEntry[];
   /** 无法自动更新时给用户的操作指引 */
   manualHint: string | null;
   /** 检查过程中的提示（例如网络不通） */
@@ -418,6 +424,10 @@ export class UpdateService {
     const updater = await this.probeUpdater();
     const updaterAvailable = updater.available;
 
+    // ★ 有更新时顺手取一下**远端**的更新说明（"新版修了什么"）。
+    //   失败不影响其它结果（网络不通 / 仓库私有 / 文件还没推上去都只是空数组）。
+    const upcomingChanges = hasUpdate ? await this.remoteUpcomingChanges(branch) : [];
+
     let manualHint: string | null = null;
     if (!this.deps.allowLocalUpdate && !updaterAvailable) {
       manualHint =
@@ -457,9 +467,50 @@ export class UpdateService {
       canApplyLocal: Boolean(hasGit && this.deps.allowLocalUpdate),
       updaterAvailable,
       updaterMode: updater.mode,
+      upcomingChanges,
       manualHint,
       note: notes.length ? notes.join("  ｜  ") : null,
     };
+  }
+
+  /**
+   * 取远端 `changelog.json`，挑出**本地还没有的版本**（= 新版说明）。
+   *
+   * ★ 为什么不比较版本号大小：本地 CHANGELOG 已经包含所有更早的版本，
+   *   所以"远端有、本地没有"就等于"比现在新"，不需要自己写一遍 semver 比较（容易写错）。
+   *   仓库根目录的 `changelog.json` 由 `server/src/version.ts` 生成，有测试盯着不许漂移。
+   */
+  private async remoteUpcomingChanges(branch: string): Promise<ChangelogEntry[]> {
+    const slug = this.deps.repoSlug?.trim();
+    if (!slug) return [];
+    const doFetch = this.deps.fetchImpl ?? fetch;
+    try {
+      const resp = await doFetch(
+        `https://raw.githubusercontent.com/${slug}/${encodeURIComponent(branch)}/changelog.json`,
+        { headers: { "User-Agent": "reelax-server" }, signal: AbortSignal.timeout(8000) },
+      );
+      if (!resp.ok) return [];
+      const j = (await resp.json()) as { entries?: unknown };
+      const list = Array.isArray(j?.entries) ? j.entries : [];
+      const known = new Set(CHANGELOG.map((e) => e.version));
+      const out: ChangelogEntry[] = [];
+      for (const raw of list) {
+        const e = raw as Partial<ChangelogEntry>;
+        if (typeof e?.version !== "string" || !Array.isArray(e.changes)) continue;
+        if (known.has(e.version)) continue;
+        out.push({
+          version: e.version,
+          date: typeof e.date === "string" ? e.date : "",
+          title: typeof e.title === "string" ? e.title : "",
+          ...(typeof e.notice === "string" ? { notice: e.notice } : {}),
+          changes: e.changes as ChangelogEntry["changes"],
+        });
+      }
+      // 最多给 3 个版本，避免面板被一长串历史撑爆
+      return out.slice(0, 3);
+    } catch {
+      return [];
+    }
   }
 
   /**
