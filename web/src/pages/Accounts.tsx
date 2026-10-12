@@ -1,9 +1,14 @@
-// 账号管理页：列表 + 新建 + 启停 + 删除
+// 账号管理页：概览统计 + 列表 + 新建 + 启停 + 删除
+//
+// 与原来的「总览」页合并：两页展示的是同一批账号（一个卡片网格、一个管理列表），
+// 菜单里出现两个入口容易混淆。现在只保留这一页，统计卡放在列表上方。
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  IconActivity,
   IconAlertTriangle,
   IconCoin,
+  IconFish,
   IconPlayerPlay,
   IconPlayerStop,
   IconPlus,
@@ -11,6 +16,8 @@ import {
   IconUsers,
 } from "@tabler/icons-react";
 import { PageContainer, EmptyState, SectionTitle } from "@/components/layout/PageContainer.tsx";
+import { StatCard } from "@/components/domain/StatCard.tsx";
+import { CountingNumber } from "@/components/animate-ui/counting-number.tsx";
 import { StatusBadge } from "@/components/domain/StatusBadge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -70,8 +77,50 @@ export default function AccountsPage() {
 
   const list = accounts ?? [];
 
+  // 概览数字（原来在「总览」页，这次合并到本页顶部）
+  const online = list.filter((a) => a.status === "online").length;
+  const engineRunning = list.filter((a) => a.status !== "stopped").length;
+  const totalCasts = list.reduce((s, a) => s + (a.stats?.castsResolved ?? 0), 0);
+  const totalGold = list.reduce((s, a) => s + (a.stats?.gold ?? 0), 0);
+  const totalFish = list.reduce((s, a) => s + (a.stats?.fishCount ?? 0), 0);
+
   return (
     <PageContainer wide>
+      <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard
+          label="在线账号"
+          tone={online > 0 ? "success" : "neutral"}
+          value={
+            <span>
+              {online} <span className="text-muted-foreground text-base font-normal">/ {list.length}</span>
+            </span>
+          }
+          hint={`${engineRunning} 个引擎运行中`}
+          icon={<IconActivity className="size-3.5" />}
+        />
+        <StatCard
+          label="累计结算"
+          value={<CountingNumber number={totalCasts} />}
+          hint="引擎启动以来（杆）"
+          icon={<IconActivity className="size-3.5" />}
+          delay={0.04}
+        />
+        <StatCard
+          label="累计金币"
+          tone="warning"
+          value={<CountingNumber number={totalGold} />}
+          hint="税后净金币"
+          icon={<IconCoin className="size-3.5" />}
+          delay={0.08}
+        />
+        <StatCard
+          label="累计渔获"
+          value={<CountingNumber number={totalFish} />}
+          hint="鱼条数"
+          icon={<IconFish className="size-3.5" />}
+          delay={0.12}
+        />
+      </div>
       {error ? (
         <Alert variant="destructive">
           <IconAlertTriangle />

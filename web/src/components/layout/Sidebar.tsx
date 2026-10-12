@@ -18,7 +18,6 @@ import {
   IconCloudNetwork,
   IconHistory,
   IconInfoCircle,
-  IconLayoutDashboard,
   IconListDetails,
   IconSettings,
   IconShieldLock,
@@ -37,11 +36,11 @@ export type NavItem = {
 
 /**
  * 普通用户的导航（挂机控制台）。
- * 注意「总览」指向 /dashboard 而不是 / —— 根路径是按角色分流的跳板。
+ * 注意「账号」指向 /accounts（原来的「总览」已与它合并：两页展示的是同一批账号），
+ * 而根路径 / 是按角色分流的跳板。
  */
 export const USER_NAV_ITEMS: NavItem[] = [
-  { to: "/dashboard", label: "总览", icon: IconLayoutDashboard, end: true },
-  { to: "/accounts", label: "账号", icon: IconUsers },
+  { to: "/accounts", label: "账号", icon: IconUsers, end: true },
   { to: "/proxies", label: "代理", icon: IconCloudNetwork },
   { to: "/notify", label: "推送", icon: IconBroadcast },
   { to: "/logs", label: "运行日志", icon: IconListDetails },

@@ -24,7 +24,6 @@ import { RealtimeProvider } from "./lib/realtime.tsx";
  */
 const LoginPage = lazy(() => import("./pages/Login.tsx"));
 const RegisterPage = lazy(() => import("./pages/Register.tsx"));
-const DashboardPage = lazy(() => import("./pages/Dashboard.tsx"));
 const AccountsPage = lazy(() => import("./pages/Accounts.tsx"));
 const AccountDetailPage = lazy(() => import("./pages/AccountDetail.tsx"));
 const ProxiesPage = lazy(() => import("./pages/Proxies.tsx"));
@@ -76,7 +75,7 @@ function RoleGate({ role, children }: { role: "admin" | "user"; children: ReactN
   const { data: user, isPending } = useSession();
   if (isPending) return <FullPageLoader />;
   if (!user) return <Navigate to="/login" replace />;
-  if (user.role !== role) return <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />;
+  if (user.role !== role) return <Navigate to={user.role === "admin" ? "/admin" : "/accounts"} replace />;
   return <>{children}</>;
 }
 
@@ -98,10 +97,11 @@ export default function App() {
           */}
           <Route path="/" element={<HomeRedirect />} />
 
-          {/* 挂机控制台：仅普通用户 */}
-          <Route path="/dashboard" element={userOnly(createElement(DashboardPage))} />
+          {/* 挂机控制台：仅普通用户（原「总览」已与账号页合并） */}
           <Route path="/accounts" element={userOnly(createElement(AccountsPage))} />
           <Route path="/accounts/:id" element={userOnly(createElement(AccountDetailPage))} />
+          {/* 旧链接（书签 / 文档）重定向到合并后的页面 */}
+          <Route path="/dashboard" element={<Navigate to="/accounts" replace />} />
           <Route path="/proxies" element={userOnly(createElement(ProxiesPage))} />
           <Route path="/notify" element={userOnly(createElement(NotifyPage))} />
           <Route path="/logs" element={userOnly(createElement(LogsPage))} />
@@ -126,7 +126,7 @@ function HomeRedirect() {
   const { data: user, isPending } = useSession();
   if (isPending) return <FullPageLoader />;
   if (!user) return <Navigate to="/login" replace />;
-  return <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />;
+  return <Navigate to={user.role === "admin" ? "/admin" : "/accounts"} replace />;
 }
 
 export { FullPageLoader };

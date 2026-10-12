@@ -58,6 +58,8 @@ type AuditRow = {
   user_id: string | null;
   action: string;
   target: string | null;
+  /** 服务端生成的中文描述（未收录的动作回退为原始码） */
+  text?: string;
   created_at: number;
 };
 
@@ -69,28 +71,6 @@ type SystemInfo = {
   limits: { maxAccountsPerUser: number; maxRunningAccounts: number; allowRegistration: boolean; logRetentionDays: number };
   runtime: { runningAccounts: number; capacity: number; available: number; totalAccounts: number };
   storage: { logs: number; auditEvents: number };
-};
-
-/** 审计动作 → 人话（未知动作原样显示，不至于丢信息） */
-const ACTION_TEXT: Record<string, string> = {
-  "user.register": "注册账号",
-  "user.login": "登录",
-  "user.logout": "退出登录",
-  "user.password_changed": "修改口令",
-  "user.profile_updated": "修改资料",
-  "admin.seeded": "创建初始管理员",
-  "admin.user.approved": "启用用户",
-  "admin.user.rejected": "拒绝用户",
-  "admin.user.status_changed": "调整用户状态",
-  "admin.user.role_changed": "调整用户角色",
-  "admin.user.password_reset": "重置用户口令",
-  "admin.user.created": "创建用户",
-  "admin.invite.created": "生成邀请码",
-  "admin.invite.deleted": "删除邀请码",
-  "admin.update.applied": "触发在线更新",
-  "notify.created": "添加推送通道",
-  "notify.updated": "修改推送通道",
-  "notify.deleted": "删除推送通道",
 };
 
 export function DashboardTab({
@@ -304,7 +284,8 @@ export function DashboardTab({
                       className="flex items-start justify-between gap-3 text-xs"
                     >
                       <div className="min-w-0">
-                        <span className="font-medium">{ACTION_TEXT[a.action] ?? a.action}</span>
+                        {/* 描述由服务端生成（要把账号/功能 id 解析成名字），未收录的动作回退到原始码 */}
+                        <span className="font-medium">{a.text || a.action}</span>
                         {actor ? <span className="text-muted-foreground"> · {actor.displayName}</span> : null}
                       </div>
                       <span className="text-muted-foreground shrink-0 text-[11px]">{fmtRelative(a.created_at)}</span>

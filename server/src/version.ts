@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.5.1";
+export const VERSION = "1.5.2";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,21 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.5.2",
+    date: "2026-10-13",
+    title: "审计动态可读化；总览与账号页合并",
+    changes: [
+      {
+        kind: "fix",
+        text: "后台「最近动态」显示为中文描述（如“修改账号「大号」的功能「自动换饵」（启用）”）。此前前端映射表的键名与审计动作不一致，多数记录直接显示原始码（account.module.updated）；描述改由服务端生成以解析账号标签与功能名称",
+      },
+      {
+        kind: "improve",
+        text: "「总览」与「账号」两页合并：两页展示的是同一批账号（一个卡片网格、一个管理列表），现只保留账号页，概览统计置于列表上方；原 /dashboard 链接自动跳转",
+      },
+    ],
+  },
   {
     version: "1.5.1",
     date: "2026-10-13",

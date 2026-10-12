@@ -16,7 +16,9 @@ import { body, query } from "../middleware/validate.ts";
 import { clientIp, Limiters } from "../../auth/ratelimit.ts";
 import { AUDIT_ACTIONS } from "../../db/repositories/audit.ts";
 import { HttpError } from "../server.ts";
+import { describeAudit } from "../../lib/audit-text.ts";
 import { redactLogRow } from "../../lib/log-redact.ts";
+import { getModule } from "../../modules/registry.ts";
 import type { Env } from "../../env.ts";
 
 const statusSchema = z.object({ status: z.enum(["pending", "approved", "banned"]) });
@@ -307,13 +309,35 @@ export function createAdminRouter(deps: {
 
   router.get("/audit", query(auditSchema), (req, res) => {
     const q = res.locals.query as z.infer<typeof auditSchema>;
+    const rows = deps.audit.list({
+      ...(q.action ? { action: q.action } : {}),
+      ...(q.userId ? { userId: q.userId } : {}),
+      limit: q.limit ?? 100,
+      offset: q.offset ?? 0,
+    });
+
+    // ★ 顺带把每条记录翻译成人话：账号标签 / 功能名 / 用户显示名只有服务端拿得到。
+    //   前端此前自己维护映射表，键名与 AUDIT_ACTIONS 对不上，界面上大多显示成
+    //   account.module.updated 这类原始码。
+    const accountLabels = new Map<string, string | null>();
+    const accountLabel = (id: string): string | null => {
+      if (!accountLabels.has(id)) accountLabels.set(id, deps.repos.accounts.findById(id)?.label ?? null);
+      return accountLabels.get(id) ?? null;
+    };
+    const userNames = new Map<string, string | null>();
+    const userName = (id: string): string | null => {
+      if (!userNames.has(id)) {
+        const u = deps.repos.users.findById(id);
+        userNames.set(id, u ? u.display_name || u.email : null);
+      }
+      return userNames.get(id) ?? null;
+    };
+
     res.json(
-      deps.audit.list({
-        ...(q.action ? { action: q.action } : {}),
-        ...(q.userId ? { userId: q.userId } : {}),
-        limit: q.limit ?? 100,
-        offset: q.offset ?? 0,
-      }),
+      rows.map((row) => ({
+        ...row,
+        text: describeAudit(row, { accountLabel, moduleName: (id) => getModule(id)?.name ?? null, userName }),
+      })),
     );
   });
 
