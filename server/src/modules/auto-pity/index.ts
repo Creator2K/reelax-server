@@ -27,6 +27,7 @@
 //     现在决策会给出 reenter（每次流程限一次），把它抢回来。
 import { type ModuleDefinition } from "../types.ts";
 import { BIOME_OPTIONS } from "../shared/biomes.ts";
+import { holdTravel, releaseTravel } from "../shared/travel-lock.ts";
 import {
   decidePityAction,
   didCatch,
@@ -37,8 +38,10 @@ import {
 
 export { decidePityAction, didCatch, readPity, pityUnavailableReason } from "./decide.ts";
 
-/** 我们要让路的模块（它也会换图） */
+/** 我们要让路的模块（它也会换图，且整个停掉是安全的） */
 const AUTO_TRAVEL_ID = "auto-travel";
+/** 占「换图决策权」时显示给日志的名字 */
+const TRAVEL_LOCK_LABEL = "保底切图（守保底中）";
 
 const definition: ModuleDefinition = {
   id: "auto-pity",
@@ -54,6 +57,7 @@ const definition: ModuleDefinition = {
     checkEverySec: 60,
     returnDelaySec: 5,
     pauseAutoTravel: true,
+    pauseTournamentTravel: true,
   },
   configSchema: [
     {
@@ -114,6 +118,15 @@ const definition: ModuleDefinition = {
         "切进保底地图后临时停掉「自动切图」，出货切回原图后恢复（它本来就没开则什么都不做）。",
       default: true,
     },
+    {
+      key: "pauseTournamentTravel",
+      type: "boolean",
+      label: "保底期间暂停「报名赛事」的进图",
+      hint:
+        "「自动报名赛事」的「报名」与「进图」是两件独立的事：这里只暂停它的「进比赛地图」，" +
+        "报名照常进行（报名有时效，错过就没了；换图随时能补）。保底流程结束后自动恢复。",
+      default: true,
+    },
   ],
 
   async onStart(ctx) {
@@ -170,6 +183,25 @@ const definition: ModuleDefinition = {
 
     /* ---------- 与「自动切图」的协调（B1：保底期间让它让路） ---------- */
 
+    /**
+     * 与「只换图、但有别的职责」的模块协调：占住「换图决策权」。
+     *
+     * 「自动报名赛事」的报名与进图是两件独立的事，整个停掉会把报名也停掉（报名有时效），
+     * 所以改用共享锁：它每次进图前会问一句"现在有人占着吗"，占着就只跳过进图这一步。
+     * 锁是纯内存 + 按账号隔离的（见 shared/travel-lock.ts）。
+     */
+    const travelLockTag = `auto-pity:${ctx.account.accountId}`;
+    // 改配置重启时老实例不一定跑到 onStop → 先把自己上次可能留下的锁放掉
+    releaseTravel(ctx.account.accountId, travelLockTag);
+
+    const holdTravelLock = () => {
+      if (ctx.config.pauseTournamentTravel === false) return;
+      holdTravel(ctx.account.accountId, travelLockTag, TRAVEL_LOCK_LABEL);
+    };
+    const releaseTravelLock = () => {
+      releaseTravel(ctx.account.accountId, travelLockTag);
+    };
+
     const pauseAutoTravel = async () => {
       if (ctx.config.pauseAutoTravel === false) return;
       if (S.pausedAutoTravel) return; // 已经暂停了
@@ -215,12 +247,13 @@ const definition: ModuleDefinition = {
     const returnDelayMs = Math.max(0, Number(ctx.config.returnDelaySec) || 0) * 1000;
     const rarityLabel = rarity === "arcane" ? "奥秘鱼" : "奇异鱼";
 
-    /** 结束保底流程（回到原图 / 放弃）：清干净并恢复「自动切图」 */
+    /** 结束保底流程（回到原图 / 放弃）：清干净并恢复「自动切图」和进图权 */
     const endFlow = async (why: string) => {
       S.returnBiome = null;
       S.pendingReturn = false;
       S.reenterUsed = false;
       S.returnAt = 0;
+      releaseTravelLock();
       await resumeAutoTravel(why);
     };
 
@@ -339,7 +372,10 @@ const definition: ModuleDefinition = {
               `⛵ ${fromLabel} → ${toName}（${decision.reason}；` +
                 `已连空 ${cur.dryCasts}/${cur.totalCasts} 杆，还差 ${cur.remaining} 杆）`,
             );
-            // 已经在保底图里了 → 让「自动切图」让路（否则十分钟内就会被它拽走）
+            // 已经在保底图里了 → 让其它模块让路：
+            //   · 「自动切图」整个停掉（它本来就没开则什么都不做）
+            //   · 占住「换图决策权」，让「自动报名赛事」只跳过进图（报名照常）
+            holdTravelLock();
             await pauseAutoTravel();
           } else {
             ctx.log.info("保底切图", `⛵ ${fromLabel} → ${toName}（${decision.reason}）`);
@@ -379,10 +415,13 @@ const definition: ModuleDefinition = {
   },
 
   /**
-   * 模块停止时把「自动切图」还回去（不能让别的功能一直停在关闭状态）。
+   * 模块停止时把「自动切图」和进图权还回去（不能让别的功能一直停在关闭状态）。
    * 账号正在停止时 restartModule 内部会 no-op，安全；恢复失败则保留标志，下次启动再补。
    */
   async onStop(ctx) {
+    // 换图决策权必须无条件放掉：模块被停 / 账号被停都一样，否则别的模块永远进不了比赛图
+    releaseTravel(ctx.account.accountId, `auto-pity:${ctx.account.accountId}`);
+
     const S = ctx.state as { pausedAutoTravel?: boolean };
     if (S?.pausedAutoTravel !== true) return;
     try {

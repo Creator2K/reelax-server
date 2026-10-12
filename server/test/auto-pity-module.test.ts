@@ -7,10 +7,12 @@
 //   · ★ 保底期间暂停「自动切图」，出货切回后恢复（B1：不让它把人从保底图拽走）
 //   · ★ 被别的东西挪走后抢回一次（自愈），再被挪走就不抢了
 //   · 保底数据为 null（当前条件无保底）时给出能看懂的 info 提示
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { ModuleContext } from "../src/modules/types.ts";
 import autoPity from "../src/modules/auto-pity/index.ts";
+import { clearTravelLocks, isTravelHeld } from "../src/modules/shared/travel-lock.ts";
 
+const ACCOUNT = "acct-pity";
 const BIOME_HOME = "b_001";
 const BIOME_PITY = "b_015";
 /** 第三方地图：模拟"被别的东西挪走"后的落点 */
@@ -73,8 +75,9 @@ function makeCtx(opts: FakeOpts = {}) {
       error: (_t: string, m: string) => log.warn.push(m),
     },
     api,
-    // 账号运行时：只用到「模块实例列表 + 停/重启某模块」
+    // 账号运行时：只用到「模块实例列表 + 停/重启某模块」（accountId 用于跨模块协作锁）
     account: {
+      accountId: ACCOUNT,
       moduleInstances: opts.moduleInstances ?? ["keep-online", "auto-travel"],
       stopModule: async (id: string) => {
         calls.push(`STOP ${id}`);
@@ -115,6 +118,8 @@ const passReturnBuffer = (ctx: ModuleContext) => {
 };
 
 describe("保底切图模块", () => {
+  beforeEach(() => clearTravelLocks());
+
   it("★ 快触发保底 → 切进保底地图，出货 → 切回原图", async () => {
     const { calls, log, world, start } = makeCtx();
     const run = await start();
@@ -261,5 +266,39 @@ describe("保底切图模块", () => {
     expect(line).toBeTruthy();
     expect(line).not.toContain("改版");
     expect(calls.filter((c) => c.startsWith("TRAVEL"))).toEqual([]);
+  });
+
+  /* ---------- 与「自动报名赛事」的协调：占住换图决策权（报名照常，只让出进图） ---------- */
+
+  it("★ 保底期间占住「换图决策权」，出货切回原图后放开", async () => {
+    const { world, start } = makeCtx();
+    const run = await start();
+
+    expect(isTravelHeld(ACCOUNT)).toBe(false);
+    await run(); // 进保底图
+    expect(isTravelHeld(ACCOUNT)).toBe(true);
+
+    world.dry = 0; // 出货 → 切回原图（returnDelaySec=0）
+    await run();
+    expect(isTravelHeld(ACCOUNT)).toBe(false);
+  });
+
+  it("把「暂停报名赛事的进图」关掉就不占锁（让赛事进图自由竞争）", async () => {
+    const { start } = makeCtx({ config: { pauseTournamentTravel: false } });
+    const run = await start();
+
+    await run();
+    expect(isTravelHeld(ACCOUNT)).toBe(false);
+  });
+
+  it("★ 模块停止时一定放开锁（否则别的模块永远进不了比赛图）", async () => {
+    const { ctx, start } = makeCtx();
+    const run = await start();
+
+    await run();
+    expect(isTravelHeld(ACCOUNT)).toBe(true);
+
+    await autoPity.onStop!(ctx);
+    expect(isTravelHeld(ACCOUNT)).toBe(false);
   });
 });

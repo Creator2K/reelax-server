@@ -220,7 +220,7 @@ export const MODULES: ModuleDefinition[] = [
 
 | 助手功能 | 本项目对应模块 | 端点 |
 | --- | --- | --- |
-| 自动换图 | `auto-travel` / `auto-pity` | `PUT /api/player/current-biome` |
+| 自动换图 | `auto-travel` / `auto-pity` / `auto-tournament`（比赛进图） | `PUT /api/player/current-biome` |
 | 场景鱼饵 | `auto-bait` | `/api/baits/{id}/purchase` + `/equip`（同样 5 个场景：个人赛/公会赛/金风/涌流/平时） |
 | 自动签到 | `daily-checkin` | `/api/daily-check-in/claim` |
 | 围猎自动报名 | `auto-world-boss` | `/api/events/world-boss/selection` |
@@ -311,31 +311,48 @@ AccountScheduleService.tick()  ──►  RunnerRegistry.start() / stop()
 它们**互不可见**。历史教训：保底切图切进保底图后，自动切图在自己的冷却一过就把号拽走，
 而保底切图只会「等待出货」—— 剩下那几十杆全打在没有加成的地图上，而且流程还卡住不再重进。
 
-现在的做法（`auto-pity` ← 让 `auto-travel` 让路）：
+现在的做法（`auto-pity` ← 让 `auto-travel` / `auto-tournament` 让路），有**两种**手段，
+按"对方能不能整个停掉"来选：
+
+| 手段 | 用在哪 | 做法 |
+| --- | --- | --- |
+| **停整个模块** | `auto-travel`（它的全部职责就是换图） | `ctx.account.stopModule(id)` / `restartModule(id)`（可配置开关 `pauseAutoTravel`） |
+| **只让出"换图"这一步** | `auto-tournament`（进图可以让，**报名不能让**） | 共享协作锁 `modules/shared/travel-lock.ts`：持有方 `holdTravel(accountId, tag)`，让路方在进图前 `travelHeldBy(accountId)`，只跳过进图，报名照常 |
+
+为什么要两种：**有些职责错过就没有了**（比赛报名有时效），而换一张图随时能补。
+所以对这种模块，"整个停掉"是错的答案 —— 要的是"让出那一步"。
 
 ```ts
-// 1) 进保底图成功后，把让路对象停掉
+// auto-pity：进保底图成功后
+holdTravel(ctx.account.accountId, `auto-pity:${ctx.account.accountId}`, "保底切图（守保底中）");
 await ctx.account.stopModule("auto-travel");
 S.pausedAutoTravel = true;
 ctx.persistState?.();          // ★ 落库：进程被 kill / 容器重启后也要能恢复
 
-// 2) 流程结束（出货切回原图 / 已回到原图 / 切图失败）时恢复
-await ctx.account.restartModule("auto-travel");   // 内部会看它还启不启用；账号已停时自动 no-op
+// auto-tournament：每次进图前（报名代码在上面，已经完全跑完）
+const heldBy = travelHeldBy(ctx.account.accountId);
+if (heldBy) return;            // 只跳过进图，报名照常；并 info 提示一次是谁占着
 ```
 
 几条纪律（都留了测试）：
 
-1. **不 import 对方的模块定义**：只传模块 id，`AccountRuntime.restartModule()` 自己去注册表取定义。
-   模块之间因此没有新的依赖边。
-2. **让路状态要落库**：否则进程被 kill 时对方会一直停在"关闭"。
-   模块启动时先补偿性恢复一次（`onStart` 里检查那个标志），`onStop` 里也恢复一次；
-   `restartModule` 在账号停止过程中是 no-op，所以在 `onStop` 里调用是安全的。
-3. **只停真正在跑的**：`ctx.account.moduleInstances.includes(id)` 为假时什么都不做，
+1. **不 import 对方的模块定义**：停/启模块只传 id（`AccountRuntime.restartModule()` 自己去注册表取定义），
+   共享锁放在 `modules/shared/`。模块之间因此没有新的依赖边。
+2. **让路状态要落库**：`stopModule` 那条路必须 `persistState()`，否则进程被 kill 时
+   对方会一直停在"关闭"。模块启动时先补偿性恢复一次（`onStart` 里检查那个标志），
+   `onStop` 里也恢复一次；`restartModule` 在账号停止过程中是 no-op，所以在 `onStop` 里调用安全。
+3. **锁必须按账号隔离**（`travel-lock.ts` 用 `accountId` 作键）：A 账号守保底绝不能挡住
+   B 账号进比赛图。
+4. **锁必须幂等**（同一 tag 重复 hold 不累积，一次 release 就放开）：否则计数泄漏会把
+   某个账号的进图**永久锁死**。
+5. **只停真正在跑的**：`ctx.account.moduleInstances.includes(id)` 为假时什么都不做，
    免得把用户根本没开的功能"恢复"起来。
-4. **让路要可关**：配置项（`pauseAutoTravel`，默认开），有人就想两个各干各的。
-5. **被别的力量挪走时自愈，但只抢一次**：`decidePityAction()` 在"在保底流程里、
+6. **让路要可关**：两个配置项（`pauseAutoTravel` / `pauseTournamentTravel`，默认都开）。
+7. **被别的力量挪走时自愈，但只抢一次**：`decidePityAction()` 在"在保底流程里、
    但当前不在保底图"时给 `reenter`，模块抢回一次；再被挪走只提示、不再抢 ——
    尊重手动操作，避免来回拉锯。
+8. **让路的日志要看得见**：让路方每次跳过会记一条 info（同一次让路只记一次），
+   这样万一锁没被放掉，日志里能直接看出来，而不是"比赛图怎么不进了"。
 
 > 想让新模块也参与协调时，照这个模式做；**不要**在模块里 import 另一个模块
 > （会形成依赖边与潜在循环），也不要把这个判断放到运行时里 —— 让路关系属于模块自己的语义。

@@ -12,9 +12,17 @@
 // 职责边界：本模块只做「报名 + 比赛进图」。**日常选图交给「自动切图」** ——
 // 两边都换图必然互相拽，所以这里不做「没比赛时切到收益最高的地图」。
 //
+// ★ 「报名」与「进图」是**两件独立的事**，各自可以被暂停：
+//    · 报名：靠本模块的 registerPersonal / registerGuild 开关；
+//    · 进图：靠 travelToBiome 开关，**外加**一个跨模块协作锁
+//      （`shared/travel-lock.ts`）—— 别的模块在"占着换图决策权"期间
+//      （典型是「保底切图」正在守保底），这里只让出「进图」这一步，
+//      **报名照常进行**（报名有时效，错过就没了；而换一张图是随时能补的）。
+//
 // 与官方航线助手：不看它的开关、不让位（本项目自己负责换图）。
 import { type ModuleDefinition } from "../types.ts";
 import { sleep } from "../../lib/util.ts";
+import { isTravelHeld, travelHeldBy } from "../shared/travel-lock.ts";
 
 /** 有资格报名公会赛的公会职位 */
 const OFFICER_ROLES = ["officer", "co_leader", "leader"];
@@ -46,7 +54,9 @@ const definition: ModuleDefinition = {
       key: "travelToBiome",
       type: "boolean",
       label: "自动前往比赛地图",
-      hint: "已报名的比赛在开赛前自动进图。官方航线助手开着「自动换图」时此项自动让位。",
+      hint:
+        "已报名的比赛在开赛前自动进图。注意这与「报名」是两件独立的事：" +
+        "关掉它只影响进图，报名照常。另外「保底切图」在守保底期间会让这里跳过进图（报名也照常）。",
       default: true,
     },
     {
@@ -76,12 +86,15 @@ const definition: ModuleDefinition = {
       guildRole: string | null;
       guildRoleCheckedAt: number;
       warnedGuildRole: boolean;
+      /** 上次因为"别人占着换图决策权"而跳过进图时，是占在谁手里（用于只提示一次） */
+      yieldNotifiedFor: string | null;
     };
     S.registeredIds = new Set<string>();
     S.lastIdle = "";
     S.guildRole = null;
     S.guildRoleCheckedAt = 0;
     S.warnedGuildRole = false;
+    S.yieldNotifiedFor = null;
 
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
@@ -183,7 +196,27 @@ const definition: ModuleDefinition = {
       }
 
       /* ---------- 进比赛地图 ---------- */
+      // ★ 注意执行顺序：报名在上面已经做完了。「进图」与「报名」是分开的两件事，
+      //   下面的任何 return 都不会影响报名。
       if (ctx.config.travelToBiome === false) return;
+
+      // ★ 别的功能正在占着换图决策权（典型：「保底切图」正在守保底）→ 这次不进比赛图。
+      //   只让出「进图」这一步，报名照常 —— 报名有时效，错过就没了；换图随时能补。
+      const heldBy = isTravelHeld(ctx.account.accountId) ? travelHeldBy(ctx.account.accountId) : null;
+      if (heldBy) {
+        if (S.yieldNotifiedFor !== heldBy) {
+          S.yieldNotifiedFor = heldBy;
+          ctx.log.info(
+            "报名赛事",
+            `「${heldBy}」正在占着换图决策权，本次不进入比赛地图（报名照常进行）；` +
+              "它结束时会自动恢复进图",
+          );
+        } else {
+          idle(`${trigger}：${heldBy} 占着换图决策权，跳过进图`);
+        }
+        return;
+      }
+      S.yieldNotifiedFor = null;
 
       /** 该不该进这张图 */
       const shouldEnter = (t: any, registeredFlag: unknown): boolean => {

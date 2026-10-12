@@ -240,7 +240,7 @@ onlinePlayerCount, serverTime, nextDailyHarvestResetAt, arcaneSacrifice, party, 
 
 | 助手功能 | 本辅助对应模块 | 用的是哪个端点 |
 | --- | --- | --- |
-| 自动换图 | `auto-travel` / `auto-pity` | `PUT /api/player/current-biome` |
+| 自动换图 | `auto-travel` / `auto-pity` / `auto-tournament`（比赛进图） | `PUT /api/player/current-biome` |
 | 场景鱼饵 | `auto-bait` | `/api/baits/{id}/purchase` + `/equip` |
 | 自动签到 | `daily-checkin` | `/api/daily-check-in/claim` |
 | 围猎自动报名 | `auto-world-boss` | `/api/events/world-boss/selection`（自己挑最高属性） |
