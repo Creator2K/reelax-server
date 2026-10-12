@@ -54,6 +54,25 @@ export function classifyRedeemFailure(code: string | null | undefined, message: 
   return { kind: "other", text: message || "兑换失败" };
 }
 
+/**
+ * 读一次兑换的结果。
+ *
+ * ★ 为什么必须看响应内容：接口对"这个码你的账号已经领过"**不报错**，
+ *   而是返回 200 + `redeemedCount: 0` —— 早期只看"请求没抛错"就当成成功，
+ *   于是界面上显示"兑换成功"却没领到东西（用户反馈）。现在以「有没有 redemptions」为准。
+ */
+export function readRedeemOutcome(data: unknown, code: string): { ok: boolean; reward?: RewardSummary } {
+  const d = (data ?? {}) as { redemptions?: unknown[]; redeemedCount?: unknown };
+  const list = Array.isArray(d.redemptions) ? d.redemptions : [];
+  const mine =
+    list.find((r) => {
+      const c = String((r as { code?: unknown } | null)?.code ?? "").toUpperCase();
+      return !c || c === code.toUpperCase();
+    }) ?? list[0];
+  if (!mine) return { ok: false };
+  return { ok: true, reward: summarizeRewards({ redemptions: [mine] }) };
+}
+
 /** 奖励摘要（兑换成功后实际到账的东西） */
 export type RewardSummary = {
   gold?: number;
@@ -113,7 +132,7 @@ export type SubmitOutcome = {
 
 export type ClaimOutcome =
   | { ok: true; reward?: RewardSummary; already?: boolean }
-  | { ok: false; reason: string; removed?: boolean };
+  | { ok: false; reason: string; removed?: boolean; already?: boolean };
 
 const maskCode = (code: string): string => {
   if (code.length <= 4) return `${code.slice(0, 1)}***`;
@@ -135,11 +154,20 @@ export class CdkService {
 
   /* ---------------- 读 ---------------- */
 
-  list(userId: string, opts: { includeExhausted?: boolean } = {}): { items: CdkView[]; counts: Record<CdkStatus, number> } {
-    const rows = this.deps.repos.cdk.list({ limit: 200, includeExhausted: opts.includeExhausted === true });
+  list(
+    userId: string,
+    opts: { status?: CdkStatus | "all"; search?: string; mineOnly?: boolean; limit?: number; offset?: number } = {},
+  ): { items: CdkView[]; counts: Record<CdkStatus, number>; total: number } {
+    const filter = {
+      status: opts.status ?? "all",
+      ...(opts.search?.trim() ? { search: opts.search.trim() } : {}),
+      ...(opts.mineOnly ? { submittedBy: userId } : {}),
+    };
+    const rows = this.deps.repos.cdk.list({ ...filter, limit: opts.limit ?? 50, offset: opts.offset ?? 0 });
     return {
       items: rows.map((row) => this.toView(row, userId)),
       counts: this.deps.repos.cdk.countByStatus(),
+      total: this.deps.repos.cdk.count(filter),
     };
   }
 
@@ -193,7 +221,9 @@ export class CdkService {
 
       try {
         const data = await rt.redeemCdks([norm.display]);
-        const reward = summarizeRewards(data);
+        const outcome = readRedeemOutcome(data, norm.display);
+        // ★ 200 但没有 redemptions：「这个账号已经领过」是接口的常见返回（不报错）
+        const reward = outcome.reward;
         const row = this.insertWithRetry({
           code: norm.display,
           normalized: norm.normalized,
@@ -202,12 +232,17 @@ export class CdkService {
           submittedBy: userId,
           accountId,
           alreadyRedeemed: true,
+          ...(outcome.ok ? {} : { lastError: "你的账号已经领过这个码" }),
         });
         if (!row) {
           out.push({ input, ok: false, reason: "库里已经有这个码了" });
           continue;
         }
-        out.push({ input, ok: true, status: "available", reward, id: row.id });
+        out.push(
+          outcome.ok
+            ? { input, ok: true, status: "available", reward, id: row.id }
+            : { input, ok: true, status: "available", id: row.id, reason: "你的账号已经领过，仍已入库供他人兑换" },
+        );
       } catch (err) {
         const { code, message } = describeErr(err);
         const kind = classifyRedeemFailure(code, message);
@@ -280,19 +315,24 @@ export class CdkService {
     const rt = this.deps.registry.require(accountId);
     try {
       const data = await rt.redeemCdks([row.code]);
-      const reward = summarizeRewards(data);
-      this.deps.repos.cdk.markRedeemed(id, userId, reward);
+      const outcome = readRedeemOutcome(data, row.code);
+      if (!outcome.ok) {
+        // ★ 200 但没领到：接口对「本账号已领过」不报错。不能算成功（早期这里谎报成功），
+        //   也不要动库 —— 这个码对别人可能仍然有效。
+        return { ok: false, already: true, reason: "你的账号已经领过这个码了" };
+      }
+      this.deps.repos.cdk.markRedeemed(id, userId, outcome.reward);
       // 「未开始」的码现在领到了 → 状态回到可用
       if (row.status === "not_started") this.deps.repos.cdk.markStatus(id, "available", null);
       this.deps.logger.info("CDK", `兑换成功：${row.code}（账号 ${accountId}）`);
-      return { ok: true, reward };
+      return { ok: true, reward: outcome.reward };
     } catch (err) {
       const { code, message } = describeErr(err);
       const kind = classifyRedeemFailure(code, message);
       if (kind.kind === "already") {
         // 该账号已领过：码本身有效，保留在库里给其他人
         this.deps.repos.cdk.markStatus(id, row.status === "not_started" ? "not_started" : "available", kind.text);
-        return { ok: true, already: true };
+        return { ok: false, already: true, reason: "你的账号已经领过这个码了" };
       }
       if (kind.kind === "not-started") {
         this.deps.repos.cdk.markStatus(id, "not_started", kind.text);
@@ -311,6 +351,25 @@ export class CdkService {
   /** 删除自己提交的码 */
   remove(userId: string, id: string): boolean {
     return this.deps.repos.cdk.deleteOwned(id, userId);
+  }
+
+  /**
+   * 一键领取：把库里所有「可兑换」的码依次领一遍（每账号一次，领过的会跳过）。
+   *
+   * 一次最多处理 50 个，避免一个请求打太多游戏接口；结果汇总返回，逐条附带结论。
+   */
+  async claimAll(userId: string, accountId: string): Promise<{ ok: number; already: number; removed: number; failed: number }> {
+    this.requireOwnAccount(userId, accountId);
+    const rows = this.deps.repos.cdk.list({ status: "available", limit: 50 });
+    const summary = { ok: 0, already: 0, removed: 0, failed: 0 };
+    for (const row of rows) {
+      const r = await this.claim(userId, accountId, row.id);
+      if (r.ok) summary.ok++;
+      else if (r.removed) summary.removed++;
+      else if (r.already) summary.already++;
+      else summary.failed++;
+    }
+    return summary;
   }
 
   /* ---------------- 辅助 ---------------- */

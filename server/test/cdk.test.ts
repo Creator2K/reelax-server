@@ -13,7 +13,7 @@ import { classifyRedeemFailure, normalizeCdk } from "../src/services/cdk-service
 const PROOF = `${Buffer.from(JSON.stringify({ version: 1, expiresAt: Date.now() + 3_600_000 })).toString("base64url")}.sig`;
 
 /** 假游戏服务：/api/me 发 proof；兑换接口按 codeBehaviors 决定成败 */
-type Behavior = { ok: true } | { errorCode: string };
+type Behavior = { ok: true } | { errorCode: string } | { empty: true };
 let behaviors = new Map<string, Behavior>();
 let redeemCalls: string[] = [];
 
@@ -36,6 +36,10 @@ function makeFetch(): typeof fetch {
             status: 400,
             headers: { "content-type": "application/json" },
           });
+        }
+        // ★ 「这个账号已经领过」接口不报错：200 + 没有任何 redemptions
+        if (b && "empty" in b) {
+          return json({ redemptions: [], redeemedCount: 0, invalidCount: codes.length });
         }
       }
       return json({
@@ -200,15 +204,88 @@ describe("提交与兑换（对着假游戏服务跑真实路由）", () => {
     expect(claim.body.reason).toContain("移除");
 
     const after = await app.get<ListBody>("/api/cdk", A.jar);
-    expect(after.body.items.some((i) => i.id === target!.id)).toBe(false);
-    // 带上 all=1 仍能看到历史（标记为 exhausted）
-    const all = await app.get<ListBody>("/api/cdk?all=1", A.jar);
-    expect(all.body.items.find((i) => i.id === target!.id)?.status).toBe("exhausted");
+    // 默认视图按状态筛（界面默认「可兑换」）；已失效的码在「全部/已失效」里可见但状态为 exhausted
+    expect(after.body.items.find((i) => i.id === target!.id)?.status).toBe("exhausted");
+    const onlyAvailable = await app.get<ListBody>("/api/cdk?status=available", A.jar);
+    expect(onlyAvailable.body.items.some((i) => i.id === target!.id)).toBe(false);
   });
 
   it("不能用别人的账号提交", async () => {
     const r = await app.post("/api/cdk/submit", { accountId: bAccount, codes: ["X1"] }, A.jar);
     expect(r.status).toBe(404);
+  });
+
+  /* ---------- 用户反馈：已领取过却显示「兑换成功」 ---------- */
+
+  it("★ 已领取过（200 但没有任何 redemptions）不能谎报成功", async () => {
+    behaviors.set("DONE1", { empty: true }); // 提交时也领不到（本账号已领过）
+    const submitRes = await app.post<{ results: { ok: boolean; reason?: string }[] }>(
+      "/api/cdk/submit",
+      { accountId: aAccount, codes: ["DONE1"] },
+      A.jar,
+    );
+    // 已领取过仍入库，但要说明原因
+    expect(submitRes.body.results[0]?.ok).toBe(true);
+    expect(submitRes.body.results[0]?.reason).toContain("已经领过");
+
+    const list = await app.get<ListBody>("/api/cdk", A.jar);
+    const target = list.body.items.find((i) => i.code === "DONE1");
+    expect(target).toBeTruthy();
+
+    const claim = await app.post<{ ok: boolean; already?: boolean; reason?: string }>(
+      `/api/cdk/${target!.id}/claim`,
+      { accountId: aAccount },
+      A.jar,
+    );
+    expect(claim.body.ok).toBe(false); // ★ 关键：不是成功
+    expect(claim.body.already).toBe(true);
+    expect(claim.body.reason).toContain("已经领过");
+
+    // 码仍留在库里（对别人可能有效），也不该记成功次数
+    const after = await app.get<ListBody>("/api/cdk", A.jar);
+    expect(after.body.items.find((i) => i.id === target!.id)?.status).toBe("available");
+  });
+
+  it("★ 一键领取：领到 / 已领过 / 失效分别计数", async () => {
+    await app.post("/api/cdk/submit", { accountId: aAccount, codes: ["OK1", "OK2"] }, A.jar);
+    behaviors.set("OK2", { empty: true }); // 领的时候发现本账号已领过
+    behaviors.set("DEAD1", { ok: true });
+    await app.post("/api/cdk/submit", { accountId: aAccount, codes: ["DEAD1"] }, A.jar);
+    behaviors.set("DEAD1", { errorCode: "CDK_DISABLED" }); // 之后失效
+
+    const r = await app.post<{ ok: number; already: number; removed: number; failed: number }>(
+      "/api/cdk/claim-all",
+      { accountId: bAccount },
+      B.jar,
+    );
+    expect(r.status).toBe(200);
+    expect(r.body.already).toBeGreaterThanOrEqual(1);
+    expect(r.body.removed).toBe(1);
+    expect(r.body.ok).toBeGreaterThanOrEqual(1);
+  });
+
+  it("★ 列表支持状态筛选 / 搜索 / 只看自己 与分页", async () => {
+    await app.post("/api/cdk/submit", { accountId: aAccount, codes: ["FILTER1"] }, A.jar);
+    behaviors.set("FILTER2", { errorCode: "CDK_NOT_STARTED" });
+    await app.post("/api/cdk/submit", { accountId: bAccount, codes: ["FILTER2"] }, B.jar);
+
+    const avail = await app.get<ListBody>("/api/cdk?status=available&search=FILTER1", A.jar);
+    expect(avail.body.items.map((i) => i.code)).toContain("FILTER1");
+    expect(avail.body.items.map((i) => i.code)).not.toContain("FILTER2");
+
+    const notStarted = await app.get<ListBody>("/api/cdk?status=not_started", A.jar);
+    // A 看到的 FILTER2 是别人提交的 → 打码；用状态与归属断言，而不是明文
+    expect(notStarted.body.items.some((i) => i.status === "not_started" && i.masked)).toBe(true);
+    const notStartedB = await app.get<ListBody>("/api/cdk?status=not_started", B.jar);
+    expect(notStartedB.body.items.map((i) => i.code)).toContain("FILTER2");
+
+    const mineB = await app.get<ListBody>("/api/cdk?mine=1", B.jar);
+    expect(mineB.body.items.every((i) => i.mine)).toBe(true);
+    expect(mineB.body.items.map((i) => i.code)).toContain("FILTER2");
+
+    const paged = await app.get<ListBody>("/api/cdk?limit=1&offset=0", A.jar);
+    expect(paged.body.items).toHaveLength(1);
+    expect(paged.body.total).toBeGreaterThan(1);
   });
 
   it("提交需要登录", async () => {

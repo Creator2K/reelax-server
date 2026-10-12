@@ -74,16 +74,46 @@ export class CdkRepo extends BaseRepo {
     return this.db.get<CdkRow>("SELECT * FROM cdk_codes WHERE normalized = ?", normalized);
   }
 
-  /** 列表：默认只给「还能领」的（未开始也列出来，但界面上会标注） */
-  list(opts: { limit?: number; includeExhausted?: boolean } = {}): CdkRow[] {
-    const limit = Math.min(Math.max(1, opts.limit ?? 100), 200);
-    if (opts.includeExhausted) {
-      return this.db.all<CdkRow>("SELECT * FROM cdk_codes ORDER BY submitted_at DESC LIMIT ?", limit);
-    }
+  /** 列表：支持状态 / 关键词 / 只看自己 筛选 + 分页 */
+  list(opts: { status?: CdkStatus | "all"; search?: string; submittedBy?: string; limit?: number; offset?: number } = {}): CdkRow[] {
+    const { where, params } = this.filter(opts);
+    const limit = Math.min(Math.max(1, opts.limit ?? 50), 200);
+    const offset = Math.max(0, opts.offset ?? 0);
     return this.db.all<CdkRow>(
-      "SELECT * FROM cdk_codes WHERE status != 'exhausted' ORDER BY submitted_at DESC LIMIT ?",
+      `SELECT * FROM cdk_codes ${where} ORDER BY submitted_at DESC LIMIT ? OFFSET ?`,
+      ...params,
       limit,
+      offset,
     );
+  }
+
+  /** 当前筛选条件下的总数（分页用） */
+  count(opts: { status?: CdkStatus | "all"; search?: string; submittedBy?: string } = {}): number {
+    const { where, params } = this.filter(opts);
+    const r = this.db.get<{ c: number }>(`SELECT count(*) AS c FROM cdk_codes ${where}`, ...params);
+    return Number(r?.c ?? 0);
+  }
+
+  private filter(opts: { status?: CdkStatus | "all"; search?: string; submittedBy?: string }): {
+    where: string;
+    params: (string | number)[];
+  } {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (opts.status && opts.status !== "all") {
+      where.push("status = ?");
+      params.push(opts.status);
+    }
+    if (opts.submittedBy) {
+      where.push("submitted_by = ?");
+      params.push(opts.submittedBy);
+    }
+    if (opts.search?.trim()) {
+      where.push("(code LIKE ? OR normalized LIKE ?)");
+      const needle = `%${opts.search.trim().toUpperCase().replace(/[\s-]+/g, "")}%`;
+      params.push(needle, needle);
+    }
+    return { where: where.length ? `WHERE ${where.join(" AND ")}` : "", params };
   }
 
   countByStatus(): Record<CdkStatus, number> {

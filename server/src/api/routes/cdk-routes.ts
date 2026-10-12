@@ -12,8 +12,13 @@ import { body, query } from "../middleware/validate.ts";
 import { HttpError } from "../server.ts";
 
 const listSchema = z.object({
-  /** 1 = 连已失效的一起返回 */
-  all: z.coerce.number().int().min(0).max(1).optional(),
+  /** all = 不过滤状态；默认也只按状态筛 */
+  status: z.enum(["all", "available", "not_started", "exhausted"]).optional(),
+  search: z.string().max(80).optional(),
+  /** 1 = 只看我提交的 */
+  mine: z.coerce.number().int().min(0).max(1).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).max(100000).optional(),
 });
 
 const submitSchema = z.object({
@@ -31,7 +36,22 @@ export function createCdkRouter(deps: { cdk: CdkService }): Router {
 
   router.get("/", query(listSchema), (req, res) => {
     const q = res.locals.query as z.infer<typeof listSchema>;
-    res.json(deps.cdk.list(currentUserId(req), { includeExhausted: q.all === 1 }));
+    res.json(
+      deps.cdk.list(currentUserId(req), {
+        status: q.status ?? "all",
+        ...(q.search ? { search: q.search } : {}),
+        mineOnly: q.mine === 1,
+        limit: q.limit ?? 50,
+        offset: q.offset ?? 0,
+      }),
+    );
+  });
+
+  /** 一键领取：把库里所有「可兑换」的码依次领一遍（逐条结论汇总返回） */
+  router.post("/claim-all", body(claimSchema), async (req, res) => {
+    const userId = currentUserId(req);
+    const { accountId } = req.body as z.infer<typeof claimSchema>;
+    res.json(await deps.cdk.claimAll(userId, accountId));
   });
 
   router.post("/submit", body(submitSchema), async (req, res) => {

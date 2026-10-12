@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.6.0";
+export const VERSION = "1.6.1";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,29 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.6.1",
+    date: "2026-10-13",
+    title: "CDK：一键领取、筛选分页与兑换结果修正",
+    changes: [
+      {
+        kind: "fix",
+        text: "兑换已领取过的码时误报「兑换成功」：接口对「该账号已领过」不报错，而是返回 200 且不含 redemptions，原先仅以请求是否抛错判定成功；现以响应中实际发放的奖励为准，未领到即如实提示且不计入成功",
+      },
+      {
+        kind: "feature",
+        text: "CDK 页新增「一键领取」：依次领取库中所有可兑换的码，汇总为成功 / 已领过 / 已失效移除 / 失败",
+      },
+      {
+        kind: "feature",
+        text: "公共码库支持筛选与分页：按状态（可兑换 / 未开始 / 已失效）、关键词搜索、只看我提交的，每页 20 条",
+      },
+      {
+        kind: "improve",
+        text: "移除 CDK 页面上的说明性文案与领取次数显示",
+      },
+    ],
+  },
   {
     version: "1.6.0",
     date: "2026-10-13",
