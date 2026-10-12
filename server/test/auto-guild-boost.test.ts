@@ -180,6 +180,50 @@ describe("decideGuildBoost", () => {
     });
     expect(d.action).toBe("skip");
   });
+
+  /* ---------- 日志要能自证：原因分类 + 购买前的剩余时间 ---------- */
+
+  it("★ 不买时带上原因分类（日志按类别各提示一次，数字变化不会刷屏）", () => {
+    const kind = (over: Partial<Parameters<typeof decideGuildBoost>[0]>) => {
+      const d = decide(over);
+      return d.action === "skip" ? d.kind : "activate";
+    };
+    expect(kind({ boosts: [{ biomeId: "b_009", isActive: true, endsAt: new Date(NOW + 25 * MIN).toISOString() }] })).toBe(
+      "still-active",
+    );
+    expect(kind({ boosts: [{ biomeId: "b_009", isActive: true }] })).toBe("unknown-end");
+    expect(kind({ boosts: [{ biomeId: "b_009", isQueued: true, endsAt: new Date(NOW + 5 * MIN).toISOString() }] })).toBe(
+      "already-queued",
+    );
+    expect(kind({ canActivate: false })).toBe("no-permission");
+    expect(kind({ unitCost: 0 })).toBe("no-price");
+    expect(kind({ treasuryGold: 100 })).toBe("treasury-low");
+    expect(kind({ minimumTreasuryGold: 100_000 })).toBe("below-reserve");
+    expect(kind({ currentBiomeId: null })).toBe("no-biome");
+  });
+
+  it("★ 买的时候记下「购买前还剩多少分钟」，日志里能自证不是乱买", () => {
+    // 已有记录但已过期 → 0 分钟；完全没有记录 → null
+    const expired = decide({
+      boosts: [{ biomeId: "b_009", isActive: false, endsAt: new Date(NOW - MIN).toISOString() }],
+    });
+    expect(expired.action).toBe("activate");
+    expect(expired.action === "activate" && expired.remainingMinutesBefore).toBe(0);
+
+    const fresh = decide();
+    expect(fresh.action).toBe("activate");
+    expect(fresh.action === "activate" && fresh.remainingMinutesBefore).toBeNull();
+  });
+
+  it("不买的原因里写明「还剩多少 + 续买阈值」，一眼能核对", () => {
+    const d = decide({
+      boosts: [{ biomeId: "b_009", isActive: true, endsAt: new Date(NOW + 140 * MIN).toISOString() }],
+      renewAheadMs: 30 * MIN,
+    });
+    expect(d.action).toBe("skip");
+    expect(d.action === "skip" && d.reason).toContain("还剩约 140 分钟");
+    expect(d.action === "skip" && d.reason).toContain("续买阈值 30 分钟");
+  });
 });
 
 /* ==================== 模块行为 ==================== */

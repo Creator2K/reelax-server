@@ -24,7 +24,7 @@ import { Badge } from "@/components/ui/badge.tsx";
 import { Separator } from "@/components/ui/separator.tsx";
 import { StatCard, ProgressBar } from "@/components/domain/StatCard.tsx";
 import type { PityProgress, StatusPanel, SyncHealth } from "@/lib/queries.ts";
-import { fmtCompact, fmtExact, fmtNum, fmtPct, fmtRelative } from "@/lib/utils.ts";
+import { fmtClock, fmtCompact, fmtExact, fmtNum, fmtPct, fmtRelative } from "@/lib/utils.ts";
 
 /** 等级上限（游戏内满级）。用于等级进度条。 */
 const MAX_LEVEL = 20_000;
@@ -291,7 +291,11 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
                 {panel.buffs.map((b, i) => (
                   <Badge key={`${b.tag}-${i}`} variant="warn" className="gap-1 font-normal">
                     {b.tag} <span className="mono-num">+{fmtPct(b.bp)}</span>
-                    {b.endsAt ? <span className="opacity-70">· {fmtRelative(Date.parse(b.endsAt))}结束</span> : null}
+                    {b.endsAt ? (
+                      <span className="opacity-70">
+                        · {fmtRelative(Date.parse(b.endsAt))}（{fmtClock(Date.parse(b.endsAt))} 结束）
+                      </span>
+                    ) : null}
                   </Badge>
                 ))}
               </div>
@@ -314,7 +318,9 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
                     <span>{g.name}</span>
                     <span className="mono-num text-muted-foreground shrink-0">
                       +{fmtPct(g.bp)}
-                      {g.endsAt ? ` · ${fmtRelative(Date.parse(g.endsAt))}结束` : ""}
+                      {g.endsAt
+                        ? ` · ${fmtRelative(Date.parse(g.endsAt))}（${fmtClock(Date.parse(g.endsAt))} 结束）`
+                        : ""}
                     </span>
                   </div>
                 ))}

@@ -20,8 +20,27 @@ export type GuildBoostRow = {
 };
 
 export type GuildBoostDecision =
-  | { action: "activate"; biomeId: string; units: number; cost: number; reason: string }
-  | { action: "skip"; reason: string };
+  | {
+      action: "activate";
+      biomeId: string;
+      units: number;
+      cost: number;
+      reason: string;
+      /** 购买前还剩多少分钟（null = 读不到结束时间）；写进日志，省得事后猜「为什么又买了」 */
+      remainingMinutesBefore: number | null;
+    }
+  | { action: "skip"; kind: GuildBoostSkipKind; reason: string };
+
+/** 「不买」的原因分类：日志按类别各提示一次（数字会变、类别不会，避免刷屏） */
+export type GuildBoostSkipKind =
+  | "no-biome"
+  | "no-permission"
+  | "no-price"
+  | "treasury-low"
+  | "below-reserve"
+  | "already-queued"
+  | "still-active"
+  | "unknown-end";
 
 const num = (v: unknown): number => {
   const n = Number(v);
@@ -77,14 +96,16 @@ export function decideGuildBoost(input: {
     input;
 
   const biomeId = targetBiome === "current" ? (currentBiomeId ?? "") : String(targetBiome ?? "").trim();
-  if (!biomeId) return { action: "skip", reason: "拿不到要开增益的地图（当前地图未知？）" };
+  if (!biomeId) return { action: "skip", kind: "no-biome", reason: "拿不到要开增益的地图（当前地图未知？）" };
 
   if (!canActivate) {
-    return { action: "skip", reason: "没有开启公会区域增益的权限（只有公会干部可以）" };
+    return { action: "skip", kind: "no-permission", reason: "没有开启公会区域增益的权限（只有公会干部可以）" };
   }
 
   const unitCost = num(input.unitCost);
-  if (unitCost <= 0) return { action: "skip", reason: "读不到增益单价，先不买（避免误花公会金库）" };
+  if (unitCost <= 0) {
+    return { action: "skip", kind: "no-price", reason: "读不到增益单价，先不买（避免误花公会金库）" };
+  }
 
   const want = Math.max(1, Math.floor(num(input.unitsWanted) || 1));
   const cap = Math.floor(num(maxUnits));
@@ -94,6 +115,7 @@ export function decideGuildBoost(input: {
   if (treasuryGold < cost) {
     return {
       action: "skip",
+      kind: "treasury-low",
       reason: `公会金库不足：本次需要 ${cost}（${units} 份 × ${unitCost}），现有 ${treasuryGold}`,
     };
   }
@@ -101,6 +123,7 @@ export function decideGuildBoost(input: {
   if (treasuryGold - cost < reserve) {
     return {
       action: "skip",
+      kind: "below-reserve",
       reason: `买完会低于你设的金库下限（${reserve}）：现有 ${treasuryGold}，本次要花 ${cost}`,
     };
   }
@@ -111,23 +134,28 @@ export function decideGuildBoost(input: {
   const serverNow = num(input.serverTimeMs);
   const baseNow = serverNow > 0 ? serverNow : input.now;
   const remain = ends === null ? null : Math.max(0, ends - baseNow);
+  const remainMin = remain === null ? null : Math.max(0, Math.round(remain / 60_000));
 
   // 已经有一笔排在队里 → 不叠加（不管还剩多久、也不管续买阈值）
   if (cur?.isQueued === true && (remain === null || remain > 0)) {
-    return { action: "skip", reason: "该地图已有一笔增益排队生效中" };
+    return { action: "skip", kind: "already-queued", reason: "该地图已有一笔增益排队生效中" };
   }
 
   if (remain !== null) {
     // 结束时间最可靠：还有时间就不买（到点前 renewAheadMs 内才续）
     if (remain > renewAheadMs) {
-      const min = Math.max(1, Math.round(remain / 60_000));
-      return { action: "skip", reason: `该地图的增益还在（还剩约 ${min} 分钟），不重复买` };
+      return {
+        action: "skip",
+        kind: "still-active",
+        reason: `该地图的增益还在（还剩约 ${Math.max(1, remainMin ?? 0)} 分钟，续买阈值 ${Math.round(renewAheadMs / 60_000)} 分钟），不重复买`,
+      };
     }
   } else if (cur?.isActive === true) {
     // ★ 生效中但读不到结束时间 → **保守不买**。
     //   旧版把"读不到结束时间"当成"已经过期"（remain=0）→ 每次检查都买一次，把公会金库花光。
     return {
       action: "skip",
+      kind: "unknown-end",
       reason: "增益生效中，但读不到结束时间 —— 先不买（避免重复花公会金库）",
     };
   }
@@ -138,5 +166,6 @@ export function decideGuildBoost(input: {
     units,
     cost,
     reason: `买 ${units} 份（${cost} 金币）${cur ? "延长" : "开启"}该地图的区域经验增益`,
+    remainingMinutesBefore: remainMin,
   };
 }

@@ -108,6 +108,13 @@ const definition: ModuleDefinition = {
       S.warned.add(key);
       ctx.log.warn("公会增益", msg);
     };
+    /** 「正常不买」的原因：每类用 info 讲一次（否则用户看不到模块为什么不买） */
+    const notifySkipOnce = (key: string, msg: string) => {
+      const k = `skip:${key}`;
+      if (S.warned.has(k)) return;
+      S.warned.add(k);
+      ctx.log.info("公会增益", msg);
+    };
 
     const unitsWanted = Math.max(1, Number(ctx.config.units) || 1);
     const targetBiome = String(ctx.config.targetBiome ?? "current");
@@ -152,11 +159,20 @@ const definition: ModuleDefinition = {
         });
 
         if (decision.action === "skip") {
-          // 没权限 / 钱不够属于「需要用户知道」的事，但重复刷没意义 → 各提示一次
-          // （key 要固定：把数字拼进 key 会让每次金额变化都当成新警告）
-          if (decision.reason.includes("权限")) warnOnce("no-permission", decision.reason);
-          else if (decision.reason.includes("金库")) warnOnce("treasury", decision.reason);
-          else idle(`${trigger}：${decision.reason}`);
+          // ★ 「不买」的原因也要看得见：否则用户只看到面板上还有时间，
+          //   却不知道模块为什么还在买 / 为什么不买。按类别各提示一次（数字会变、类别不会）。
+          if (
+            decision.kind === "no-permission" ||
+            decision.kind === "no-price" ||
+            decision.kind === "treasury-low" ||
+            decision.kind === "below-reserve"
+          ) {
+            // 这些是「需要你去处理」的：warn
+            warnOnce(decision.kind, decision.reason);
+          } else {
+            // 这些是「正常不买」（还有效 / 排队中 / 读不到结束时间）：info 各讲一次
+            notifySkipOnce(decision.kind, `${trigger}：${decision.reason}`);
+          }
           return;
         }
 
@@ -170,6 +186,9 @@ const definition: ModuleDefinition = {
         ctx.log.info(
           "公会增益",
           `🏅 已给 ${biomeName(decision.biomeId)} ${decision.reason}` +
+            (decision.remainingMinutesBefore !== null
+              ? `（购买前还剩约 ${decision.remainingMinutesBefore} 分钟）`
+              : "") +
             (unitMinutes > 0 ? `；本次覆盖约 ${decision.units * unitMinutes} 分钟` : ""),
         );
       } catch (err) {

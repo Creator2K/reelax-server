@@ -89,12 +89,19 @@ export function fmtDuration(ms: unknown): string {
   return `${m}分`;
 }
 
-/** 相对时间："刚刚" / "3 分钟前" / "2 小时前" / 本地日期 */
+/** 相对时间："刚刚" / "3 分钟前" / "2 小时前" / 本地日期；**未来时间说「还剩 X」** */
 export function fmtRelative(ts: unknown): string {
   const t = Number(ts);
   if (!Number.isFinite(t) || t <= 0) return "—";
   const diff = Date.now() - t;
-  if (diff < 0) return fmtClock(t);
+  // ★ 未来时间必须能一眼看出「还剩多久」。以前这里返回的是时钟时间（HH:mm:ss），
+  //   于是「02:11:38 结束」看起来像"还有 2 小时 11 分"，用户以为时间还很多却还在买
+  //   （真实反馈）—— 其实那是"凌晨 2:11 结束"，只剩 20 来分钟。
+  if (diff < 0) {
+    const left = -diff;
+    if (left < 60_000) return "还剩不到 1 分钟";
+    return `还剩 ${fmtDuration(left)}`;
+  }
   if (diff < 60_000) return "刚刚";
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
