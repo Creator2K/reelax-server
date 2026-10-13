@@ -88,3 +88,48 @@ export function describeBaitChoice(baitId: string): string {
 export function isValidBaitId(id: unknown): boolean {
   return BAIT_TIERS.some((b) => b.id === id);
 }
+
+/* ---------- 金币不足 → 自动降级 ---------- */
+
+/**
+ * 需要「换更便宜的饵」的错误码。
+ *
+ * ★ 用户报的现象：日志里一直刷「购买 中级饵 失败：金币不足。」
+ *   游戏用 400 + `INSUFFICIENT_GOLD` 表示买不起；`BAIT_NOT_OWNED` 是这款饵还没解锁，
+ *   两者都属于「这一档用不了」，降一档才有意义。
+ */
+export const BAIT_DOWNGRADE_CODES: readonly string[] = ["INSUFFICIENT_GOLD", "BAIT_NOT_OWNED"];
+
+/**
+ * 这个错误是否应当触发降级。
+ *
+ * 错误码优先；个别版本只给中文文案（用户截图里就是「金币不足。」），所以再兜一层文案匹配。
+ */
+export function needsCheaperBait(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  const code = typeof e?.code === "string" ? e.code : "";
+  if (code && BAIT_DOWNGRADE_CODES.includes(code)) return true;
+  const msg = typeof e?.message === "string" ? e.message : String(err ?? "");
+  return /金币不足|尚未拥有该鱼饵/.test(msg);
+}
+
+/** 一款饵的价格：优先用接口给的单价，接口没给就查内置表 */
+export function baitPrice(bait: BaitInfo | null | undefined): number {
+  const p = Number(bait?.unitPrice);
+  if (Number.isFinite(p) && p > 0) return p;
+  return baitById(bait?.id)?.unitPrice ?? 0;
+}
+
+/**
+ * 降级阶梯：比 `wantedId` 便宜的档位，从贵到便宜排列（不含它自己）。
+ *
+ * 只保留 `/api/baits` 里真实存在的那些（未解锁的款游戏不会下发）；
+ * 排序按单价，所以游戏以后加新档位也不用改这里。
+ */
+export function downgradeChain(wantedId: unknown, list: BaitInfo[]): BaitInfo[] {
+  const wanted = list.find((b) => b?.id === wantedId) ?? null;
+  const wantedPrice = wanted ? baitPrice(wanted) : baitById(wantedId)?.unitPrice ?? 0;
+  return list
+    .filter((b) => b && b.id !== wantedId && baitPrice(b) < wantedPrice)
+    .sort((a, b) => baitPrice(b) - baitPrice(a) || String(a.id).localeCompare(String(b.id)));
+}

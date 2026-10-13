@@ -9,6 +9,7 @@ import {
   IconAlertTriangle,
   IconCoin,
   IconFish,
+  IconGauge,
   IconPlayerPlay,
   IconPlayerStop,
   IconPlus,
@@ -47,7 +48,7 @@ import { Switch } from "@/components/ui/switch.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
-import { useAccounts, useProxies, type Account } from "@/lib/queries.ts";
+import { useAccounts, useProxies, type Account, type SyncHealth } from "@/lib/queries.ts";
 import {
   useCreateAccount,
   useDeleteAccount,
@@ -148,20 +149,19 @@ export default function AccountsPage() {
       ) : (
         <>
           <SectionTitle>{`${list.length} 个账号`}</SectionTitle>
-          <Card className="gap-0 overflow-hidden py-0">
-            <div className="divide-border divide-y">
-              {list.map((a) => (
-                <AccountRow
-                  key={a.id}
-                  account={a}
-                  onStart={() => start.mutate(a.id)}
-                  onStop={() => stop.mutate(a.id)}
-                  onDelete={() => setPendingDelete(a)}
-                  busy={start.isPending || stop.isPending}
-                />
-              ))}
-            </div>
-          </Card>
+          {/* 账号卡片：一屏看清「状态 / 金币 / 结算 / 链路」，不用点进详情 */}
+          <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+            {list.map((a) => (
+              <AccountCard
+                key={a.id}
+                account={a}
+                onStart={() => start.mutate(a.id)}
+                onStop={() => stop.mutate(a.id)}
+                onDelete={() => setPendingDelete(a)}
+                busy={start.isPending || stop.isPending}
+              />
+            ))}
+          </div>
         </>
       )}
 
@@ -193,7 +193,7 @@ export default function AccountsPage() {
   );
 }
 
-function AccountRow({
+function AccountCard({
   account,
   onStart,
   onStop,
@@ -210,37 +210,61 @@ function AccountRow({
   const panel = account.statusPanel;
 
   return (
-    <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <Link to={`/accounts/${account.id}`} className="truncate text-sm font-medium hover:underline">
-            {account.label}
-          </Link>
-          <StatusBadge status={account.status} />
-          {account.credentialOk ? null : (
-            <Badge variant="error" title={account.credentialError ?? ""}>
-              凭证异常
-            </Badge>
-          )}
+    <Card className="gap-0 overflow-hidden py-0">
+      <div className="px-4 pt-3.5 pb-3">
+        {/* 标题行：备注名 + 状态 */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <Link
+              to={`/accounts/${account.id}`}
+              className="block truncate text-sm font-medium hover:underline"
+            >
+              {account.label}
+            </Link>
+            <div className="text-muted-foreground mt-0.5 truncate text-[11px]">
+              {account.email || "Cookie 导入"}
+              <span className="mx-1.5">·</span>
+              {account.proxyLabel ? `代理 ${account.proxyLabel}` : "直连"}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <StatusBadge status={account.status} />
+            {account.credentialOk ? null : (
+              <Badge variant="error" title={account.credentialError ?? ""}>
+                凭证异常
+              </Badge>
+            )}
+          </div>
         </div>
-        <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
-          <span>{account.email || "Cookie 导入"}</span>
-          <span>{account.proxyLabel ? `代理 ${account.proxyLabel}` : "直连"}</span>
-          {panel?.biomeName ? <span>{panel.biomeName}</span> : null}
-          {panel?.level ? <span>Lv {fmtNum(panel.level)}</span> : null}
-          <span>
-            <IconCoin className="inline size-3" /> {fmtNum(account.stats.gold)}
+
+        {/* 关键数字 */}
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          <Metric label="金币" value={fmtNum(account.stats.gold)} />
+          <Metric label="结算" value={`${fmtNum(account.stats.castsResolved)} 杆`} />
+          <Metric label="渔获" value={`${fmtNum(account.stats.fishCount)} 条`} />
+        </div>
+
+        {/* 位置与链路 */}
+        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+          {panel?.biomeName ? <Badge variant="secondary">{panel.biomeName}</Badge> : null}
+          {panel?.level ? <Badge variant="secondary">Lv {fmtNum(panel.level)}</Badge> : null}
+          <LinkBadge running={running} sync={panel?.sync ?? null} />
+          <span className="text-muted-foreground text-[11px]">
+            上次同步 {account.lastSyncAt ? fmtRelative(account.lastSyncAt) : "—"}
           </span>
-          <span>上次同步 {account.lastSyncAt ? fmtRelative(account.lastSyncAt) : "—"}</span>
         </div>
+
         {account.lastError ? (
-          <div className="text-[var(--status-error)] mt-0.5 truncate text-[11px]" title={account.lastError}>
+          <div
+            className="text-[var(--status-error)] mt-2 line-clamp-2 text-[11px]"
+            title={account.lastError}
+          >
             {account.lastError}
           </div>
         ) : null}
       </div>
 
-      <div className="flex shrink-0 items-center gap-1.5">
+      <div className="border-border/60 flex items-center justify-end gap-1.5 border-t px-3 py-2">
         {running ? (
           <Button size="sm" variant="outline" onClick={onStop} disabled={busy}>
             <IconPlayerStop className="size-3.5" />
@@ -259,7 +283,50 @@ function AccountRow({
           <IconTrash className="size-4" />
         </Button>
       </div>
+    </Card>
+  );
+}
+
+/** 卡片里的一个小数字（金币 / 结算 / 渔获） */
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-muted/50 rounded-xl px-2.5 py-2">
+      <div className="text-muted-foreground text-[10px]">{label}</div>
+      <div className="mono-num mt-0.5 text-sm font-medium tabular-nums">{value}</div>
     </div>
+  );
+}
+
+/**
+ * 链路质量徽章：近 10 分钟的同步成功率。
+ *
+ * 为什么放在卡片上：链路抖动的唯一表现常常只是「这个号结算杆数比别的号少」，
+ * 在列表页就能看到成功率，才能一眼分辨「该修代理」还是「该调玩法配置」——
+ * 不必逐个点进详情页找那一块。
+ */
+function LinkBadge({ running, sync }: { running: boolean; sync: SyncHealth | null }) {
+  if (!running) {
+    return <Badge variant="idle">链路 —（未运行）</Badge>;
+  }
+  if (!sync || sync.attempts === 0) {
+    return <Badge variant="idle">链路 待采样</Badge>;
+  }
+
+  const rate = sync.successRate;
+  // 与详情页同一套阈值：≥95% 正常、≥80% 注意、其余告警
+  const variant = rate === null ? "idle" : rate >= 95 ? "online" : rate >= 80 ? "warn" : "error";
+  const detail =
+    `近 ${Math.round(sync.windowSec / 60)} 分钟：尝试 ${sync.attempts} · 成功 ${sync.ok} · 失败 ${sync.failed}` +
+    ` · 超时 ${sync.timeouts}` +
+    (sync.failStreak ? ` · 连续失败 ${sync.failStreak} 次` : "") +
+    (sync.lastError ? `\n最近一次失败：${sync.lastError}` : "");
+
+  return (
+    <Badge variant={variant} title={detail}>
+      <IconGauge className="size-3" />
+      链路 {rate === null ? "—" : `${rate}%`}
+      {sync.failStreak ? ` · 连续失败 ${sync.failStreak}` : ""}
+    </Badge>
   );
 }
 

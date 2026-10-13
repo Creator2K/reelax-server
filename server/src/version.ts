@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.6.1";
+export const VERSION = "1.7.0";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,33 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.7.0",
+    date: "2026-10-13",
+    title: "账号卡片、自动切图涌流与带队换图、鱼饵自动降级",
+    changes: [
+      {
+        kind: "feature",
+        text: "「自动切图」新增「涌流」优先级：奥秘涌流期间前往指定地图，留空则取已解锁的最高地图（按鱼价值倍率）。涌流是覆盖所有地图的全局天气，此时「天气经验最高」在各图相同，原先只能按 id 兜底选中等级最低的地图",
+      },
+      {
+        kind: "feature",
+        text: "「自动切图」新增「换图时带走船员」：船长 / 舵手换图改用船队接口整条船开过去，能跟随的船员同行；未解锁目标图、不在船上、正在其它公会赛地图的船员由游戏跳过，日志中给出各类人数",
+      },
+      {
+        kind: "improve",
+        text: "带队换图失败或船已在目标图时进入冷却，同一张图连续 3 次失败后长时间停止尝试；无船长权限或未加入船队时按普通换图处理并说明原因",
+      },
+      {
+        kind: "feature",
+        text: "「自动换饵」在金币不足或该鱼饵未解锁时自动降级到下一档更便宜的鱼饵（顶级 → 高级 → 中级 → 低级 → 基础），日志给出数量与所需金币；降级过的档位 10 分钟内不再重复尝试购买",
+      },
+      {
+        kind: "feature",
+        text: "账号管理页改为账号卡片：状态、金币 / 结算 / 渔获、所在地图与等级、链路成功率一屏可见，不再需要逐个进入详情页查看",
+      },
+    ],
+  },
   {
     version: "1.6.1",
     date: "2026-10-13",

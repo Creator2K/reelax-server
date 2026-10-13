@@ -7,11 +7,14 @@
 import { describe, expect, it } from "vitest";
 import {
   baitDisplayName,
+  baitPrice,
   decideRefill,
   describeBaitChoice,
+  downgradeChain,
   extractBaits,
   findSelectedBait,
   isValidBaitId,
+  needsCheaperBait,
   type BaitInfo,
 } from "../src/modules/auto-bait/baits.ts";
 
@@ -148,5 +151,51 @@ describe("显示名与配置校验", () => {
     for (const bad of ["bait_master", "high", "", null, undefined, "bait_ultra"]) {
       expect(isValidBaitId(bad), String(bad)).toBe(false);
     }
+  });
+});
+
+describe("金币不足 → 降级阶梯", () => {
+  const LIST: BaitInfo[] = [
+    { id: "bait_basic", name: "基础饵", unitPrice: 0, isUnlimited: true, quantity: 0 },
+    { id: "bait_low", name: "低级饵", unitPrice: 40, quantity: 0 },
+    { id: "bait_medium", name: "中级饵", unitPrice: 100, quantity: 0 },
+    { id: "bait_high", name: "高级饵", unitPrice: 200, quantity: 0 },
+    { id: "bait_supreme", name: "顶级饵", unitPrice: 1000, quantity: 0 },
+  ];
+
+  it("★ 只往下走：顶级 → 高级 → 中级 → 低级 → 基础", () => {
+    expect(downgradeChain("bait_supreme", LIST).map((b) => b.id)).toEqual([
+      "bait_high",
+      "bait_medium",
+      "bait_low",
+      "bait_basic",
+    ]);
+    expect(downgradeChain("bait_medium", LIST).map((b) => b.id)).toEqual(["bait_low", "bait_basic"]);
+    expect(downgradeChain("bait_basic", LIST)).toEqual([]);
+  });
+
+  it("不在列表里的档位不会混进来（未解锁的饵游戏不下发）", () => {
+    const partial = LIST.filter((b) => b.id !== "bait_low");
+    expect(downgradeChain("bait_medium", partial).map((b) => b.id)).toEqual(["bait_basic"]);
+  });
+
+  it("不认识的饵按单价排（游戏以后加新档位不用改代码）", () => {
+    const withNew = [...LIST, { id: "bait_ultra", name: "究极饵", unitPrice: 5000, quantity: 0 }];
+    expect(downgradeChain("bait_ultra", withNew)[0]?.id).toBe("bait_supreme");
+    // 接口没给单价时回落到内置表的价格
+    expect(baitPrice({ id: "bait_high" })).toBe(200);
+    expect(baitPrice({ id: "bait_high", unitPrice: 250 })).toBe(250);
+  });
+
+  it("认得出「该降级」的错误：错误码优先，文案兜底", () => {
+    expect(needsCheaperBait({ code: "INSUFFICIENT_GOLD", message: "金币不足。" })).toBe(true);
+    expect(needsCheaperBait({ code: "BAIT_NOT_OWNED" })).toBe(true);
+    // 只有文案的版本（用户截图里就是这句）
+    expect(needsCheaperBait(new Error("金币不足。"))).toBe(true);
+    expect(needsCheaperBait(new Error("尚未拥有该鱼饵。"))).toBe(true);
+    // 其它错误不该被当成余额问题
+    expect(needsCheaperBait({ code: "RATE_LIMITED", message: "请求过于频繁" })).toBe(false);
+    expect(needsCheaperBait(new Error("请求超时（10000ms）"))).toBe(false);
+    expect(needsCheaperBait(null)).toBe(false);
   });
 });

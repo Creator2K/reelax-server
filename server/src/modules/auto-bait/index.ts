@@ -14,9 +14,22 @@
 //
 // 与官方航线助手：本项目**自己负责换饵**（助手那套场景鱼饵是纯浏览器逻辑，
 // 挂机时它不会执行），不看它、不让位、也不提示。
+//
+// ★ 买不起就降级（用户要求）：游戏用 400 + `INSUFFICIENT_GOLD` 表示金币不够、
+//   `BAIT_NOT_OWNED` 表示这款饵还没解锁。旧版只报一条「购买 中级饵 失败：金币不足。」，
+//   然后**继续用没有库存的高级饵去钓**。现在按单价从高到低逐级往下试，
+//   选到买得起 / 有库存的那一档换上；试过的档位 10 分钟冷却，避免重复刷失败。
 import { type ModuleDefinition } from "../types.ts";
 import { baitOptions, baitName } from "../shared/rarity.ts";
-import { baitDisplayName, decideRefill, extractBaits } from "./baits.ts";
+import {
+  baitDisplayName,
+  decideRefill,
+  downgradeChain,
+  extractBaits,
+  needsCheaperBait,
+  baitPrice,
+  type BaitInfo,
+} from "./baits.ts";
 
 /** 天气 id（游戏里叫 weatherId） */
 const ARCANE_SURGE = "arcane_surge";
@@ -36,9 +49,9 @@ const SCENE_FIELDS: Array<{ key: SceneKey; field: string }> = [
 const definition: ModuleDefinition = {
   id: "auto-bait",
   name: "自动换饵",
-  version: "3.0.0",
+  version: "4.0.0",
   description:
-    "按当前场景自动切换鱼饵，场景与官方助手的「场景鱼饵」一致：个人赛 / 公会赛 / 金风 / 奥秘涌流 / 平时。鱼饵不足时按设定数量自动购买。",
+    "按当前场景自动切换鱼饵，场景与官方助手的「场景鱼饵」一致：个人赛 / 公会赛 / 金风 / 奥秘涌流 / 平时。鱼饵不足时按设定数量自动购买；买不起时自动降级到下一档更便宜的鱼饵。",
   defaultEnabled: false,
   defaultConfig: {
     personalCompetitionBait: "bait_supreme",
@@ -46,6 +59,7 @@ const definition: ModuleDefinition = {
     goldenBait: "",
     surgeBait: "bait_high",
     normalBait: "bait_medium",
+    autoDowngrade: true,
     competitionLeadSec: 180,
     buyQuantity: 200,
     checkEverySec: 120,
@@ -92,6 +106,15 @@ const definition: ModuleDefinition = {
       options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（手动）" }),
     },
     {
+      key: "autoDowngrade",
+      type: "boolean",
+      label: "买不起时自动降级鱼饵",
+      hint:
+        "购买失败的（金币不足 / 尚未拥有该鱼饵）时候自动改用下一档更便宜的饵：顶级 → 高级 → 中级 → 低级 → 基础。\n" +
+        "降级过的档位 10 分钟内不再重复尝试购买（避免一直刷失败日志），金币够了会自动回到原档位。",
+      default: true,
+    },
+    {
       key: "competitionLeadSec",
       type: "number",
       label: "比赛提前多少秒换比赛饵",
@@ -122,10 +145,21 @@ const definition: ModuleDefinition = {
   ],
 
   async onStart(ctx) {
-    const S = ctx.state as { busy: boolean; lastIdle: string; lastSwitch: string };
+    const S = ctx.state as {
+      busy: boolean;
+      lastIdle: string;
+      lastSwitch: string;
+      /** 买不起 / 用不了的鱼饵 → 解禁时间戳（这段时间内直接跳过它的购买尝试） */
+      priceBlocked: Record<string, number>;
+    };
     S.busy = false;
     S.lastIdle = "";
     S.lastSwitch = "";
+    S.priceBlocked = S.priceBlocked && typeof S.priceBlocked === "object" ? S.priceBlocked : {};
+
+    const autoDowngrade = ctx.config.autoDowngrade !== false;
+    /** 买不起的这一档，多久之内不再尝试购买（同时压住重复的失败日志） */
+    const PRICE_BLOCK_MS = Math.max(10 * 60_000, (Number(ctx.config.checkEverySec) || 120) * 1000 * 3);
 
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
@@ -200,6 +234,74 @@ const definition: ModuleDefinition = {
       return SCENE_FIELDS.find((s) => s.key === key)?.field ?? "normalBait";
     }
 
+    /** 买不起时用的「当前金币」说明（只在真的失败时查一次，失败也无所谓） */
+    const goldText = async (): Promise<string> => {
+      try {
+        const me = await ctx.api.me();
+        const gold = Number(me?.player?.gold);
+        return Number.isFinite(gold) ? `，当前 ${gold.toLocaleString("zh-CN")} 金币` : "";
+      } catch {
+        return "";
+      }
+    };
+
+    /**
+     * 备货 + 选饵：买不起就逐级降到底。
+     *
+     * 返回最终要用哪一款（可能比配置的便宜）。降级过的档位记 10 分钟冷却，
+     * 期间不再重复尝试购买 —— 否则每轮都会对着同一档刷一条「金币不足」。
+     */
+    const pickBait = async (list: BaitInfo[], wanted: BaitInfo): Promise<{ bait: BaitInfo; downgraded: boolean }> => {
+      // 不降级时阶梯里只有配置的那一款（行为与旧版一致）
+      const chain: BaitInfo[] = autoDowngrade ? [wanted, ...downgradeChain(wanted.id, list)] : [wanted];
+
+      for (let i = 0; i < chain.length; i++) {
+        const cand = chain[i]!;
+        const refill = decideRefill(cand, ctx.config);
+
+        if (!refill.buy) {
+          // 不需要买（无限饵 / 还有库存 / 未开自动购买）→ 就用它
+          return { bait: cand, downgraded: cand.id !== wanted.id };
+        }
+
+        if ((Number(S.priceBlocked[cand.id]) || 0) > Date.now()) {
+          // 这一档刚试过买不起：直接往下找更便宜的，不再打一次注定失败的购买
+          if (i === chain.length - 1) return { bait: cand, downgraded: cand.id !== wanted.id };
+          continue;
+        }
+
+        try {
+          await ctx.api.purchaseBait(cand.id, refill.quantity);
+          const price = baitPrice(cand);
+          ctx.log.info(
+            "自动换饵",
+            `🛒 已购买 ${baitDisplayName(cand)} ×${refill.quantity}` +
+              `（单价 ${price}，约 ${(price * refill.quantity).toLocaleString("zh-CN")} 金币）`,
+          );
+          return { bait: cand, downgraded: cand.id !== wanted.id };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          const next = chain[i + 1];
+          if (autoDowngrade && next && needsCheaperBait(err)) {
+            S.priceBlocked[cand.id] = Date.now() + PRICE_BLOCK_MS;
+            const price = baitPrice(cand);
+            ctx.log.warn(
+              "自动换饵",
+              `💰 ${baitDisplayName(cand)} 买不起或未解锁（${refill.quantity} 个约 ` +
+                `${(price * refill.quantity).toLocaleString("zh-CN")} 金币${await goldText()}）：${message}` +
+                ` → 已自动降级为 ${baitDisplayName(next)}`,
+            );
+            continue;
+          }
+          ctx.log.warn("自动换饵", `购买 ${baitDisplayName(cand)} 失败：${message}`);
+          return { bait: cand, downgraded: cand.id !== wanted.id };
+        }
+      }
+
+      // 一路降到底（基础饵免费，理论上到不了这里）
+      return { bait: chain[chain.length - 1] ?? wanted, downgraded: chain.length > 1 };
+    };
+
     const run = async (trigger: string) => {
       if (S.busy) return;
       S.busy = true;
@@ -213,47 +315,36 @@ const definition: ModuleDefinition = {
         }
 
         // 用 baits.ts 的解析helper：字段名/包裹形式都在那里统一（可单测）
-        const wanted = extractBaits(await ctx.api.baits()).find((b) => b?.id === wantedId);
+        const list = extractBaits(await ctx.api.baits());
+        const wanted = list.find((b) => b?.id === wantedId);
         if (!wanted) {
           ctx.log.warn("自动换饵", `${trigger}：找不到鱼饵 ${wantedId}（可能是配置写错或该饵未解锁）`);
           return;
         }
 
-        /* ---------- 补货 ---------- */
-        // 判断逻辑抽在 baits.ts 里（可单测）：字段名和边界都在那里钉住
-        const refill = decideRefill(wanted, ctx.config);
-        if (refill.buy) {
-          const price = Number(wanted.unitPrice) || 0;
-          try {
-            await ctx.api.purchaseBait(wanted.id, refill.quantity);
-            ctx.log.info(
-              "自动换饵",
-              `🛒 已购买 ${baitDisplayName(wanted)} ×${refill.quantity}` +
-                `（单价 ${price}，约 ${(price * refill.quantity).toLocaleString("zh-CN")} 金币）`,
-            );
-          } catch (err) {
-            ctx.log.warn("自动换饵", `购买 ${baitDisplayName(wanted)} 失败：${err instanceof Error ? err.message : String(err)}`);
-          }
-        } else if (refill.stock !== null && refill.stock > 0) {
-          // 只在真的读到库存时提示，避免无限饵也刷这条
-          idle(`${trigger}：${baitDisplayName(wanted)} ${refill.reason}`);
-        }
+        /* ---------- 备货（买不起自动降级） ---------- */
+        const { bait, downgraded } = await pickBait(list, wanted);
 
         /* ---------- 换饵 ---------- */
-        if (wanted.isSelected) {
-          idle(`${trigger}：${scenario.why} 已在用 ${wanted.name}，无需切换`);
+        if (bait.isSelected) {
+          idle(
+            `${trigger}：${scenario.why} 已在用 ${baitDisplayName(bait)}` +
+              (downgraded ? "（降级后的档位）" : "") +
+              "，无需切换",
+          );
           return;
         }
 
-        await ctx.api.equipBait(wanted.id);
-        S.lastSwitch = wanted.id;
+        await ctx.api.equipBait(bait.id);
+        S.lastSwitch = bait.id;
         S.lastIdle = "";
         // 日志里同时给出中文名，避免只说 id 让人看不懂
         const niceName = (b: any) => baitName(b?.id) ?? b?.name ?? b?.id ?? "未知";
         ctx.log.info(
           "自动换饵",
-          `🎣 ${scenario.why} → 换成 ${niceName(wanted)}` +
-            (Number.isFinite(Number(wanted.luck)) ? `（幸运 +${wanted.luck}）` : ""),
+          `🎣 ${scenario.why} → 换成 ${niceName(bait)}` +
+            (Number.isFinite(Number(bait.luck)) ? `（幸运 +${bait.luck}）` : "") +
+            (downgraded ? `（原定 ${baitDisplayName(wanted)}，余额不足已降级）` : ""),
         );
       } catch (err) {
         ctx.log.warn("自动换饵", `${trigger} 失败：${err instanceof Error ? err.message : String(err)}`);

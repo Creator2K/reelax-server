@@ -387,6 +387,31 @@ export class GameClient {
   biomeTravel(biomeId: string) {
     return this.request("/api/player/current-biome", { method: "PUT", body: { biomeId } });
   }
+  /**
+   * 船队换图（把整条船开过去）——与个人换图是两个不同接口。
+   *
+   * 响应比个人换图多出一份「谁跟过来了」的清单：
+   *   `{ previousBoatBiomeId, currentBoatBiomeId, changed, movedCount,
+   *      skippedLockedCount, skippedAwayCount, skippedGuildCompetitionCount }`
+   * 后三个计数分别对应「目标图没解锁」「人不在船上」「在打别的公会赛」——
+   * 游戏自己会跳过他们，我们只要如实报出来。
+   *
+   * `requireAllMembersUnlocked` 默认关闭：开启时只要有人没解锁目标图，服务端就整体拒绝
+   * （错误码 PARTY_BOAT_BIOME_NOT_UNLOCKED_BY_ALL），这不是我们想要的默认行为 ——
+   * 默认应该是「能来的跟来，来不了的留在原地」。
+   */
+  partyBoatTravel(biomeId: string, opts: { requireAllMembersUnlocked?: boolean } = {}) {
+    return this.request("/api/party-boats/current-biome", {
+      method: "POST",
+      idempotent: true,
+      body: {
+        biomeId,
+        ...(opts.requireAllMembersUnlocked === undefined
+          ? {}
+          : { requireAllMembersUnlocked: opts.requireAllMembersUnlocked }),
+      },
+    });
+  }
   routeTravel() {
     return this.request("/api/route-assistant/travel", { method: "POST", idempotent: true });
   }
