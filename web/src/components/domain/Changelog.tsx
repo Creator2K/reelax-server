@@ -2,11 +2,14 @@
 //
 // 设计取舍：
 //  · 数据来自服务端（/api/auth/changelog），和代码一起发版 —— 只有一个真相，不用前端手工同步
-//  · 登录前也能看（登录页底部有入口），所以接口是公开的
+//  · 登录前也能看（登录页底部的版本号点开就是它），所以接口是公开的
 //  · 只写用户能感知的变化，不写内部重构（那些看 git log）
+//  · 版本多了以后整页拉不完，所以默认只展开最近几版，其余按「加载更多」逐批出
+import { useState } from "react";
 import { motion } from "motion/react";
-import { IconAlertTriangle, IconBulb, IconSparkles, IconTag, IconTools } from "@tabler/icons-react";
+import { IconAlertTriangle, IconBulb, IconRefresh, IconSparkles, IconTag, IconTools } from "@tabler/icons-react";
 import { Badge } from "@/components/ui/badge.tsx";
+import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
@@ -31,15 +34,21 @@ const KIND_META: Record<ChangeKind, { label: string; icon: React.ReactNode; badg
   },
 };
 
-/** 版本卡片列表。`limit` 用于在设置页只显示最近几条。 */
-export function ChangelogList({ limit }: { limit?: number }) {
+/**
+ * 版本卡片列表。
+ *
+ * `initial` = 默认展开几个版本（关于页用 2 个），其余点「加载更多」每次多出 `step` 个。
+ * 全部展开后按钮消失 —— 不做「收起」，避免误点后又要重新拉一遍。
+ */
+export function ChangelogList({ initial = 2, step = 5 }: { initial?: number; step?: number }) {
   const { data, isPending, error } = useChangelog();
+  const [visible, setVisible] = useState(initial);
 
   if (isPending) {
     return (
       <div className="space-y-3">
         <Skeleton className="h-40" />
-        {!limit ? <Skeleton className="h-40" /> : null}
+        <Skeleton className="h-40" />
       </div>
     );
   }
@@ -52,7 +61,9 @@ export function ChangelogList({ limit }: { limit?: number }) {
     );
   }
 
-  const entries = limit ? (data?.entries ?? []).slice(0, limit) : (data?.entries ?? []);
+  const all = data?.entries ?? [];
+  const entries = all.slice(0, Math.max(1, visible));
+  const remaining = all.length - entries.length;
 
   return (
     <div className="space-y-4">
@@ -61,7 +72,7 @@ export function ChangelogList({ limit }: { limit?: number }) {
           key={entry.version}
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3, delay: idx * 0.06 }}
+          transition={{ duration: 0.3, delay: Math.min(idx, 3) * 0.06 }}
         >
           <Card className="gap-3">
             <CardHeader>
@@ -100,6 +111,13 @@ export function ChangelogList({ limit }: { limit?: number }) {
           </Card>
         </motion.div>
       ))}
+
+      {remaining > 0 ? (
+        <Button variant="outline" className="w-full" onClick={() => setVisible((v) => v + step)}>
+          <IconRefresh className="size-3.5" />
+          加载更多（还有 {remaining} 个版本）
+        </Button>
+      ) : null}
     </div>
   );
 }

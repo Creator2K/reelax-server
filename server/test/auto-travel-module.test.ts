@@ -229,26 +229,26 @@ describe("自动切图：比赛目标", () => {
   });
 });
 
-describe("自动切图：涌流优先级（端到端接线）", () => {
+describe("自动切图：涌流期间的目标（端到端接线）", () => {
   beforeEach(() => clearTravelLocks());
 
   it("★ 涌流覆盖所有地图时，留空配置 → 去已解锁的最高地图（不是最小 id 的新手图）", async () => {
     const { calls, world, start } = makeCtx({
-      priorities: "surge,experience",
+      priorities: "golden,experience",
       weather: "arcane_surge",
       config: { surgeBiome: "" },
     });
     const run = await start();
 
     await run();
-    // 三张图倍率 1.0 / 1.1 / 1.2 → 最高的是 GOLD，而「经验」在涌流下只能挑到 b_001
+    // 三张图倍率 1.0 / 1.1 / 1.2 → 最高的是 GOLD；而「经验」若按天气比大小只会挑到最小 id
     expect(travels(calls)).toEqual([`TRAVEL ${GOLD}`]);
     expect(world.currentBiome).toBe(GOLD);
   });
 
   it("配置了具体地图 → 就去那张", async () => {
     const { calls, start } = makeCtx({
-      priorities: "surge,experience",
+      priorities: "golden,experience",
       weather: "arcane_surge",
       config: { surgeBiome: STORM },
     });
@@ -260,14 +260,14 @@ describe("自动切图：涌流优先级（端到端接线）", () => {
 
   it("没有涌流时不会因为配了涌流目标就跑过去", async () => {
     const { calls, start } = makeCtx({
-      priorities: "surge,experience",
+      priorities: "golden,experience",
       weather: "clear",
       config: { surgeBiome: GOLD },
     });
     const run = await start();
 
     await run();
-    // 天气全是晴朗 ×1.0 → 涌流分支进不去；「经验」看到的倍率全都一样，
+    // 天气全是晴朗 ×1.0 → 「经验」看到的倍率全都一样，
     // 高不出迟滞门槛（3%）→ 原地不动，而不是跑去配置的涌流目标图
     expect(travels(calls)).toEqual([]);
   });

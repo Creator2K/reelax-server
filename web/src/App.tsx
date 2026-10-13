@@ -31,7 +31,6 @@ const NotifyPage = lazy(() => import("./pages/Notify.tsx"));
 const CdkPage = lazy(() => import("./pages/Cdk.tsx"));
 const LogsPage = lazy(() => import("./pages/Logs.tsx"));
 const SettingsPage = lazy(() => import("./pages/Settings.tsx"));
-const ChangelogPage = lazy(() => import("./pages/Changelog.tsx"));
 const AboutPage = lazy(() => import("./pages/About.tsx"));
 const AdminPage = lazy(() => import("./pages/Admin.tsx"));
 const NotFoundPage = lazy(() => import("./pages/NotFound.tsx"));
@@ -110,7 +109,8 @@ export default function App() {
 
           {/* 两者都能访问 */}
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/changelog" element={<ChangelogPage />} />
+          {/* 更新记录已并入「关于」（旧链接与登录页入口都指向这里） */}
+          <Route path="/changelog" element={<Navigate to="/about" replace />} />
           <Route path="/about" element={<AboutPage />} />
 
           {/* 纯后台：仅管理员 */}

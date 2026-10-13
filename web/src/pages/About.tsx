@@ -1,20 +1,30 @@
-// 「关于」：这个项目是什么、能做什么、代码在哪
+// 「关于」：这个项目是什么、能做什么、改了什么、代码在哪
 //
 // 功能一览直接来自 `/api/modules`（编译进镜像的功能定义），不在这里手抄一份 ——
 // 手抄的清单一定会过期，而这个页面本身就是用来说明"当前这版有什么"的。
+// 只列功能名（悬停看一句话说明）：十几项的长说明铺满一屏，反而什么都看不清。
+//
+// 更新记录也在这里（原来单独占一个侧边栏入口）：默认只展开最近两版，其余按需加载。
 import { useQuery } from "@tanstack/react-query";
-import { IconBrandGithub, IconExternalLink, IconInfoCircle, IconSparkles } from "@tabler/icons-react";
+import {
+  IconBrandGithub,
+  IconExternalLink,
+  IconHistory,
+  IconInfoCircle,
+  IconSparkles,
+} from "@tabler/icons-react";
 import { PageContainer } from "@/components/layout/PageContainer.tsx";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
+import { ChangelogList } from "@/components/domain/Changelog.tsx";
 import { useModuleDefinitions } from "@/lib/queries.ts";
 import { api } from "@/lib/api.ts";
 
 const REPO = "https://github.com/Creator2K/reelax-server";
 
 export default function AboutPage() {
-  usePageHeader("关于", "这是什么、能做什么、代码在哪");
+  usePageHeader("关于", "这是什么、能做什么、改了什么");
   const modules = useModuleDefinitions();
   const health = useQuery({
     queryKey: ["health", "version"],
@@ -70,20 +80,29 @@ export default function AboutPage() {
             {modules.isLoading ? (
               <div className="text-muted-foreground text-sm">加载中…</div>
             ) : (
-              <div className="grid gap-2 sm:grid-cols-2">
+              <div className="flex flex-wrap gap-1.5">
                 {(modules.data ?? []).map((m) => (
-                  <div key={m.id} className="bg-muted rounded-xl px-3 py-2">
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                      {m.name}
-                      {m.defaultEnabled ? null : (
-                        <span className="text-muted-foreground text-[11px] font-normal">默认关闭</span>
-                      )}
-                    </div>
-                    <div className="text-muted-foreground mt-0.5 text-xs leading-relaxed">{m.description}</div>
-                  </div>
+                  <Badge key={m.id} variant="secondary" title={m.description} className="font-normal">
+                    {m.name}
+                    {m.defaultEnabled ? null : (
+                      <span className="text-muted-foreground ml-1 text-[10px]">默认关闭</span>
+                    )}
+                  </Badge>
                 ))}
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <IconHistory className="size-4" />
+              更新记录
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ChangelogList />
           </CardContent>
         </Card>
 

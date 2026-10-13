@@ -17,7 +17,6 @@ import {
   IconChartDots,
   IconCloudNetwork,
   IconGift,
-  IconHistory,
   IconInfoCircle,
   IconListDetails,
   IconSettings,
@@ -46,7 +45,6 @@ export const USER_NAV_ITEMS: NavItem[] = [
   { to: "/cdk", label: "CDK 兑换", icon: IconGift },
   { to: "/notify", label: "推送", icon: IconBroadcast },
   { to: "/logs", label: "运行日志", icon: IconListDetails },
-  { to: "/changelog", label: "更新记录", icon: IconHistory },
   { to: "/about", label: "关于", icon: IconInfoCircle },
   { to: "/settings", label: "设置", icon: IconSettings },
 ];
@@ -59,7 +57,7 @@ export const USER_NAV_ITEMS: NavItem[] = [
  */
 export const ADMIN_NAV_ITEMS: NavItem[] = [
   { to: "/admin", label: "后台管理", icon: IconShieldLock, end: true },
-  { to: "/changelog", label: "更新记录", icon: IconHistory },
+  { to: "/about", label: "关于", icon: IconInfoCircle },
   { to: "/settings", label: "设置", icon: IconSettings },
 ];
 

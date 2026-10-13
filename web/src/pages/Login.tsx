@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { AuthShell } from "@/components/layout/AuthShell.tsx";
-import { VersionLine } from "@/components/domain/Changelog.tsx";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog.tsx";
+import { ChangelogList, VersionLine } from "@/components/domain/Changelog.tsx";
 import { useAuthActions } from "@/lib/session.ts";
 import { ApiError } from "@/lib/api.ts";
 
@@ -28,6 +29,7 @@ export default function LoginPage() {
   const location = useLocation();
   const { login } = useAuthActions();
   const [formError, setFormError] = useState<string | null>(null);
+  const [changelogOpen, setChangelogOpen] = useState(false);
 
   const {
     register,
@@ -87,12 +89,25 @@ export default function LoginPage() {
         </p>
       </form>
 
-      {/* 登录前也能看版本与更新内容 */}
+      {/* 登录前也能看版本与更新内容（点开是弹窗，不再单独占一个页面） */}
       <div className="mt-4 flex justify-center">
-        <Link to="/changelog" className="text-muted-foreground hover:text-foreground text-xs underline underline-offset-4">
+        <button
+          type="button"
+          onClick={() => setChangelogOpen(true)}
+          className="text-muted-foreground hover:text-foreground cursor-pointer text-xs underline underline-offset-4"
+        >
           <VersionLine />
-        </Link>
+        </button>
       </div>
+
+      <Dialog open={changelogOpen} onOpenChange={setChangelogOpen}>
+        <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>更新记录</DialogTitle>
+          </DialogHeader>
+          <ChangelogList />
+        </DialogContent>
+      </Dialog>
     </AuthShell>
   );
 }

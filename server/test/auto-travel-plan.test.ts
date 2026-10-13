@@ -1,8 +1,8 @@
-// 自动切图：纯函数决策（优先级解析 / 选「已解锁的最高地图」/ 涌流分支）
+// 自动切图：纯函数决策（优先级解析 / 选「已解锁的最高地图」/ 涌流处理）
 //
-// ★ 涌流单独成一个优先级的原因：它是**覆盖所有地图**的全局天气，于是「天气经验最高」
-//   在所有图上都一样，经验优先级只能靠 id 兜底挑到最小 id 的新手图。
-//   涌流期间经验 ×1.75，应该待在收益最高的那张图。
+// ★ 涌流**不是**独立优先级：它是覆盖所有地图的全局天气，各图加成完全相同，排序没有意义。
+//   它由「经验」优先级在内部处理 —— 否则「经验」的比大小只能靠 id 兜底，
+//   涌流期间会把待在高级图的人拽去等级最低的新手图。
 import { describe, expect, it } from "vitest";
 import autoTravel, {
   DEFAULT_PRIORITIES,
@@ -22,30 +22,33 @@ const STORM = { id: "b_002", name: "雾语湿地", valueMultiplier: 1.05, requir
 const surge = (b: typeof HOME) => ({ ...b, weather: { weatherId: "arcane_surge" } });
 
 describe("自动切图 · 优先级解析", () => {
-  it("四项齐全，缺的补在后面", () => {
-    expect(parsePriorities("experience")).toEqual(["experience", "competition", "golden", "surge"]);
-    expect(parsePriorities("surge,competition,golden,experience")).toEqual([
-      "surge",
+  it("三项齐全，缺的补在后面", () => {
+    expect(parsePriorities("experience")).toEqual(["experience", "competition", "golden"]);
+    expect(parsePriorities("golden,competition,experience")).toEqual(["golden", "competition", "experience"]);
+  });
+
+  it("认不出的项丢掉、重复的只留一次", () => {
+    // "surge" 是 1.7.0 里短暂存在过的独立优先级：老配置读进来要能自动忽略
+    expect(parsePriorities("surge,surge,nope,golden")).toEqual(["golden", "competition", "experience"]);
+    expect(parsePriorities("competition,golden,surge,experience")).toEqual([
       "competition",
       "golden",
       "experience",
     ]);
-  });
-
-  it("认不出的项丢掉、重复的只留一次", () => {
-    expect(parsePriorities("surge,surge,nope,golden")).toEqual(["surge", "golden", "competition", "experience"]);
     expect(parsePriorities("")).toEqual(DEFAULT_PRIORITIES);
   });
 
   it("每一项都有中文名（前端与日志共用）", () => {
-    for (const p of DEFAULT_PRIORITIES) expect(PRIORITY_LABELS[p as Priority]).toBeTruthy();
-    expect(PRIORITY_LABELS.surge).toBe("涌流");
+    for (const p of DEFAULT_PRIORITIES) expect(PRIORITY_LABELS[p]).toBeTruthy();
   });
 
-  it("下拉框给出 4 项的 24 种排列", () => {
+  it("下拉框只给 3 项的 6 种排列（涌流不在其中）", () => {
     const field = autoTravel.configSchema.find((f) => f.key === "priorities");
     expect(field?.type).toBe("select");
-    if (field?.type === "select") expect(field.options).toHaveLength(24);
+    if (field?.type === "select") {
+      expect(field.options).toHaveLength(6);
+      for (const o of field.options) expect(o.label).not.toContain("涌流");
+    }
   });
 });
 
@@ -86,9 +89,9 @@ describe("自动切图 · 已解锁的最高地图", () => {
   });
 });
 
-describe("自动切图 · 涌流优先级", () => {
+describe("自动切图 · 涌流（由「经验」优先级处理，不是独立一项）", () => {
   const base = {
-    priorities: ["surge", "experience"] as Priority[],
+    priorities: ["experience"] as Priority[],
     currentBiomeId: "b_001",
     competition: null,
     minImprovePct: 0,
@@ -100,12 +103,13 @@ describe("自动切图 · 涌流优先级", () => {
       unlocked: [surge(HOME), surge(MID), surge(TOP)],
       surgeBiomeId: "b_005",
     });
-    expect(d).toMatchObject({ action: "travel", biomeId: "b_005", reason: "surge" });
+    expect(d).toMatchObject({ action: "travel", biomeId: "b_005", reason: "experience" });
   });
 
-  it("★ 没指定（留空）→ 去已解锁的最高地图", () => {
+  it("★ 没指定（留空）→ 去已解锁的最高地图，而不是 id 最小的新手图", () => {
     const d = planTravel({ ...base, unlocked: [surge(HOME), surge(MID), surge(TOP)], surgeBiomeId: "" });
-    expect(d).toMatchObject({ action: "travel", biomeId: "b_009", reason: "surge" });
+    expect(d).toMatchObject({ action: "travel", biomeId: "b_009", reason: "experience" });
+    if (d.action === "travel") expect(d.why).toContain("涌流");
   });
 
   it("指定的图还没解锁 → 退回最高地图，并在理由里说明", () => {
@@ -115,35 +119,35 @@ describe("自动切图 · 涌流优先级", () => {
       currentBiomeId: "b_001",
       surgeBiomeId: "b_009",
     });
-    expect(d).toMatchObject({ action: "travel", biomeId: "b_005", reason: "surge" });
+    expect(d).toMatchObject({ action: "travel", biomeId: "b_005", reason: "experience" });
     if (d.action === "travel") expect(d.why).toContain("未解锁");
   });
 
   it("★ 已经在涌流目标图 → 不动（不会来回横跳）", () => {
     const d = planTravel({ ...base, unlocked: [surge(HOME), surge(TOP)], currentBiomeId: "b_009", surgeBiomeId: "" });
-    expect(d).toMatchObject({ action: "stay", reason: "surge" });
+    expect(d).toMatchObject({ action: "stay", reason: "experience" });
   });
 
-  it("★ 没有涌流时这个优先级被跳过：交给后面的「经验」", () => {
+  it("★ 没有涌流时不看涌流目标：照常按天气经验挑", () => {
     const d = planTravel({
       ...base,
       unlocked: [HOME, STORM, TOP],
       currentBiomeId: "b_001",
       surgeBiomeId: "b_009",
     });
-    // 雷暴 ×1.5 的天气经验比晴空 ×1.0 高 → 去天气图，而不是配置的 b_009
+    // 雷暴 ×1.5 的天气经验比晴空 ×1.0 高 → 去天气图，而不是配置的涌流目标 b_009
     expect(d).toMatchObject({ action: "travel", biomeId: "b_002", reason: "experience" });
   });
 
-  it("涌流排在经验后面时，仍然先看经验（顺序即配置）", () => {
+  it("涌流只在有比赛 / 金风候选时才被让位（优先级顺序不变）", () => {
     const d = planTravel({
       ...base,
-      priorities: ["experience", "surge"],
-      // 涌流覆盖所有地图 → 「经验」看到的是相同的 1.75，只能按 id 兜底挑到 b_001
-      unlocked: [surge(HOME), surge(MID), surge(TOP)],
-      currentBiomeId: "b_009",
+      priorities: ["golden", "experience"] as Priority[],
+      unlocked: [surge(HOME), { ...surge(TOP), weather: { weatherId: "gilded_current" } }],
+      currentBiomeId: "b_001",
       surgeBiomeId: "",
     });
-    expect(d).toMatchObject({ action: "travel", biomeId: "b_001", reason: "experience" });
+    // 金风排第一 → 先去金风图，涌流目标（b_001 已解锁且倍率最高的其实是 b_009…）不参与
+    expect(d).toMatchObject({ action: "travel", biomeId: "b_009", reason: "golden" });
   });
 });

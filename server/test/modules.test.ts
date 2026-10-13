@@ -271,27 +271,24 @@ describe("bucketOf（装备分档）", () => {
 /* ==================== 自动切图：优先级与评分 ==================== */
 
 describe("parsePriorities", () => {
-  it("解析顺序（四项：比赛 / 金风 / 涌流 / 经验）", () => {
-    expect(parsePriorities("golden,competition,experience")).toEqual([
-      "golden",
-      "competition",
-      "experience",
-      "surge",
-    ]);
-    expect(parsePriorities("surge,golden,competition,experience")).toEqual([
-      "surge",
-      "golden",
-      "competition",
-      "experience",
-    ]);
+  it("解析三项顺序", () => {
+    expect(parsePriorities("golden,competition,experience")).toEqual(["golden", "competition", "experience"]);
   });
 
-  it("★ 无论怎么写，结果都一定四项齐全且不重复（顺序才是配置项本身）", () => {
-    expect(parsePriorities("experience")).toEqual(["experience", "competition", "golden", "surge"]);
-    expect(parsePriorities("golden,golden,experience")).toEqual(["golden", "experience", "competition", "surge"]);
+  it("★ 无论怎么写，结果都一定三项齐全且不重复（顺序才是配置项本身）", () => {
+    expect(parsePriorities("experience")).toEqual(["experience", "competition", "golden"]);
+    expect(parsePriorities("golden,golden,experience")).toEqual(["golden", "experience", "competition"]);
     expect(parsePriorities("")).toEqual(DEFAULT_PRIORITIES);
     expect(parsePriorities(undefined)).toEqual(DEFAULT_PRIORITIES);
     expect(parsePriorities("看心情")).toEqual(DEFAULT_PRIORITIES);
+  });
+
+  it("1.7.0 短暂存在过的「涌流」项被当成认不出的项丢掉（老配置不会卡住保存）", () => {
+    expect(parsePriorities("competition,golden,surge,experience")).toEqual([
+      "competition",
+      "golden",
+      "experience",
+    ]);
   });
 });
 

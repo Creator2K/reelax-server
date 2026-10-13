@@ -9,15 +9,15 @@
 // ★ 优先级（与官方助手的「换图优先级」同构，可从高到低排序）：
 //     比赛     我在打的比赛地图（个人赛 / 公会赛已报名，进行中或即将开赛）
 //     金风     正在刮「金风」（gilded_current）的地图 —— 每杆直接金币区间提高
-//     涌流     正在刮「奥秘涌流」（arcane_surge）时去指定的地图（默认：已解锁的最高地图）
 //     经验     天气经验加成最高的地图（**只看天气**，不含专精 / 公会增益）
 //
 //   判定方式是「按顺序找第一个有候选的优先级，它就是决定」——
 //   也就是说：有比赛可去就不会因为别处天气好而跑掉；已经是金风了也不会被经验优先级拽走。
 //
-// ★ 涌流为什么要单独一个优先级：涌流是**覆盖所有地图**的全局天气，于是「天气经验最高」
-//   在所有图上都一样，经验优先级只能靠 id 兜底挑到最小 id 的新手图 —— 这正是用户报的现象。
-//   而涌流期间经验 ×1.75，应该待在**收益最高的那张图**（默认取已解锁的最高地图，可指定）。
+// ★ 涌流不做成独立优先级：它是**覆盖所有地图**的全局天气，各图天气加成完全相同，
+//   当成一项来排序没有意义（用户明确要求去掉）。它由「经验」优先级在内部处理：
+//   涌流期间所有图的天气倍率都一样，「经验」的比大小只能靠 id 兜底、挑到等级最低的
+//   新手图 —— 所以这时改按「涌流目标」挑（默认已解锁的最高地图，可指定某一张）。
 //
 // ★ 船队：船长 / 舵手（`party.canChangeBoatBiome`）可以把整条船开过去，能跟的船员一起走。
 //   开了「带队换图」就改用船队接口（POST /api/party-boats/current-biome）而不是个人换图；
@@ -48,20 +48,19 @@ const TERMINAL_TOURNAMENT_STATUSES = new Set(["ended", "finished", "settled", "s
  */
 const STARTED_GRACE_MS = 10 * 60_000;
 
-/** 四个优先级（比赛 / 金风 / 涌流与官方助手一致，涌流是本项目多加的一项） */
-export type Priority = "competition" | "golden" | "surge" | "experience";
+/** 三个优先级（与官方助手一致；涌流由「经验」内部处理，不是独立一项） */
+export type Priority = "competition" | "golden" | "experience";
 
 export const PRIORITY_LABELS: Record<Priority, string> = {
   competition: "比赛",
   golden: "金风",
-  surge: "涌流",
   experience: "经验",
 };
 
-/** 缺省顺序（官方助手的三项，涌流插在金风之后 —— 它是时段性的，犹豫就错过） */
-export const DEFAULT_PRIORITIES: Priority[] = ["competition", "golden", "surge", "experience"];
+/** 缺省顺序（也是官方助手的默认值） */
+export const DEFAULT_PRIORITIES: Priority[] = ["competition", "golden", "experience"];
 
-const ALL_PRIORITIES: Priority[] = ["competition", "golden", "surge", "experience"];
+const ALL_PRIORITIES: Priority[] = ["competition", "golden", "experience"];
 const isPriority = (v: unknown): v is Priority => ALL_PRIORITIES.includes(v as Priority);
 
 /**
@@ -219,29 +218,31 @@ export function planTravel(input: {
       };
     }
 
-    if (p === "surge") {
-      // 涌流是**全局**天气（覆盖所有地图），所以「有没有涌流」看的是有没有任一张图带着它
-      const surged = unlocked.filter(isSurge);
-      if (!surged.length) continue; // 没有涌流 → 看下一个优先级
-
+    // experience：天气经验最高的地图（只看天气）
+    //
+    // ★ 涌流先在这里被处理掉：它是**覆盖所有地图**的全局天气，各图天气倍率完全相同，
+    //   下面的比大小只能靠 id 兜底、挑到等级最低的新手图。这时改按「涌流目标」挑 ——
+    //   默认是已解锁的最高地图，也可以在配置里指定某一张。
+    const surged = unlocked.filter(isSurge);
+    if (surged.length) {
       const wantId = String(input.surgeBiomeId ?? "").trim();
       const wanted = wantId ? (unlocked.find((b) => String(b?.id ?? "") === wantId) ?? null) : null;
       const target = wanted ?? pickHighestUnlocked(surged);
-      if (!target) continue;
-      if (String(target.id) === currentBiomeId) {
-        return { action: "stay", reason: p, why: `已在涌流目标地图（${describeBiome(target)}）` };
+      if (target) {
+        if (String(target.id) === currentBiomeId) {
+          return { action: "stay", reason: p, why: `涌流期间已在目标地图（${describeBiome(target)}）` };
+        }
+        return {
+          action: "travel",
+          biomeId: String(target.id),
+          reason: p,
+          why:
+            `奥秘涌流（各图加成相同，按涌流目标挑）→ ${describeBiome(target)}` +
+            (wantId && !wanted ? `（配置的 ${wantId} 未解锁，改用已解锁的最高地图）` : ""),
+        };
       }
-      return {
-        action: "travel",
-        biomeId: String(target.id),
-        reason: p,
-        why:
-          `奥秘涌流 → ${describeBiome(target)}` +
-          (wantId && !wanted ? `（配置的 ${wantId} 未解锁，改用已解锁的最高地图）` : ""),
-      };
     }
 
-    // experience：天气经验最高的地图（只看天气）
     const best = bestBy(unlocked, xpWeight, (b) => String(b?.id ?? ""));
     if (!best) continue;
     const bestXp = xpWeight(best);
@@ -309,12 +310,12 @@ const PRIORITY_OPTIONS = (() => {
 const definition: ModuleDefinition = {
   id: "auto-travel",
   name: "自动切图",
-  version: "4.0.0",
+  version: "4.1.0",
   description:
-    "按你排的优先级在已解锁地图里挑一张待着（做法与官方航线助手的「换图优先级」一致）：比赛地图 > 金风地图 > 涌流地图 > 天气经验最高的地图，顺序可调。涌流是全局天气，可指定期间去哪张图（默认已解锁的最高地图）。船长 / 舵手还能在换图时把船员一起带走。",
+    "按你排的优先级在已解锁地图里挑一张待着（做法与官方航线助手的「换图优先级」一致）：比赛地图 > 金风地图 > 天气经验最高的地图，顺序可调。涌流是覆盖所有地图的全局天气，各图加成相同，因此它不参与排序，而是由「经验」在涌流期间按「涌流目标」挑图（默认已解锁的最高地图）。船长 / 舵手还能在换图时把船员一起带走。",
   defaultEnabled: false,
   defaultConfig: {
-    priorities: "competition,golden,surge,experience",
+    priorities: "competition,golden,experience",
     surgeBiome: "",
     crewTravel: "off",
     fleetMode: "solo",
@@ -332,9 +333,8 @@ const definition: ModuleDefinition = {
         "按顺序找第一个有候选的优先级，它就是决定 —— 有比赛可去就不会因为别处天气好而跑掉。\n" +
         "比赛 = 我已报名的个人赛 / 公会赛地图（进行中或即将开赛）；" +
         "金风 = 正在刮金风的地图（每杆直接金币区间提高）；" +
-        "涌流 = 正在刮奥秘涌流时去下面指定的地图；" +
-        "经验 = 天气经验加成最高的地图。",
-      default: "competition,golden,surge,experience",
+        "经验 = 天气经验加成最高的地图（涌流期间各图相同，改按下面的「涌流目标」挑）。",
+      default: "competition,golden,experience",
       options: PRIORITY_OPTIONS,
     },
     {
@@ -342,7 +342,7 @@ const definition: ModuleDefinition = {
       type: "select",
       label: "奥秘涌流期间去哪张图",
       hint:
-        "涌流是覆盖所有地图的全局天气，这时「天气经验最高」在所有图上都一样，所以需要单独指定去哪张。\n" +
+        "涌流覆盖所有地图：这时各图天气加成完全相同，「天气经验最高」失去区分度（只能按 id 兜底挑到等级最低的图），因此改为按这里指定的图走。\n" +
         "留空 = 已解锁的最高地图（鱼价值倍率最高的那张）。",
       default: "",
       options: [{ value: "", label: "自动：已解锁的最高地图" }, ...BIOME_OPTIONS],

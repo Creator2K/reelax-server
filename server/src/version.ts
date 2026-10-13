@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.7.0";
+export const VERSION = "1.7.1";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -24,13 +24,32 @@ export type ChangelogEntry = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "1.7.1",
+    date: "2026-10-13",
+    title: "「更新记录」并入「关于」、换图优先级精简",
+    changes: [
+      {
+        kind: "improve",
+        text: "「更新记录」并入「关于」页：默认展开最近 2 个版本，其余点「加载更多」逐批出现；侧边栏不再单设入口，登录页的版本号改为点开弹窗查看",
+      },
+      {
+        kind: "improve",
+        text: "「关于」页的内置功能改为只列功能名称，悬停查看一句话说明，不再逐条铺开长描述",
+      },
+      {
+        kind: "improve",
+        text: "「换图优先级」恢复为三项（比赛 / 金风 / 经验）：涌流是覆盖所有地图的全局天气，各图加成完全相同，作为独立优先级排序没有意义；涌流期间去哪张图仍由「经验」按「涌流目标」决定（默认已解锁的最高地图）",
+      },
+    ],
+  },
+  {
     version: "1.7.0",
     date: "2026-10-13",
     title: "账号卡片、自动切图涌流与带队换图、鱼饵自动降级",
     changes: [
       {
         kind: "feature",
-        text: "「自动切图」新增「涌流」优先级：奥秘涌流期间前往指定地图，留空则取已解锁的最高地图（按鱼价值倍率）。涌流是覆盖所有地图的全局天气，此时「天气经验最高」在各图相同，原先只能按 id 兜底选中等级最低的地图",
+        text: "「自动切图」在奥秘涌流期间前往指定地图（默认已解锁的最高地图，按鱼价值倍率）：涌流是覆盖所有地图的全局天气，此时各图的「天气经验最高」完全相同，原先只能按 id 兜底选中等级最低的地图",
       },
       {
         kind: "feature",
