@@ -161,6 +161,52 @@ export function useTravelAccount(accountId: string) {
   });
 }
 
+/* ---------------- 船队（组队） ---------------- */
+
+function invalidateParty(qc: ReturnType<typeof useQueryClient>, accountId: string) {
+  void qc.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY });
+  void qc.invalidateQueries({ queryKey: ["account-party", accountId] });
+  void qc.invalidateQueries({ queryKey: ["account-maps", accountId] });
+}
+
+/** 用邀请码加入船队（错误原因由服务端翻译成中文，直接 toast 出来） */
+export function useJoinParty(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (code: string) => api.post(`/api/accounts/${accountId}/party/join`, { code }),
+    onSuccess: () => {
+      invalidateParty(qc, accountId);
+      toast.success("已加入船队");
+    },
+    onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
+  });
+}
+
+export function useLeaveParty(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post(`/api/accounts/${accountId}/party/leave`),
+    onSuccess: () => {
+      invalidateParty(qc, accountId);
+      toast.success("已离开船队");
+    },
+    onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
+  });
+}
+
+export function useRespondPartyInvitation(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ invitationId, action }: { invitationId: string; action: "accept" | "reject" }) =>
+      api.post(`/api/accounts/${accountId}/party/invitations/${invitationId}`, { action }),
+    onSuccess: (_data, vars) => {
+      invalidateParty(qc, accountId);
+      toast.success(vars.action === "accept" ? "已接受邀请" : "已拒绝邀请");
+    },
+    onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
+  });
+}
+
 /* ---------------- 代理 ---------------- */
 
 export type CreateProxyBody = {

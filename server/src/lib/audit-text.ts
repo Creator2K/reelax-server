@@ -57,6 +57,17 @@ function detailNote(raw: string | null): string {
   return parts.length ? `（${parts.join("、")}）` : "";
 }
 
+/** 读 detail_json 里的一个布尔/字符串字段（解析失败返回 null） */
+function detailJsonFlag(row: AuditLike, key: string): string | null {
+  try {
+    const d = JSON.parse(String(row?.detail_json ?? "")) as Record<string, unknown>;
+    const v = d?.[key];
+    return typeof v === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 审计动作 → 一句中文描述 */
 export function describeAudit(row: AuditLike, r: AuditResolvers = {}): string {
   const action = String(row?.action ?? "");
@@ -117,6 +128,12 @@ export function describeAudit(row: AuditLike, r: AuditResolvers = {}): string {
       return `停止账号${accountText(target ?? "", r)}`;
     case "account.travel":
       return `手动切换账号${accountText(target ?? "", r)}的所在地图${note}`;
+    case "account.party.join":
+      return `让账号${accountText(target ?? "", r)}用邀请码加入船队`;
+    case "account.party.leave":
+      return `让账号${accountText(target ?? "", r)}离开船队`;
+    case "account.party.invitation":
+      return `让账号${accountText(target ?? "", r)}${detailJsonFlag(row, "action") === "accept" ? "接受" : "拒绝"}组队邀请`;
     case "account.credentials.updated":
       return `更新账号${accountText(target ?? "", r)}的登录凭证`;
 

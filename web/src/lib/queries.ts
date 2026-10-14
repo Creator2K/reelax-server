@@ -208,6 +208,36 @@ export function useAccountMaps(id: string | undefined, enabled = true) {
   });
 }
 
+/* ---------- 船队（组队） ---------- */
+
+export type PartyInvitation = { id: string; from: string | null; boatName: string | null };
+
+export type AccountParty = {
+  inParty: boolean;
+  boatName: string | null;
+  boatBiomeId: string | null;
+  boatBiomeName: string | null;
+  /** 能否改变船队航线（= 船长 / 舵手） */
+  canChangeBoatBiome: boolean;
+  /** 是否允许船长 / 舵手换图时把自己一起带走 */
+  canBeSummoned: boolean;
+  onBoat: boolean | null;
+  /** 船长不能直接离开时的说明 */
+  leaveBlockedReason: string | null;
+  invitations: PartyInvitation[];
+};
+
+/** 船队状态：每次打开现读（船队状态变化频繁） */
+export function useAccountParty(id: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ["account-party", id],
+    queryFn: () => api.get<AccountParty>(`/api/accounts/${id}/party`),
+    enabled: Boolean(id) && enabled,
+    staleTime: 10_000,
+    retry: false,
+  });
+}
+
 /* ---------- 内置模块清单 ---------- */
 
 export type ConfigField =

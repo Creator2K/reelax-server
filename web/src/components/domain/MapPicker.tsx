@@ -54,12 +54,17 @@ const WEATHER_STYLE: Record<string, { icon: typeof IconSun; className: string }>
 };
 const weatherStyle = (id: string | undefined) => WEATHER_STYLE[id ?? ""] ?? WEATHER_STYLE.clear!;
 
-/** 天气小徽章：图标 + 名字 + 经验倍率 */
+/** 天气小徽章：图标 + 名字 + 经验倍率（不换行；窄了就让整行换行，别把名字拆开） */
 function WeatherBadge({ weather }: { weather: MapItem["weather"] }) {
   if (!weather) return <span className="text-muted-foreground text-[11px]">天气未知</span>;
   const { icon: Icon, className } = weatherStyle(weather.id);
   return (
-    <span className={cn("inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium", className)}>
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap",
+        className,
+      )}
+    >
       <Icon className="size-3" />
       {weather.name}
       <span className="opacity-75">经验×{weather.xpMultiplier.toFixed(2)}</span>
@@ -79,12 +84,12 @@ function MapCard({
 }) {
   if (!map.isUnlocked) {
     return (
-      <div className="border-border/60 text-muted-foreground flex items-center gap-2 rounded-xl border border-dashed px-3 py-2.5 opacity-70">
+      <div className="border-border/60 text-muted-foreground flex min-w-0 items-center gap-2 overflow-hidden rounded-xl border border-dashed px-3 py-2.5 opacity-70">
         <IconLock className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate text-xs font-medium">{map.name}</span>
         <span className="mono-num shrink-0 text-[11px]">
           需 Lv {fmtCompact(map.requiredLevel)}
-          {map.unlockCost > 0 ? ` · ${fmtCompact(map.unlockCost)} 金币` : ""}
+          {map.unlockCost > 0 ? ` · ${fmtCompact(map.unlockCost)}` : ""}
         </span>
       </div>
     );
@@ -96,34 +101,35 @@ function MapCard({
       disabled={disabled || map.isCurrent}
       onClick={onPick}
       className={cn(
-        "flex flex-col gap-1.5 rounded-xl border px-3 py-2.5 text-left transition-colors",
+        "flex w-full min-w-0 flex-col gap-1.5 overflow-hidden rounded-xl border px-3 py-2.5 text-left transition-colors",
         map.isCurrent
           ? "border-primary/40 bg-primary/6 ring-1 ring-primary/25"
           : "border-border/60 hover:bg-accent/50",
         disabled && !map.isCurrent && "opacity-60",
       )}
     >
-      <span className="flex items-center gap-1.5">
+      <span className="flex min-w-0 items-center gap-1.5">
         <IconMapPin className={cn("size-3.5 shrink-0", map.isCurrent ? "text-primary" : "opacity-60")} />
         <span className="min-w-0 flex-1 truncate text-xs font-medium">{map.name}</span>
-        {map.isCurrent ? <Badge variant="online">当前</Badge> : null}
+        {map.isCurrent ? (
+          <Badge variant="online" className="shrink-0">
+            当前
+          </Badge>
+        ) : null}
       </span>
 
-      <span className="flex flex-wrap items-center gap-1.5">
+      <span className="flex min-w-0 flex-wrap items-center gap-1.5">
         <WeatherBadge weather={map.weather} />
-        <span className="text-muted-foreground mono-num text-[11px]">鱼价值×{map.valueMultiplier.toFixed(2)}</span>
+        <span className="text-muted-foreground mono-num text-[11px] whitespace-nowrap">
+          鱼价值×{map.valueMultiplier.toFixed(2)}
+        </span>
       </span>
 
       {map.competitionActive || map.myCompetition ? (
-        <span className="flex flex-wrap items-center gap-1.5">
-          {map.myCompetition ? (
-            <Badge variant="warn" className="gap-1">
-              <IconTrophy className="size-3" />
-              {map.myCompetition}
-            </Badge>
-          ) : null}
-          {map.competitionActive && !map.myCompetition ? <Badge variant="secondary">有比赛</Badge> : null}
-        </span>
+        <Badge variant={map.myCompetition ? "warn" : "secondary"} className="w-fit max-w-full gap-1">
+          {map.myCompetition ? <IconTrophy className="size-3 shrink-0" /> : null}
+          <span className="truncate">{map.myCompetition ?? "有比赛"}</span>
+        </Badge>
       ) : null}
     </button>
   );
@@ -209,7 +215,7 @@ export function MapPicker({ accountId }: { accountId: string }) {
               </div>
             ) : null}
 
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {unlocked.map((m) => (
                 <MapCard key={m.id} map={m} disabled={travel.isPending} onPick={() => pick(m)} />
               ))}
@@ -218,7 +224,7 @@ export function MapPicker({ accountId }: { accountId: string }) {
             {locked.length ? (
               <div className="space-y-1.5">
                 <div className="text-muted-foreground text-[11px]">未解锁（可以在「自动解锁地图」里买）</div>
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                   {locked.map((m) => (
                     <MapCard key={m.id} map={m} disabled onPick={() => {}} />
                   ))}

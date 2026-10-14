@@ -86,6 +86,84 @@ export function buildMapsView(input: {
 
 export type TravelCheck = { ok: true } | { ok: false; code: string; message: string };
 
+/* ---------- 比赛标记 ---------- */
+
+/** 「即将开赛」的显示窗口：更远的场次不显示（否则五天后开赛的比赛也会挂在图上） */
+export const COMPETITION_SOON_MS = 2 * 60 * 60 * 1000;
+/** 已过开赛时间但状态还没转成 active 的宽限：超过就当历史场次丢掉 */
+export const STARTED_GRACE_MS = 30 * 60 * 1000;
+
+const TERMINAL_TOURNAMENT_STATUSES = new Set([
+  "ended",
+  "finished",
+  "settled",
+  "settling",
+  "canceled",
+  "cancelled",
+  "closed",
+]);
+
+/** 「42 分钟后开赛」这种说法（只看 2 小时以内，所以最多两位数的分钟 / 1 小时多） */
+export function countdownText(ms: number): string {
+  const min = Math.max(0, Math.round(ms / 60_000));
+  if (min <= 0) return "马上开赛";
+  if (min < 60) return `${min} 分钟后开赛`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m ? `${h} 小时 ${m} 分钟后开赛` : `${h} 小时后开赛`;
+}
+
+/**
+ * 「我报名的比赛在哪张图」：个人赛 / 公会赛各一份 overview → biomeId → 说明。
+ *
+ * 规则（与自动切图的比赛目标口径一致，避免两个模块说法不同）：
+ *  · 只认**未结束**且**我报名了**的场次；
+ *  · 进行中的直接标记；
+ *  · 即将开赛的必须有可解析的 `startAt`，且落在 [now - 宽限, now + 2 小时] 内 ——
+ *    没有下界判断的话，upcoming 里残留的历史场次会永远挂在那儿；
+ *  · 多场比赛撞同一张图时，进行中的优先。
+ */
+export function buildCompetitionMarks(input: {
+  personal: any;
+  guild: any;
+  now: number;
+  soonMs?: number;
+}): Map<string, string> {
+  const soon = input.soonMs ?? COMPETITION_SOON_MS;
+  const out = new Map<string, string>();
+  const active = new Set<string>();
+
+  const consider = (t: any, registeredKey: string, kind: string) => {
+    if (!t?.[registeredKey]) return;
+    const status = String(t?.status ?? "").toLowerCase();
+    if (TERMINAL_TOURNAMENT_STATUSES.has(status)) return;
+
+    const biomeId = String(t?.assignedBiomeId ?? t?.biomeId ?? "");
+    if (!biomeId) return;
+
+    const label = `${kind} #${t.sequence ?? "?"}`;
+    if (status === "active") {
+      out.set(biomeId, `${label} 进行中`);
+      active.add(biomeId);
+      return;
+    }
+    if (status && status !== "scheduled") return; // 不认识的中间状态不当标记
+
+    const at = Date.parse(String(t?.startAt ?? ""));
+    if (!Number.isFinite(at)) return;
+    const delta = at - input.now;
+    if (delta > soon || delta < -STARTED_GRACE_MS) return;
+
+    // 进行中的标记优先，别被同图的「即将开赛」覆盖
+    if (active.has(biomeId)) return;
+    out.set(biomeId, `${label} · ${countdownText(delta)}`);
+  };
+
+  for (const t of [input.personal?.current, ...(input.personal?.upcoming ?? [])]) consider(t, "isRegistered", "个人赛");
+  for (const t of [input.guild?.current, ...(input.guild?.upcoming ?? [])]) consider(t, "entryStatus", "公会赛");
+  return out;
+}
+
 /** 换图前的校验（纯函数）：把「不可能成功」的情况在发请求之前说清楚 */
 export function checkTravel(input: {
   biome: MapItemView | null;

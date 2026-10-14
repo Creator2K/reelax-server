@@ -35,6 +35,10 @@ export const AUDIT_ACTIONS = {
   ACCOUNT_STOPPED: "account.stopped",
   /** 手动换图（界面上点「切换到某张地图」） */
   ACCOUNT_TRAVEL: "account.travel",
+  /** 船队操作：加入 / 离开 / 回应邀请 */
+  ACCOUNT_PARTY_JOIN: "account.party.join",
+  ACCOUNT_PARTY_LEAVE: "account.party.leave",
+  ACCOUNT_PARTY_INVITATION: "account.party.invitation",
   ACCOUNT_CREDENTIALS_UPDATED: "account.credentials.updated",
   MODULE_UPDATED: "account.module.updated",
   PROXY_CREATED: "proxy.created",

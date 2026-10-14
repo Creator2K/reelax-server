@@ -432,6 +432,27 @@ export class GameClient {
   routeTravel() {
     return this.request("/api/route-assistant/travel", { method: "POST", idempotent: true });
   }
+  /* ---------- 船队（组队） ---------- */
+
+  /** 别人发来的组队邀请（`{ items: [{ id, crewName, inviter? }] }`） */
+  partyInvitations(limit = 20) {
+    return this.request(`/api/party-boats/invitations?limit=${encodeURIComponent(String(limit))}`);
+  }
+  /** 用邀请码加入船队 */
+  partyJoinByCode(code: string) {
+    return this.request("/api/party-boats/join-by-code", { method: "POST", idempotent: true, body: { code } });
+  }
+  /** 离开船队（船长会被服务端拒绝：PARTY_BOAT_CAPTAIN_CANNOT_LEAVE） */
+  partyLeave() {
+    return this.request("/api/party-boats/leave", { method: "POST", idempotent: true });
+  }
+  /** 接受 / 拒绝一条组队邀请 */
+  partyRespondInvitation(invitationId: string, action: "accept" | "reject") {
+    return this.request(
+      `/api/party-boats/invitations/${encodeURIComponent(invitationId)}/${action === "accept" ? "accept" : "reject"}`,
+      { method: "POST", idempotent: true },
+    );
+  }
   dailyCheckInStatus() {
     return this.request("/api/daily-check-in");
   }

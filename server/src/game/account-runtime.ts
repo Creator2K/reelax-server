@@ -1088,6 +1088,30 @@ export class AccountRuntime {
     return r;
   }
 
+  /**
+   * 手动加入船队 / 离开船队 / 回应邀请（用户在界面上点的动作）。
+   *
+   * 与手动换图同理：都是**用户主动**发起的动作，各落一条 info 日志，
+   * 才能在运行日志里区分「人自己操作」与「模块自动动作」。
+   */
+  async joinPartyByCode(code: string): Promise<unknown> {
+    const r = await this.client.partyJoinByCode(code);
+    this.log.info("船队", `⛵ 用邀请码加入船队（${code}）`);
+    return r;
+  }
+
+  async leaveParty(): Promise<unknown> {
+    const r = await this.client.partyLeave();
+    this.log.info("船队", "🚪 已离开船队");
+    return r;
+  }
+
+  async respondPartyInvitation(invitationId: string, action: "accept" | "reject"): Promise<unknown> {
+    const r = await this.client.partyRespondInvitation(invitationId, action);
+    this.log.info("船队", action === "accept" ? "✅ 已接受组队邀请" : "已拒绝组队邀请");
+    return r;
+  }
+
   get proxyFingerprint(): string {
     return this.proxyHolder.currentFingerprint;
   }

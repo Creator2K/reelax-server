@@ -12,7 +12,9 @@ import { HttpError } from "../api/server.ts";
 import { MODULES, getModule } from "../modules/registry.ts";
 import { validateConfigPatch, type ConfigValues } from "../modules/types.ts";
 import { parseProxyInput, parseBaseUrl } from "./proxy-input.ts";
-import { buildMapsView, checkTravel, type AccountMapsView } from "./map-view.ts";
+import { buildMapsView, buildCompetitionMarks, checkTravel, type AccountMapsView } from "./map-view.ts";
+import { buildPartyView, partyErrorMessage, type PartyView } from "./party-view.ts";
+import { biomeName } from "../modules/shared/biomes.ts";
 
 export type AccountView = {
   id: string;
@@ -410,29 +412,74 @@ export class AccountService {
   }
 
   /**
-   * 「我报名的比赛在哪张图」：个人赛 / 公会赛各查一次，只认未结束的场次。
+   * 「我报名的比赛在哪张图」：个人赛 / 公会赛各查一次。
    * 失败就当作没有（面板上少个标记，不该因此打不开面板）。
    */
   private async myCompetitionBiomes(rt: AccountRuntime): Promise<Map<string, string>> {
-    const out = new Map<string, string>();
-    const terminal = new Set(["ended", "finished", "settled", "settling", "canceled", "cancelled", "closed"]);
-    const consider = (t: any, registeredKey: string, kind: string) => {
-      if (!t?.[registeredKey]) return;
-      const status = String(t?.status ?? "").toLowerCase();
-      if (terminal.has(status)) return;
-      const biomeId = String(t?.assignedBiomeId ?? t?.biomeId ?? "");
-      if (!biomeId) return;
-      const phase = status === "active" ? "进行中" : "即将开赛";
-      out.set(biomeId, `${kind} #${t.sequence ?? "?"} ${phase}`);
-    };
-
     const [personal, guild] = await Promise.all([
       rt.client.tournamentsOverview().catch(() => null),
       rt.client.guildTournamentsOverview().catch(() => null),
     ]);
-    for (const t of [personal?.current, ...(personal?.upcoming ?? [])]) consider(t, "isRegistered", "个人赛");
-    for (const t of [guild?.current, ...(guild?.upcoming ?? [])]) consider(t, "entryStatus", "公会赛");
-    return out;
+    return buildCompetitionMarks({ personal, guild, now: Date.now() });
+  }
+
+  /* ---------- 船队（组队） ---------- */
+
+  /** 船队面板：当前状态 + 待处理邀请（每次现读，船队状态变化频繁） */
+  async party(accountId: string, userId: string): Promise<PartyView> {
+    const rt = this.requireRuntime(accountId, userId);
+
+    const [state, invitations] = await Promise.all([
+      rt.client.fishingState().catch(() => null),
+      rt.client.partyInvitations().catch(() => null),
+    ]);
+    if (!state) {
+      throw new HttpError(502, "GAME_UNREACHABLE", "读不到船队状态（账号可能还没连上游戏，稍后再试）");
+    }
+
+    return buildPartyView({
+      party: state?.party ?? null,
+      invitations: (invitations as { items?: unknown[] } | null)?.items ?? [],
+      biomeName: biomeName,
+    });
+  }
+
+  /** 用邀请码加入船队 */
+  async joinParty(accountId: string, userId: string, code: string): Promise<{ ok: true; code: string }> {
+    const rt = this.requireRuntime(accountId, userId);
+    try {
+      await rt.joinPartyByCode(code);
+    } catch (err) {
+      throw new HttpError(400, "PARTY_JOIN_FAILED", partyErrorMessage(err));
+    }
+    return { ok: true, code };
+  }
+
+  /** 离开船队（船长会被游戏拒绝，理由如实转达） */
+  async leaveParty(accountId: string, userId: string): Promise<{ ok: true }> {
+    const rt = this.requireRuntime(accountId, userId);
+    try {
+      await rt.leaveParty();
+    } catch (err) {
+      throw new HttpError(400, "PARTY_LEAVE_FAILED", partyErrorMessage(err));
+    }
+    return { ok: true };
+  }
+
+  /** 接受 / 拒绝一条组队邀请 */
+  async respondPartyInvitation(
+    accountId: string,
+    userId: string,
+    invitationId: string,
+    action: "accept" | "reject",
+  ): Promise<{ ok: true; action: "accept" | "reject" }> {
+    const rt = this.requireRuntime(accountId, userId);
+    try {
+      await rt.respondPartyInvitation(invitationId, action);
+    } catch (err) {
+      throw new HttpError(400, "PARTY_INVITATION_FAILED", partyErrorMessage(err));
+    }
+    return { ok: true, action };
   }
 }
 

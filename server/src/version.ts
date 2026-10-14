@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.12.0";
+export const VERSION = "1.13.0";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,25 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.13.0",
+    date: "2026-10-14",
+    title: "新增船队面板；地图面板重排与比赛倒计时",
+    changes: [
+      {
+        kind: "feature",
+        text: "账号详情页新增「船队」面板：不打开游戏就能用邀请码加入船队、离开船队、接受或拒绝组队邀请；面板同时显示船名、船所在地图、是否有改航线权限、是否跟随船长换图。船长不能直接离开时会说明原因（需先结束租赁或解散船队）。这些操作会记入运行日志与审计",
+      },
+      {
+        kind: "improve",
+        text: "「地图与天气」面板重排：宽屏下地图区占满整行、每行 3–4 张，天气与比赛信息不再换行或溢出卡片；账号详情页里地图在左、船队在右",
+      },
+      {
+        kind: "improve",
+        text: "「即将开赛」的比赛只显示 2 小时内开赛的场次，并给出距开赛时间（例如「个人赛 #1307 · 30 分钟后开赛」）；进行中的场次照常显示",
+      },
+    ],
+  },
   {
     version: "1.12.0",
     date: "2026-10-14",

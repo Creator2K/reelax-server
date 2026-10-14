@@ -43,6 +43,15 @@ const travelSchema = z.object({
   mode: z.enum(["solo", "party"]).default("solo"),
 });
 
+const partyJoinSchema = z.object({
+  /** 船队邀请码（游戏里的「加入船队」用同一个码） */
+  code: z.string().trim().min(1).max(40),
+});
+
+const partyInvitationSchema = z.object({
+  action: z.enum(["accept", "reject"]),
+});
+
 export function createAccountsRouter(deps: {
   accounts: AccountService;
   registry: RunnerRegistry;
@@ -137,6 +146,57 @@ export function createAccountsRouter(deps: {
       action: AUDIT_ACTIONS.ACCOUNT_TRAVEL,
       target: id,
       detail: { biomeId: result.biomeId, mapName: result.name, mode: result.mode },
+      ip: clientIp(req),
+    });
+    res.json(result);
+  });
+
+  /* ---------- 船队（组队） ---------- */
+
+  /** 船队状态 + 待处理邀请 */
+  router.get("/:id/party", async (req, res) => {
+    res.json(await deps.accounts.party(req.params.id as string, currentUserId(req)));
+  });
+
+  /** 用邀请码加入船队 */
+  router.post("/:id/party/join", body(partyJoinSchema), async (req, res) => {
+    const userId = currentUserId(req);
+    const id = req.params.id as string;
+    const result = await deps.accounts.joinParty(id, userId, req.body.code);
+    deps.audit.record({
+      userId,
+      action: AUDIT_ACTIONS.ACCOUNT_PARTY_JOIN,
+      target: id,
+      detail: { by: "code" },
+      ip: clientIp(req),
+    });
+    res.json(result);
+  });
+
+  /** 离开船队 */
+  router.post("/:id/party/leave", async (req, res) => {
+    const userId = currentUserId(req);
+    const id = req.params.id as string;
+    const result = await deps.accounts.leaveParty(id, userId);
+    deps.audit.record({ userId, action: AUDIT_ACTIONS.ACCOUNT_PARTY_LEAVE, target: id, ip: clientIp(req) });
+    res.json(result);
+  });
+
+  /** 接受 / 拒绝一条组队邀请 */
+  router.post("/:id/party/invitations/:invitationId", body(partyInvitationSchema), async (req, res) => {
+    const userId = currentUserId(req);
+    const id = req.params.id as string;
+    const result = await deps.accounts.respondPartyInvitation(
+      id,
+      userId,
+      req.params.invitationId as string,
+      req.body.action,
+    );
+    deps.audit.record({
+      userId,
+      action: AUDIT_ACTIONS.ACCOUNT_PARTY_INVITATION,
+      target: id,
+      detail: { action: req.body.action },
       ip: clientIp(req),
     });
     res.json(result);
