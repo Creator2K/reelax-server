@@ -3,7 +3,7 @@
 // 这块判错的后果很具体：把"船长不能离开"说成任意失败、或把邀请的昵称显示错，
 // 用户就会反复点、或者跑去游戏里看 —— 所以逐条钉住。
 import { describe, expect, it } from "vitest";
-import { buildPartyView, partyErrorMessage, CAPTAIN_LEAVE_HINT } from "../src/services/party-view.ts";
+import { buildPartyView, invitationList, partyErrorMessage, CAPTAIN_LEAVE_HINT } from "../src/services/party-view.ts";
 
 describe("buildPartyView", () => {
   it("★ 在船队里：船名 / 所在地图 / 权限 / 被带走开关都摊平出来", () => {
@@ -70,6 +70,21 @@ describe("buildPartyView", () => {
   it("响应为空时不抛错", () => {
     expect(buildPartyView({ party: null }).invitations).toEqual([]);
     expect(buildPartyView({ party: null, invitations: undefined }).inParty).toBe(false);
+  });
+});
+
+describe("invitationList（响应形状兜底）", () => {
+  it("裸数组 / items / invitations 三种形状都认", () => {
+    expect(invitationList([{ id: "a" }])).toHaveLength(1);
+    expect(invitationList({ items: [{ id: "a" }, { id: "b" }] })).toHaveLength(2);
+    expect(invitationList({ invitations: [{ id: "a" }] })).toHaveLength(1);
+  });
+
+  it("认不出 / 空值 → 空数组（面板当成「没有邀请」，不报错）", () => {
+    expect(invitationList(null)).toEqual([]);
+    expect(invitationList({})).toEqual([]);
+    expect(invitationList({ items: null })).toEqual([]);
+    expect(invitationList("nope")).toEqual([]);
   });
 });
 

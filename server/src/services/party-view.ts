@@ -38,6 +38,15 @@ export type PartyView = {
 /** 「船长不能离开」的固定说明（游戏会用 PARTY_BOAT_CAPTAIN_CANNOT_LEAVE 拒绝） */
 export const CAPTAIN_LEAVE_HINT = "船长不能直接离开：需要先结束租赁或解散船队（游戏里的船队管理页可以做）";
 
+/** 邀请列表响应的形状兜底：`{items: []}` / `{invitations: []}` / 直接数组都认 */
+export function invitationList(payload: unknown): any[] {
+  if (Array.isArray(payload)) return payload;
+  const p = payload as { items?: unknown; invitations?: unknown } | null;
+  if (Array.isArray(p?.items)) return p.items;
+  if (Array.isArray(p?.invitations)) return p.invitations;
+  return [];
+}
+
 export function buildPartyView(input: {
   party: any;
   invitations?: any[];

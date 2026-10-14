@@ -13,7 +13,7 @@ import { MODULES, getModule } from "../modules/registry.ts";
 import { validateConfigPatch, type ConfigValues } from "../modules/types.ts";
 import { parseProxyInput, parseBaseUrl } from "./proxy-input.ts";
 import { buildMapsView, buildCompetitionMarks, checkTravel, type AccountMapsView } from "./map-view.ts";
-import { buildPartyView, partyErrorMessage, type PartyView } from "./party-view.ts";
+import { buildPartyView, invitationList, partyErrorMessage, type PartyView } from "./party-view.ts";
 import { biomeName } from "../modules/shared/biomes.ts";
 
 export type AccountView = {
@@ -439,7 +439,7 @@ export class AccountService {
 
     return buildPartyView({
       party: state?.party ?? null,
-      invitations: (invitations as { items?: unknown[] } | null)?.items ?? [],
+      invitations: invitationList(invitations),
       biomeName: biomeName,
     });
   }
