@@ -21,8 +21,8 @@ import {
   IconWash,
   IconWind,
 } from "@tabler/icons-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
+import { CollapsibleCard } from "@/components/ui/collapsible-card.tsx";
 import { Switch } from "@/components/ui/switch.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import {
@@ -43,10 +43,11 @@ import { cn, fmtCompact } from "@/lib/utils.ts";
 /**
  * 天气 → 图标与配色。
  *
- * `prominent: true` 的两种是**真正值得为它换图**的天气（雷暴 = 经验最高、涌流 = 奥秘鱼涌流），
- * 所以加粗 + 加一圈描边，在一屏十几张地图里能一眼扫到（用户明确要求高亮这两个）。
+ * 只有**雷暴**值得在一屏十几张地图里被一眼扫到（它是经验最高的天气）：
+ * 天气本身用**边框**区分（`borderClass` 给地图卡片描边），字体与图标保持原样。
+ * 其余天气一律普通描边，不做强调。
  */
-const WEATHER_STYLE: Record<string, { icon: typeof IconSun; className: string; prominent?: boolean }> = {
+const WEATHER_STYLE: Record<string, { icon: typeof IconSun; className: string; borderClass?: string }> = {
   clear: { icon: IconSun, className: "bg-muted text-muted-foreground" },
   rain: { icon: IconDroplet, className: "bg-blue-500/12 text-blue-600 dark:text-blue-400" },
   gale: { icon: IconWind, className: "bg-teal-500/12 text-teal-600 dark:text-teal-400" },
@@ -54,15 +55,12 @@ const WEATHER_STYLE: Record<string, { icon: typeof IconSun; className: string; p
   heatwave: { icon: IconFlame, className: "bg-orange-500/12 text-orange-600 dark:text-orange-400" },
   tempest: {
     icon: IconBolt,
-    className: "bg-sky-500/18 text-sky-700 ring-1 ring-inset ring-sky-500/40 dark:text-sky-300",
-    prominent: true,
+    className: "bg-sky-500/12 text-sky-600 dark:text-sky-400",
+    // 双层描边：外圈明显、内圈细描，扫一眼就能认出"这张图有雷暴"
+    borderClass: "border-2 border-sky-500/70 ring-1 ring-sky-500/25 ring-offset-1 ring-offset-background",
   },
   gilded_current: { icon: IconCoins, className: "bg-amber-500/14 text-amber-600 dark:text-amber-400" },
-  arcane_surge: {
-    icon: IconSparkles,
-    className: "bg-violet-500/18 text-violet-700 ring-1 ring-inset ring-violet-500/40 dark:text-violet-300",
-    prominent: true,
-  },
+  arcane_surge: { icon: IconSparkles, className: "bg-violet-500/12 text-violet-600 dark:text-violet-400" },
   wither_tide: { icon: IconWash, className: "bg-stone-500/12 text-stone-600 dark:text-stone-400" },
 };
 const weatherStyle = (id: string | undefined) => WEATHER_STYLE[id ?? ""] ?? WEATHER_STYLE.clear!;
@@ -70,18 +68,17 @@ const weatherStyle = (id: string | undefined) => WEATHER_STYLE[id ?? ""] ?? WEAT
 /** 天气小徽章：图标 + 名字 + 经验倍率（不换行；窄了就让整行换行，别把名字拆开） */
 function WeatherBadge({ weather }: { weather: MapItem["weather"] }) {
   if (!weather) return <span className="text-muted-foreground text-[11px]">天气未知</span>;
-  const { icon: Icon, className, prominent } = weatherStyle(weather.id);
+  const { icon: Icon, className } = weatherStyle(weather.id);
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] whitespace-nowrap",
-        prominent ? "font-bold" : "font-medium",
+        "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap",
         className,
       )}
     >
-      <Icon className={cn("size-3", prominent && "size-3.5")} />
+      <Icon className="size-3" />
       {weather.name}
-      <span className={cn(prominent ? "opacity-90" : "opacity-75")}>经验×{weather.xpMultiplier.toFixed(2)}</span>
+      <span className="opacity-75">经验×{weather.xpMultiplier.toFixed(2)}</span>
     </span>
   );
 }
@@ -109,6 +106,7 @@ function MapCard({
     );
   }
 
+  const style = weatherStyle(map.weather?.id);
   return (
     <button
       type="button"
@@ -119,6 +117,8 @@ function MapCard({
         map.isCurrent
           ? "border-primary/40 bg-primary/6 ring-1 ring-primary/25"
           : "border-border/60 hover:bg-accent/50",
+        // 雷暴图：换一套边框样式（字体与图标保持原样）
+        !map.isCurrent && style.borderClass,
         disabled && !map.isCurrent && "opacity-60",
       )}
     >
@@ -170,17 +170,19 @@ export function MapPicker({ accountId }: { accountId: string }) {
   };
 
   return (
-    <Card className="gap-3">
-      <CardHeader>
-        <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-          <IconMapPin className="size-4" />
-          地图与天气
-          {travel.isPending ? <IconLoader2 className="text-muted-foreground size-3.5 animate-spin" /> : null}
-          <span className="text-muted-foreground ml-auto text-[11px] font-normal">点地图即切换</span>
-        </CardTitle>
-      </CardHeader>
-
-      <CardContent className="space-y-3">
+    <CollapsibleCard
+      title="地图与天气"
+      icon={<IconMapPin className="size-4 shrink-0" />}
+      summary={
+        data?.current
+          ? `当前 ${data.current.name}${data.current.weather ? ` · ${data.current.weather.name} 经验×${data.current.weather.xpMultiplier.toFixed(2)}` : ""}`
+          : null
+      }
+      headerRight={
+        travel.isPending ? <IconLoader2 className="text-muted-foreground size-3.5 animate-spin" /> : null
+      }
+      contentClassName="space-y-3"
+    >
         {isPending ? <Skeleton className="h-24" /> : null}
 
         {error ? (
@@ -251,10 +253,9 @@ export function MapPicker({ accountId }: { accountId: string }) {
             </div>
           </>
         ) : null}
-      </CardContent>
 
-      {/* 带队换图的确认：会动到别人的号 */}
-      <AlertDialog open={Boolean(pending)} onOpenChange={(o) => !o && setPending(null)}>
+        {/* 带队换图的确认：会动到别人的号（Radix 弹窗走 portal，放在卡片里没问题） */}
+        <AlertDialog open={Boolean(pending)} onOpenChange={(o) => !o && setPending(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>带队前往「{pending?.name}」？</AlertDialogTitle>
@@ -275,6 +276,6 @@ export function MapPicker({ accountId }: { accountId: string }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Card>
+    </CollapsibleCard>
   );
 }

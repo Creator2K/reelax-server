@@ -17,6 +17,7 @@ import { ModuleForm, ModuleHeader } from "@/components/domain/ModuleForm.tsx";
 import { StatusBadge } from "@/components/domain/StatusBadge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent, CardHeader } from "@/components/ui/card.tsx";
+import { CollapsibleCard } from "@/components/ui/collapsible-card.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
@@ -146,36 +147,33 @@ export default function AccountDetailPage() {
 
 function AccountMetaCard({ account }: { account: Account }) {
   return (
-    <Card className="gap-3">
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-medium">账号信息</span>
-          <StatusBadge status={account.status} />
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-2 text-xs">
-        <Row label="凭证方式" value={account.authType === "cookie" ? "Cookie 导入" : "账号密码"} />
-        <Row label="游戏邮箱" value={account.email || "—"} />
-        <Row label="出口代理" value={account.proxyLabel ?? "直连"} />
-        <Row label="自动启动" value={account.autoStart ? "是" : "否"} />
+    <CollapsibleCard
+      title="账号信息"
+      summary={account.player?.nickname ? `${account.player.nickname}${account.player.level ? ` · Lv ${fmtNum(account.player.level)}` : ""}` : null}
+      headerRight={<StatusBadge status={account.status} />}
+      contentClassName="space-y-2 text-xs"
+    >
+      <Row label="凭证方式" value={account.authType === "cookie" ? "Cookie 导入" : "账号密码"} />
+      <Row label="游戏邮箱" value={account.email || "—"} />
+      <Row label="出口代理" value={account.proxyLabel ?? "直连"} />
+      <Row label="自动启动" value={account.autoStart ? "是" : "否"} />
+      <Row
+        label="本轮结算"
+        value={`${fmtNum(account.stats.castsResolved)} 杆 · ${fmtNum(account.stats.fishCount)} 条 · ${fmtNum(account.stats.gold)} 金币`}
+      />
+      {account.player ? (
         <Row
-          label="本轮结算"
-          value={`${fmtNum(account.stats.castsResolved)} 杆 · ${fmtNum(account.stats.fishCount)} 条 · ${fmtNum(account.stats.gold)} 金币`}
+          label="角色"
+          value={`${account.player.nickname ?? "—"}${account.player.level ? ` · Lv ${fmtNum(account.player.level)}` : ""}`}
         />
-        {account.player ? (
-          <Row
-            label="角色"
-            value={`${account.player.nickname ?? "—"}${account.player.level ? ` · Lv ${fmtNum(account.player.level)}` : ""}`}
-          />
-        ) : null}
-        {account.run ? (
-          <Row
-            label="当前一轮"
-            value={`${fmtNum(account.run.remainingCasts ?? 0)} / ${fmtNum(account.run.totalCasts ?? 0)} 杆`}
-          />
-        ) : null}
-      </CardContent>
-    </Card>
+      ) : null}
+      {account.run ? (
+        <Row
+          label="当前一轮"
+          value={`${fmtNum(account.run.remainingCasts ?? 0)} / ${fmtNum(account.run.totalCasts ?? 0)} 杆`}
+        />
+      ) : null}
+    </CollapsibleCard>
   );
 }
 

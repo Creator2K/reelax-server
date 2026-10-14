@@ -19,8 +19,8 @@ import {
   IconUserPlus,
   IconUsers,
 } from "@tabler/icons-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
+import { CollapsibleCard } from "@/components/ui/collapsible-card.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
@@ -83,16 +83,19 @@ export function PartyCard({ accountId }: { accountId: string }) {
   };
 
   return (
-    <Card className="gap-3">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <IconShip className="size-4" />
-          船队
-          {busy ? <IconLoader2 className="text-muted-foreground size-3.5 animate-spin" /> : null}
-        </CardTitle>
-      </CardHeader>
-
-      <CardContent className="space-y-3">
+    <CollapsibleCard
+      title="船队"
+      icon={<IconShip className="size-4 shrink-0" />}
+      summary={
+        data?.inParty
+          ? `${data.boatName ?? "船队"}${data.role ? ` · ${ROLE_LABEL[data.role]}` : ""}`
+          : data
+            ? "未加入船队"
+            : null
+      }
+      headerRight={busy ? <IconLoader2 className="text-muted-foreground size-3.5 animate-spin" /> : null}
+      contentClassName="space-y-3"
+    >
         {isPending ? <Skeleton className="h-16" /> : null}
 
         {error ? (
@@ -211,8 +214,9 @@ export function PartyCard({ accountId }: { accountId: string }) {
                 </div>
 
                 {data.members.map((m) => (
-                  <div key={m.publicId} className="bg-muted/30 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-2.5 py-1.5">
-                    <span className="flex min-w-0 flex-1 items-center gap-1.5 text-xs">
+                  <div key={m.publicId} className="bg-muted/30 space-y-1 rounded-lg px-2.5 py-2">
+                    {/* 第一行：身份（昵称 + 角色 + 是否计入协作） */}
+                    <div className="flex min-w-0 items-center gap-1.5 text-xs">
                       {m.role === "captain" ? <IconAnchor className="size-3 shrink-0" /> : null}
                       <span className="min-w-0 truncate font-medium">{m.nickname}</span>
                       <Badge variant="outline" className="shrink-0">
@@ -223,17 +227,20 @@ export function PartyCard({ accountId }: { accountId: string }) {
                           计入协作
                         </Badge>
                       ) : null}
-                    </span>
-                    <span className="text-muted-foreground shrink-0 text-[11px]">
-                      {(m.biomeName ?? m.biomeId ?? "未知地图")} · {FISHING_LABEL[m.fishing]}
-                    </span>
+                    </div>
 
+                    {/* 第二行：所在地图与钓鱼状态（单独一行，窄屏也不会挤在一起） */}
+                    <div className="text-muted-foreground truncate text-[11px]">
+                      {m.biomeName ?? m.biomeId ?? "未知地图"} · {FISHING_LABEL[m.fishing]}
+                    </div>
+
+                    {/* 第三行：仅船长可见的成员管理（各自成行，不会与上面的信息重叠） */}
                     {isCaptain && m.role !== "captain" ? (
-                      <span className="flex shrink-0 gap-1">
+                      <div className="flex flex-wrap items-center gap-1 pt-0.5">
                         <Button
                           size="sm"
-                          variant="ghost"
-                          className="h-6 px-1.5 text-[11px]"
+                          variant="outline"
+                          className="h-6 px-2 text-[11px]"
                           disabled={busy}
                           onClick={() =>
                             manage.mutate({
@@ -248,8 +255,8 @@ export function PartyCard({ accountId }: { accountId: string }) {
                         {data.canTransferCaptain ? (
                           <Button
                             size="sm"
-                            variant="ghost"
-                            className="h-6 px-1.5 text-[11px]"
+                            variant="outline"
+                            className="h-6 px-2 text-[11px]"
                             disabled={busy}
                             onClick={() => setTransferTarget(m)}
                           >
@@ -260,14 +267,15 @@ export function PartyCard({ accountId }: { accountId: string }) {
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="text-destructive h-6 px-1.5 text-[11px]"
+                            className="text-destructive h-6 gap-1 px-2 text-[11px]"
                             disabled={busy}
                             onClick={() => setKickTarget(m)}
                           >
                             <IconUserMinus className="size-3" />
+                            移出
                           </Button>
                         ) : null}
-                      </span>
+                      </div>
                     ) : null}
                   </div>
                 ))}
@@ -288,9 +296,8 @@ export function PartyCard({ accountId }: { accountId: string }) {
             </Button>
           </div>
         ) : null}
-      </CardContent>
 
-      <AlertDialog open={confirmLeave} onOpenChange={setConfirmLeave}>
+        <AlertDialog open={confirmLeave} onOpenChange={setConfirmLeave}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>离开船队？</AlertDialogTitle>
@@ -355,6 +362,6 @@ export function PartyCard({ accountId }: { accountId: string }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Card>
+    </CollapsibleCard>
   );
 }

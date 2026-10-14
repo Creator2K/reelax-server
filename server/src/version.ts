@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.14.0";
+export const VERSION = "1.15.0";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,25 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.15.0",
+    date: "2026-10-14",
+    title: "移动端卡片可折叠；船队成员列表重排；雷暴改用边框强调",
+    changes: [
+      {
+        kind: "fix",
+        text: "「船队」的成员列表改为「身份 / 所在地图与钓鱼状态 / 管理按钮」三行排布：手机上不再出现角色徽章、地图与钓鱼状态互相挤压重叠",
+      },
+      {
+        kind: "improve",
+        text: "账号详情页左侧的四张卡片（实时状态、地图与天气、船队、账号信息）在手机上可以点标题折叠，折叠后标题旁显示摘要（如「雷痕峡湾 · 雷暴」「奥潮远洋舰 · 船长」）；桌面端始终展开",
+      },
+      {
+        kind: "improve",
+        text: "「雷暴」天气改用边框强调（撤掉加粗与放大的图标），其余天气（含奥秘涌流）不再做特殊强调",
+      },
+    ],
+  },
   {
     version: "1.14.0",
     date: "2026-10-14",

@@ -19,7 +19,7 @@ import {
   IconStar,
   IconTrendingUp,
 } from "@tabler/icons-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
+import { CollapsibleCard } from "@/components/ui/collapsible-card.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Separator } from "@/components/ui/separator.tsx";
 import { StatCard, ProgressBar } from "@/components/domain/StatCard.tsx";
@@ -43,16 +43,11 @@ const SECTION_LABELS: Record<string, string> = {
 export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
   if (!panel) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">实时状态</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground text-sm">
-            还没有状态数据。启动引擎后，这里会显示当前地图、天气、等级经验、转生进度与保底进度。
-          </p>
-        </CardContent>
-      </Card>
+      <CollapsibleCard title="实时状态" defaultOpen>
+        <p className="text-muted-foreground text-sm">
+          还没有状态数据。启动引擎后，这里会显示当前地图、天气、等级经验、转生进度与保底进度。
+        </p>
+      </CollapsibleCard>
     );
   }
 
@@ -65,16 +60,14 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
       : null;
 
   return (
-    <Card className="gap-4">
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between text-sm">
-          <span>实时状态</span>
-          {panel.at ? (
-            <span className="text-muted-foreground text-[11px] font-normal">{fmtRelative(panel.at)}</span>
-          ) : null}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <CollapsibleCard
+      title="实时状态"
+      summary={[panel.biomeName, panel.weatherName].filter(Boolean).join(" · ") || null}
+      headerRight={
+        panel.at ? <span className="text-muted-foreground text-[11px] font-normal">{fmtRelative(panel.at)}</span> : null
+      }
+      contentClassName="space-y-4"
+    >
         {/* ---------- 顶部徽章：地图 / 天气 / 鱼饵 / 船队 ---------- */}
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline" className="gap-1 font-normal">
@@ -368,8 +361,7 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
             <SyncHealthSection health={panel.sync} />
           </>
         ) : null}
-      </CardContent>
-    </Card>
+    </CollapsibleCard>
   );
 }
 
