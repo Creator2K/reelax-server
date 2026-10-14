@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/input.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { ModulePreview } from "@/components/domain/ModulePreview.tsx";
+import { OrderFieldEditor } from "@/components/domain/OrderFieldEditor.tsx";
 import { TemplateFieldEditor } from "@/components/domain/TemplateFieldEditor.tsx";
 import { cn } from "@/lib/utils.ts";
 
@@ -286,6 +287,16 @@ function Field({
         </div>
       );
     }
+
+    case "order":
+      return (
+        <OrderFieldEditor
+          field={field}
+          value={value}
+          {...(disabled !== undefined ? { disabled } : {})}
+          onChange={(v) => onChange(v)}
+        />
+      );
 
     case "template":
       return (

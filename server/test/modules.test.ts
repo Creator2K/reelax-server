@@ -271,13 +271,14 @@ describe("bucketOf（装备分档）", () => {
 /* ==================== 自动切图：优先级与评分 ==================== */
 
 describe("parsePriorities", () => {
-  it("解析三项顺序", () => {
+  it("解析顺序（有序子集：用户放几项就是几项）", () => {
     expect(parsePriorities("golden,competition,experience")).toEqual(["golden", "competition", "experience"]);
+    expect(parsePriorities(["golden", "follow"])).toEqual(["golden", "follow"]);
   });
 
-  it("★ 无论怎么写，结果都一定三项齐全且不重复（顺序才是配置项本身）", () => {
-    expect(parsePriorities("experience")).toEqual(["experience", "competition", "golden"]);
-    expect(parsePriorities("golden,golden,experience")).toEqual(["golden", "experience", "competition"]);
+  it("★ 认不出的项丢掉、重复的只留一次，空值用默认顺序", () => {
+    expect(parsePriorities("experience")).toEqual(["experience"]);
+    expect(parsePriorities("golden,golden,experience")).toEqual(["golden", "experience"]);
     expect(parsePriorities("")).toEqual(DEFAULT_PRIORITIES);
     expect(parsePriorities(undefined)).toEqual(DEFAULT_PRIORITIES);
     expect(parsePriorities("看心情")).toEqual(DEFAULT_PRIORITIES);

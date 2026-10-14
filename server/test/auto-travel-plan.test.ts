@@ -22,33 +22,122 @@ const STORM = { id: "b_002", name: "雾语湿地", valueMultiplier: 1.05, requir
 const surge = (b: typeof HOME) => ({ ...b, weather: { weatherId: "arcane_surge" } });
 
 describe("自动切图 · 优先级解析", () => {
-  it("三项齐全，缺的补在后面", () => {
-    expect(parsePriorities("experience")).toEqual(["experience", "competition", "golden"]);
-    expect(parsePriorities("golden,competition,experience")).toEqual(["golden", "competition", "experience"]);
+  it("★ 顺序原样保留，不再自动补齐缺失的项（放几项由用户决定）", () => {
+    expect(parsePriorities("experience")).toEqual(["experience"]);
+    expect(parsePriorities(["golden", "competition"])).toEqual(["golden", "competition"]);
+    expect(parsePriorities("golden,competition,experience,follow")).toEqual([
+      "golden",
+      "competition",
+      "experience",
+      "follow",
+    ]);
   });
 
-  it("认不出的项丢掉、重复的只留一次", () => {
+  it("认不出的项丢掉、重复的只留一次、空值用默认顺序", () => {
     // "surge" 是 1.7.0 里短暂存在过的独立优先级：老配置读进来要能自动忽略
-    expect(parsePriorities("surge,surge,nope,golden")).toEqual(["golden", "competition", "experience"]);
+    expect(parsePriorities("surge,surge,nope,golden")).toEqual(["golden"]);
     expect(parsePriorities("competition,golden,surge,experience")).toEqual([
       "competition",
       "golden",
       "experience",
     ]);
     expect(parsePriorities("")).toEqual(DEFAULT_PRIORITIES);
+    expect(parsePriorities([])).toEqual(DEFAULT_PRIORITIES);
+    expect(parsePriorities(null)).toEqual(DEFAULT_PRIORITIES);
+  });
+
+  it("★ 1.7.x 的独立开关 fleetMode=follow 自动并到最前面（老配置不至于静默失效）", () => {
+    expect(parsePriorities("competition,golden", { legacyFollow: true })).toEqual(["follow", "competition", "golden"]);
+    // 列表里已经有 follow 就不重复插
+    expect(parsePriorities(["follow", "golden"], { legacyFollow: true })).toEqual(["follow", "golden"]);
+    // 默认（solo）不加
+    expect(parsePriorities("golden", { legacyFollow: false })).toEqual(["golden"]);
+  });
+
+  it("候选项：4 项且含「跟船队走」，不再是排列组合的下拉框", () => {
+    const field = autoTravel.configSchema.find((f) => f.key === "priorities");
+    expect(field?.type).toBe("order");
+    if (field?.type === "order") {
+      expect(field.options.map((o) => o.value)).toEqual(["competition", "golden", "experience", "follow"]);
+      expect(field.default).toEqual(["competition", "golden", "experience"]);
+    }
+    // 旧开关已并入列表，不再是独立配置项
+    expect(autoTravel.defaultConfig.fleetMode).toBeUndefined();
+    expect(autoTravel.configSchema.some((f) => f.key === "fleetMode")).toBe(false);
   });
 
   it("每一项都有中文名（前端与日志共用）", () => {
     for (const p of DEFAULT_PRIORITIES) expect(PRIORITY_LABELS[p]).toBeTruthy();
+    expect(PRIORITY_LABELS.follow).toBe("跟船队走");
+  });
+});
+
+describe("自动切图 · 「跟船队走」也参与排序", () => {
+  const unlocked = [HOME, MID, TOP];
+  const base = {
+    priorities: ["follow", "experience"] as Priority[],
+    unlocked,
+    currentBiomeId: "b_001",
+    competition: null,
+    minImprovePct: 0,
+  };
+
+  it("★ 在船队里 → 跟船队走（本模块不换图）", () => {
+    const d = planTravel({
+      ...base,
+      party: { inParty: true, boatName: "芦汐轻舟", boatBiomeName: "星根洞窟", sameAsCurrent: false },
+    });
+    expect(d.action).toBe("follow");
+    if (d.action === "follow") {
+      expect(d.why).toContain("芦汐轻舟");
+      expect(d.why).toContain("星根洞窟");
+      expect(d.why).toContain("不自行换图");
+    }
   });
 
-  it("下拉框只给 3 项的 6 种排列（涌流不在其中）", () => {
-    const field = autoTravel.configSchema.find((f) => f.key === "priorities");
-    expect(field?.type).toBe("select");
-    if (field?.type === "select") {
-      expect(field.options).toHaveLength(6);
-      for (const o of field.options) expect(o.label).not.toContain("涌流");
-    }
+  it("★ 没加入船队 → 这一项没有候选，跳过它继续看后面的经验", () => {
+    const d = planTravel({
+      ...base,
+      unlocked: [HOME, STORM, TOP],
+      party: { inParty: false },
+    });
+    expect(d).toMatchObject({ action: "travel", biomeId: "b_002", reason: "experience" });
+  });
+
+  it("船队状态拿不到（接口失败）时同样跳过，不会卡住不换图", () => {
+    const d = planTravel({ ...base, unlocked: [HOME, STORM, TOP], party: null });
+    expect(d).toMatchObject({ action: "travel", biomeId: "b_002", reason: "experience" });
+  });
+
+  it("★ 放在「经验」后面不会生效（经验在任何图上都有候选）—— 这是文档化的行为", () => {
+    const d = planTravel({
+      priorities: ["experience", "follow"] as Priority[],
+      unlocked: [HOME, MID, TOP], // 天气全一样 → 当前图就是最优
+      currentBiomeId: "b_001",
+      competition: null,
+      minImprovePct: 0,
+      party: { inParty: true, boatName: "芦汐轻舟", boatBiomeName: "月落溪谷", sameAsCurrent: true },
+    });
+    // 经验先命中「当前已最优」→ 终局；想让它兜底必须把 follow 挪到经验前面
+    expect(d).toMatchObject({ action: "stay", reason: "experience" });
+  });
+
+  it("排在最后且没船队时，仍然会按天气换图（不会像旧的 follow 模式那样彻底不动）", () => {
+    const d = planTravel({
+      priorities: ["experience", "follow"] as Priority[],
+      unlocked: [HOME, STORM, TOP],
+      currentBiomeId: "b_001",
+      competition: null,
+      minImprovePct: 0,
+      party: { inParty: false },
+    });
+    expect(d).toMatchObject({ action: "travel", biomeId: "b_002", reason: "experience" });
+  });
+
+  it("只留「跟船队走」一项时，没船队 → 没有可去的地图", () => {
+    const d = planTravel({ ...base, priorities: ["follow"] as Priority[], party: { inParty: false } });
+    expect(d).toMatchObject({ action: "stay", reason: null });
+    if (d.action === "stay") expect(d.why).toContain("没有可去的地图");
   });
 });
 

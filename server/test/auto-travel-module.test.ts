@@ -14,11 +14,13 @@ const GOLD = "b_gold"; // 星渊圣海（金风 ×0.75）
 const COMP = "b_comp"; // 竞潮湾（比赛图）
 
 type FakeOpts = {
-  priorities?: string;
+  priorities?: string | string[];
   personal?: unknown;
   guild?: unknown;
   /** 所有地图的天气（默认各图自带） */
   weather?: string;
+  /** 船队状态（默认没加入船队） */
+  party?: unknown;
   /** 覆盖配置项（例如 surgeBiome / crewTravel） */
   config?: Record<string, unknown>;
 };
@@ -47,7 +49,7 @@ function makeCtx(opts: FakeOpts = {}) {
     }),
     tournamentsOverview: async () => opts.personal ?? { current: null, upcoming: [] },
     guildTournamentsOverview: async () => opts.guild ?? { current: null, upcoming: [] },
-    fishingState: async () => ({ party: { isInParty: false } }),
+    fishingState: async () => ({ party: opts.party ?? { isInParty: false } }),
     biomeTravel: async (id: string) => {
       calls.push(`TRAVEL ${id}`);
       world.currentBiome = id;
@@ -226,6 +228,51 @@ describe("自动切图：比赛目标", () => {
 
     await run();
     expect(travels(calls)).toEqual([`TRAVEL ${GOLD}`]);
+  });
+});
+
+describe("自动切图：「跟船队走」作为优先级的一项（端到端接线）", () => {
+  beforeEach(() => clearTravelLocks());
+
+  const inFleet = { isInParty: true, canChangeBoatBiome: false, boatName: "芦汐轻舟", boatBiomeId: HOME };
+
+  it("★ 列表里有「跟船队走」且在船队里 → 本模块完全不换图", async () => {
+    const { calls, log, start } = makeCtx({ priorities: ["follow", "experience"], party: inFleet });
+    const run = await start();
+
+    await run();
+    expect(travels(calls)).toEqual([]);
+    expect(log.debug.some((m) => m.includes("跟船队走") && m.includes("芦汐轻舟"))).toBe(true);
+  });
+
+  it("★ 老配置：fleetMode=follow 自动并进优先级（不会静默失效）", async () => {
+    const { calls, log, start } = makeCtx({
+      priorities: "golden,experience",
+      party: inFleet,
+      config: { fleetMode: "follow" },
+    });
+    const run = await start();
+
+    await run();
+    expect(travels(calls)).toEqual([]);
+    expect(log.debug.some((m) => m.includes("跟船队走"))).toBe(true);
+  });
+
+  it("★ 没加入船队 → 跳过这一项，照常按后面的优先级换图", async () => {
+    const { calls, start } = makeCtx({ priorities: ["follow", "golden", "experience"] });
+    const run = await start();
+
+    await run();
+    expect(travels(calls)).toEqual([`TRAVEL ${GOLD}`]);
+  });
+
+  it("只保留「跟船队走」一项且没船队 → 不动（没有可去的地图）", async () => {
+    const { calls, log, start } = makeCtx({ priorities: ["follow"] });
+    const run = await start();
+
+    await run();
+    expect(travels(calls)).toEqual([]);
+    expect(log.debug.some((m) => m.includes("没有可去的地图"))).toBe(true);
   });
 });
 

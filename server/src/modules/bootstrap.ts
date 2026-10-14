@@ -30,6 +30,8 @@ export function bootstrapModules(): void {
       lighthouse: rt.lighthouse,
       // 同步健康度（近 10 分钟成功率 / 超时次数）：判断「结算变少」是不是链路问题
       sync: rt.syncStats,
+      // 经验速率（近 30 分钟每小时经验 + 升级预计时间）：判断「这样挂多久能升级」
+      xp: rt.xpRate,
     }) as unknown as Record<string, unknown>,
   );
 }

@@ -48,6 +48,24 @@ export type MultiSelectField = ConfigFieldBase & {
 };
 
 /**
+ * 有序列表：从固定清单里**按顺序**挑若干项（值是一组 id，顺序有意义）。
+ *
+ * 为什么需要它：像「换图优先级」这种配置，候选项会越来越多 ——
+ * 用 select 就得把每一种排列都生成成选项（3 项 6 条、4 项 24 条、5 项 120 条…），
+ * 下拉框直接爆炸。改成「点击加入 + 上下调整顺序」的列表后，候选项再多也只是多一行。
+ *
+ * 与 multi-select 的区别只有一点：**顺序保留**（multi-select 会按定义顺序重排）。
+ */
+export type OrderField = ConfigFieldBase & {
+  type: "order";
+  /** 默认顺序；未列出的候选项 = 默认未启用 */
+  default: string[];
+  options: { value: string; label: string; hint?: string }[];
+  /** 至少选几项（默认 1） */
+  min?: number;
+};
+
+/**
  * 模板：一段带 {变量} 占位符的文本。
  *
  * 与 textarea 的区别在前端：模板会额外渲染「可插入的变量按钮」与实时预览，
@@ -72,6 +90,7 @@ export type ConfigField =
   | TextareaField
   | SelectField
   | MultiSelectField
+  | OrderField
   | TemplateField;
 
 export type ConfigValues = Record<string, unknown>;
@@ -159,6 +178,32 @@ export function defaultsFromSchema(schema: ConfigField[]): ConfigValues {
 export type ConfigIssue = { key: string; message: string; value: unknown };
 
 /**
+ * 把「有序列表」的原始值收敛成 id 数组（resolveConfig 与 validateConfigPatch 共用）。
+ *
+ * 接受两种形态：数组（新前端）与逗号分隔字符串（1.7.x 的 select 存的就是这种）。
+ * 不认识的 id 丢掉、重复的只留一次，**用户给的顺序原样保留**（顺序就是这个配置本身）。
+ * 形态完全不合法时返回 null。
+ */
+export function normalizeOrder(value: unknown, allowed: Set<string>): { list: string[]; dropped: string[] } | null {
+  const raw = Array.isArray(value)
+    ? value.map((x) => String(x))
+    : typeof value === "string"
+      ? value.split(/[,，\s]+/).filter(Boolean)
+      : null;
+  if (raw === null) return null;
+
+  const list: string[] = [];
+  const dropped: string[] = [];
+  for (const id of raw) {
+    if (!allowed.has(id)) {
+      if (!dropped.includes(id)) dropped.push(id);
+      continue;
+    }
+    if (!list.includes(id)) list.push(id);
+  }
+  return { list, dropped };
+}
+/**
  * 合并并校验用户配置。
  * 原则：**未知旧键原样保留**（避免用户配置被静默抹掉），只对已知字段做类型收敛。
  */
@@ -240,6 +285,30 @@ export function resolveModuleConfig(
           });
         }
         merged[field.key] = kept;
+        break;
+      }
+      case "order": {
+        const allowedValues = new Set(field.options.map((o) => o.value));
+        const parsed = normalizeOrder(raw, allowedValues);
+        if (!parsed) {
+          issues.push({ key: field.key, message: "应为列表", value: raw });
+          merged[field.key] = field.default;
+          break;
+        }
+        if (parsed.dropped.length) {
+          issues.push({
+            key: field.key,
+            message: `已忽略不再支持的选项：${parsed.dropped.join("、")}`,
+            value: parsed.dropped,
+          });
+        }
+        if (!parsed.list.length) {
+          // 全被剔掉（例如选项改名）→ 回到默认，而不是让列表空着没法运行
+          issues.push({ key: field.key, message: "没有可用的项，已恢复默认顺序", value: raw });
+          merged[field.key] = field.default;
+          break;
+        }
+        merged[field.key] = parsed.list;
         break;
       }
     }
@@ -342,6 +411,26 @@ export function validateConfigPatch(
           // 去重后按定义顺序排列，避免出现同一项被勾两次
           out[k] = field.options.map((o) => o.value).filter((id) => list.includes(id));
         }
+        break;
+      }
+      case "order": {
+        const allowedValues = new Set(field.options.map((o) => o.value));
+        const parsed = normalizeOrder(v, allowedValues);
+        if (!parsed) {
+          errors.push({ key: k, message: "应为列表", value: v });
+          break;
+        }
+        if (parsed.dropped.length) {
+          errors.push({ key: k, message: `不支持的选项：${parsed.dropped.join("、")}`, value: parsed.dropped });
+          break;
+        }
+        const min = field.min ?? 1;
+        if (parsed.list.length < min) {
+          errors.push({ key: k, message: `至少要选 ${min} 项`, value: v });
+          break;
+        }
+        // ★ 保留用户给的顺序 —— 顺序就是这个配置本身，不能像 multi-select 那样按定义顺序重排
+        out[k] = parsed.list;
         break;
       }
     }

@@ -6,13 +6,21 @@
 //  - GET /api/tournaments/overview 与 /api/guild-tournaments/overview：比赛场次（进图依据）
 //  - PUT /api/player/current-biome { biomeId }   换图（免费）
 //
-// ★ 优先级（与官方助手的「换图优先级」同构，可从高到低排序）：
-//     比赛     我在打的比赛地图（个人赛 / 公会赛已报名，进行中或即将开赛）
-//     金风     正在刮「金风」（gilded_current）的地图 —— 每杆直接金币区间提高
-//     经验     天气经验加成最高的地图（**只看天气**，不含专精 / 公会增益）
+// ★ 优先级（与官方助手的「换图优先级」同构，自己排顺序）：
+//     比赛       我在打的比赛地图（个人赛 / 公会赛已报名，进行中或即将开赛）
+//     金风       正在刮「金风」（gilded_current）的地图 —— 每杆直接金币区间提高
+//     经验       天气经验加成最高的地图（**只看天气**，不含专精 / 公会增益）
+//     跟船队走   加入船队时跟着船走、自己不换图（没加入船队 → 这一项跳过）
 //
 //   判定方式是「按顺序找第一个有候选的优先级，它就是决定」——
 //   也就是说：有比赛可去就不会因为别处天气好而跑掉；已经是金风了也不会被经验优先级拽走。
+//
+//   优先级是**有序子集**：列表里放哪几项、放几项由用户决定（不想要的项直接移除）。
+//   所以它存的是数组（modules/types.ts 的 order 字段），前端用「点击加入 + 上下调序」的列表渲染 ——
+//   早期版本把它做成 select 的「所有排列」，3 项 6 条、4 项 24 条，加一项就爆炸。
+//
+//   「跟船队走」放在第一位 ≈ 旧版的 fleetMode=follow（完全不自己换图）；放在中间则表示
+//   「前面那些都没有候选时，跟着船队待着」。旧配置的 fleetMode=follow 会自动并到最前面。
 //
 // ★ 涌流不做成独立优先级：它是**覆盖所有地图**的全局天气，各图天气加成完全相同，
 //   当成一项来排序没有意义（用户明确要求去掉）。它由「经验」优先级在内部处理：
@@ -48,30 +56,40 @@ const TERMINAL_TOURNAMENT_STATUSES = new Set(["ended", "finished", "settled", "s
  */
 const STARTED_GRACE_MS = 10 * 60_000;
 
-/** 三个优先级（与官方助手一致；涌流由「经验」内部处理，不是独立一项） */
-export type Priority = "competition" | "golden" | "experience";
+/** 四个可排序的优先级 */
+export type Priority = "competition" | "golden" | "experience" | "follow";
 
 export const PRIORITY_LABELS: Record<Priority, string> = {
   competition: "比赛",
   golden: "金风",
   experience: "经验",
+  follow: "跟船队走",
 };
 
-/** 缺省顺序（也是官方助手的默认值） */
+/** 缺省顺序（不含「跟船队走」：默认仍然自己换图） */
 export const DEFAULT_PRIORITIES: Priority[] = ["competition", "golden", "experience"];
 
-const ALL_PRIORITIES: Priority[] = ["competition", "golden", "experience"];
+const ALL_PRIORITIES: Priority[] = ["competition", "golden", "experience", "follow"];
 const isPriority = (v: unknown): v is Priority => ALL_PRIORITIES.includes(v as Priority);
 
 /**
- * 解析「优先级」配置（值形如 "competition,golden,experience"）。
- * 无论怎么写，结果都一定是三项齐全且不重复 —— 顺序才是配置项本身。
+ * 解析「换图优先级」（值形如 ["competition","golden"] 或 "competition,golden"）。
+ *
+ * ★ 与旧版的区别：**不再自动补齐缺失的项**。优先级现在是一个「有序子集」——
+ *   用户只想按金风切图时，就不该被硬塞一个「经验」在后面（更不该被塞「跟船队走」）。
+ *   解析结果为空时退回默认顺序。
+ *
+ * `legacyFollow`：1.7.x 之前「跟船队走」是独立开关（fleetMode=follow，含义是"完全不自己换图"），
+ * 老配置读进来要把它并到最前面，否则用户会以为它还生效。
  */
-export function parsePriorities(value: unknown): Priority[] {
-  const list = String(value ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+export function parsePriorities(value: unknown, opts: { legacyFollow?: boolean } = {}): Priority[] {
+  const list = Array.isArray(value)
+    ? value.map((x) => String(x))
+    : String(value ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
   const seen = new Set<Priority>();
   const out: Priority[] = [];
   for (const item of list) {
@@ -80,9 +98,8 @@ export function parsePriorities(value: unknown): Priority[] {
       out.push(item);
     }
   }
-  // 缺的补在后面：用户只写了一半也不会漏掉某个优先级
-  for (const p of DEFAULT_PRIORITIES) if (!seen.has(p)) out.push(p);
-  return out;
+  if (opts.legacyFollow && !seen.has("follow")) out.unshift("follow");
+  return out.length ? out : [...DEFAULT_PRIORITIES];
 }
 
 /** 该地图的天气 id（原始响应里是 weatherId；个别版本只给 id） */
@@ -156,7 +173,9 @@ function biomeOrder(id: unknown): number {
 
 export type TravelDecision =
   | { action: "travel"; biomeId: string; reason: Priority; why: string }
-  | { action: "stay"; reason: Priority | null; why: string };
+  | { action: "stay"; reason: Priority | null; why: string }
+  /** 跟着船队走：本模块不换图（船开动时游戏会把船上的人带走） */
+  | { action: "follow"; why: string };
 
 /** 比大小：先按主指标，再按 id 兜底，保证同一份数据每次选出同一张（可测） */
 function bestBy<T>(list: T[], score: (b: T) => number, idOf: (b: T) => string): T | null {
@@ -186,6 +205,13 @@ export function planTravel(input: {
   minImprovePct: number;
   /** 涌流期间指定去哪张图；空 / 未给 = 已解锁的最高地图 */
   surgeBiomeId?: string | null;
+  /** 船队状态（「跟船队走」这一项要用；没加入船队时这一项会被跳过） */
+  party?: {
+    inParty: boolean;
+    boatName?: string | null;
+    boatBiomeName?: string | null;
+    sameAsCurrent?: boolean;
+  } | null;
 }): TravelDecision {
   const { unlocked, currentBiomeId, competition } = input;
   const priorities = input.priorities.length ? input.priorities : DEFAULT_PRIORITIES;
@@ -218,6 +244,22 @@ export function planTravel(input: {
       };
     }
 
+    if (p === "follow") {
+      // ★ 没有加入船队时这一项「没有候选」：跳过它继续往下看，
+      //   而不是像旧版那样把整轮决策终止掉（那样没船队的人会完全不换图）。
+      const party = input.party;
+      if (!party?.inParty) continue;
+      const where = party.boatBiomeName ?? "船上";
+      return {
+        action: "follow",
+        why:
+          `跟船队走：${party.boatName ?? "船队"} 在 ${where}` +
+          (party.sameAsCurrent
+            ? "（与你当前所在一致），本模块不自行换图"
+            : `（你当前在 ${current?.name ?? "未知"}，船队开动后会把你带走），本模块不自行换图`),
+      };
+    }
+
     // experience：天气经验最高的地图（只看天气）
     //
     // ★ 涌流先在这里被处理掉：它是**覆盖所有地图**的全局天气，各图天气倍率完全相同，
@@ -247,6 +289,9 @@ export function planTravel(input: {
     if (!best) continue;
     const bestXp = xpWeight(best);
     if (best.id === currentBiomeId) {
+      // 「当前图已经最好」也是「经验」这一项的结论（不是"没有候选"）：它就是终局。
+      // 注意这意味着**排在「经验」后面的项不会生效** —— 因为经验在任何地图上都有候选，
+      // 这也是「跟船队走」要放在经验前面（或放在最前）才有效的原因（见该字段的提示）。
       return {
         action: "stay",
         reason: p,
@@ -291,34 +336,46 @@ export function describeBiome(b: any): string {
   return `${b?.name ?? b?.id} 鱼价值×${valueWeight(b).toFixed(2)} 天气${weatherLabel(b)}×${xpWeight(b).toFixed(2)}`;
 }
 
-/** 优先级 → 配置值（前端下拉框的选项用它生成） */
-const PRIORITY_OPTIONS = (() => {
-  const perms: Array<[Priority, Priority, Priority]> = [];
-  for (const a of ALL_PRIORITIES) {
-    for (const b of ALL_PRIORITIES) {
-      for (const c of ALL_PRIORITIES) {
-        if (a !== b && b !== c && a !== c) perms.push([a, b, c]);
-      }
-    }
-  }
-  return perms.map(([a, b, c]) => ({
-    value: `${a},${b},${c}`,
-    label: `${PRIORITY_LABELS[a]} > ${PRIORITY_LABELS[b]} > ${PRIORITY_LABELS[c]}`,
-  }));
-})();
+/**
+ * 优先级候选项（前端「点击加入 + 上下调序」的列表用它生成）。
+ *
+ * ★ 不再生成「所有排列」当 select 选项：3 项是 6 条、4 项就是 24 条，
+ *   以后再加一项还会继续膨胀（阶乘增长）。列表里候选项再多也只是多一行。
+ */
+const PRIORITY_OPTIONS: { value: Priority; label: string; hint: string }[] = [
+  {
+    value: "competition",
+    label: PRIORITY_LABELS.competition,
+    hint: "我已报名的个人赛 / 公会赛地图（进行中或即将开赛）",
+  },
+  {
+    value: "golden",
+    label: PRIORITY_LABELS.golden,
+    hint: "正在刮金风的地图（每杆直接金币区间提高）",
+  },
+  {
+    value: "experience",
+    label: PRIORITY_LABELS.experience,
+    hint: "天气经验加成最高的地图（涌流期间各图相同，改按「涌流目标」挑）",
+  },
+  {
+    value: "follow",
+    label: PRIORITY_LABELS.follow,
+    hint: "加入船队时跟着船走、自己不换图；没有加入船队则跳过这一项",
+  },
+];
 
 const definition: ModuleDefinition = {
   id: "auto-travel",
   name: "自动切图",
-  version: "4.1.0",
+  version: "5.0.0",
   description:
-    "按你排的优先级在已解锁地图里挑一张待着（做法与官方航线助手的「换图优先级」一致）：比赛地图 > 金风地图 > 天气经验最高的地图，顺序可调。涌流是覆盖所有地图的全局天气，各图加成相同，因此它不参与排序，而是由「经验」在涌流期间按「涌流目标」挑图（默认已解锁的最高地图）。船长 / 舵手还能在换图时把船员一起带走。",
+    "按你排的优先级在已解锁地图里挑一张待着（做法与官方航线助手的「换图优先级」一致）：比赛 / 金风 / 经验 / 跟船队走，用点击加入的方式自行排序、想留几项留几项。涌流是覆盖所有地图的全局天气，各图加成相同，因此它不参与排序，而是由「经验」在涌流期间按「涌流目标」挑图（默认已解锁的最高地图）。船长 / 舵手还能在换图时把船员一起带走。",
   defaultEnabled: false,
   defaultConfig: {
-    priorities: "competition,golden,experience",
+    priorities: ["competition", "golden", "experience"],
     surgeBiome: "",
     crewTravel: "off",
-    fleetMode: "solo",
     checkEverySec: 120,
     minImprovePct: 3,
     travelCooldownSec: 600,
@@ -327,14 +384,14 @@ const definition: ModuleDefinition = {
   configSchema: [
     {
       key: "priorities",
-      type: "select",
+      type: "order",
       label: "换图优先级（从高到低）",
       hint:
-        "按顺序找第一个有候选的优先级，它就是决定 —— 有比赛可去就不会因为别处天气好而跑掉。\n" +
-        "比赛 = 我已报名的个人赛 / 公会赛地图（进行中或即将开赛）；" +
-        "金风 = 正在刮金风的地图（每杆直接金币区间提高）；" +
-        "经验 = 天气经验加成最高的地图（涌流期间各图相同，改按下面的「涌流目标」挑）。",
-      default: "competition,golden,experience",
+        "点候选加入下面的列表，用拖动或 ↑ ↓ 调整先后；按顺序找**第一个有候选的**优先级，它就是决定 —— " +
+        "有比赛可去就不会因为别处天气好而跑掉。\n" +
+        "列表里放哪几项、放几项都由你决定（不想要的项直接移除）。\n" +
+        "注意「经验」在任何地图上都有候选，所以它后面的项不会生效：想让「跟船队走」兜底，要把它放在「经验」前面。",
+      default: ["competition", "golden", "experience"],
       options: PRIORITY_OPTIONS,
     },
     {
@@ -353,22 +410,11 @@ const definition: ModuleDefinition = {
       label: "换图时带走船员",
       hint:
         "开启后换图会把整条船开过去，能跟的船员一起跟过来；目标图没解锁、人不在船上、正在打别的公会赛的船员会留在原地（游戏决定，日志里报数）。\n" +
-        "只有船长 / 舵手（游戏里能改航线的人）生效，其他人开启也只是普通换图；「跟船队走」时本模块不换图，此项无效。",
+        "只有船长 / 舵手（游戏里能改航线的人）生效，其他人开启也只是普通换图；优先级里选中了「跟船队走」且你确实在船队里时，本模块不换图，此项自然也不生效。",
       default: "off",
       options: [
         { value: "off", label: "只自己换图（默认）" },
         { value: "carry", label: "带船员一起走（船长 / 舵手）" },
-      ],
-    },
-    {
-      key: "fleetMode",
-      type: "select",
-      label: "与船队的关系",
-      hint: "跟船队走 = 完全不自己换图，船队开到哪你就在哪；自己切图 = 按上面的优先级自行换图（船队自己开走时游戏仍会把你带走）",
-      default: "solo",
-      options: [
-        { value: "solo", label: "自己切图（默认）" },
-        { value: "follow", label: "跟船队走（自己不换图）" },
       ],
     },
     {
@@ -435,10 +481,15 @@ const definition: ModuleDefinition = {
     S.crewLastSummary = "";
 
     // 优先级只在启动时解析一次（改配置会重启模块，所以不必每轮重算）
-    const priorities = parsePriorities(ctx.config.priorities);
+    // legacyFollow：1.7.x 的独立开关「跟船队走」并进优先级列表（老配置不至于静默失效）
+    const priorities = parsePriorities(ctx.config.priorities, {
+      legacyFollow: String(ctx.config.fleetMode ?? "") === "follow",
+    });
     const minImprovePct = Math.max(0, Number(ctx.config.minImprovePct) || 0);
     const surgeBiomeId = String(ctx.config.surgeBiome ?? "").trim();
     const carryCrew = String(ctx.config.crewTravel ?? "off") === "carry";
+    /** 需要看船队状态吗（「跟船队走」这一项 / 带队换图） */
+    const needParty = priorities.includes("follow") || carryCrew;
     /** 船员拉不动的暂缓时长：失败 3 次后长时间不再试，避免反复召集 */
     const CREW_BACKOFF_MS = 10 * 60_000;
     const CREW_GIVE_UP_MS = 6 * 3600_000;
@@ -449,6 +500,20 @@ const definition: ModuleDefinition = {
       // 「本轮没动作」的说明：降到 debug。信息级日志会落库并占用每用户 2 万条的额度，
       // 这类每轮都变（带数量）的说明会把额度几小时就冲掉，让真正的事件无处留存。
       ctx.log.debug("自动切图", msg);
+    };
+
+    /**
+     * 船队状态：一轮决策里最多取一次（决定「跟船队走」与「带队换图」共用同一份数据）。
+     * 不需要时根本不请求 —— 没开这两项的人不该为它多打一次接口。
+     */
+    let partyCache: any = null;
+    let partyFetched = false;
+    const partyState = async (): Promise<any> => {
+      if (!partyFetched) {
+        partyFetched = true;
+        partyCache = needParty ? ((await ctx.api.fishingState().catch(() => null))?.party ?? null) : null;
+      }
+      return partyCache;
     };
 
     /** 比赛地图：个人赛要已报名，公会赛要公会已报名 */
@@ -540,7 +605,7 @@ const definition: ModuleDefinition = {
         return true;
       }
 
-      const party = (await ctx.api.fishingState().catch(() => null))?.party ?? null;
+      const party = await partyState();
       if (!party?.isInParty) {
         // 没船队：按普通换图走（只提示一次，避免每轮刷）
         if (S.crewLastSummary !== "no-party") {
@@ -624,6 +689,10 @@ const definition: ModuleDefinition = {
     };
 
     const decide = async (trigger: string) => {
+      // 每轮重新取一次船队状态（缓存只在单轮决策内有效）
+      partyFetched = false;
+      partyCache = null;
+
       const data = await ctx.api.biomes();
       const biomes: any[] = (data?.biomes ?? []).filter(Boolean);
       const current = biomes.find((b) => b.isCurrent);
@@ -634,23 +703,9 @@ const definition: ModuleDefinition = {
       }
 
       /* ---------- 「跟船队走」：完全不自己换图 ---------- */
-      if (ctx.config.fleetMode === "follow") {
-        const party = (await ctx.api.fishingState().catch(() => null))?.party;
-        if (party?.isInParty) {
-          const boat = unlocked.find((b) => b.id === party.boatBiomeId);
-          const same = party.boatBiomeId === current.id;
-          idle(
-            `跟随船队：${party.boatName ?? "船队"} 在 ${boat?.name ?? party.boatBiomeId ?? "未知"}` +
-              (same ? "（与你当前所在一致）" : `（你当前在 ${current.name}，船队开动后会把你带走）`) +
-              "，本模块不自行换图",
-          );
-        } else {
-          idle("未加入船队，但配置为「跟船队走」，因此不换图");
-        }
-        return;
-      }
-
       const competition = await competitionTarget(Date.now());
+      // 「跟船队走」需要船队状态（boatName / 在哪个图）；不需要时 partyState() 不会发请求
+      const party = await partyState();
       const decision = planTravel({
         priorities,
         unlocked,
@@ -658,7 +713,21 @@ const definition: ModuleDefinition = {
         competition,
         minImprovePct,
         surgeBiomeId,
+        party: party
+          ? {
+              inParty: Boolean(party.isInParty),
+              boatName: party.boatName ?? null,
+              boatBiomeName: unlocked.find((b) => b.id === party.boatBiomeId)?.name ?? null,
+              sameAsCurrent: party.boatBiomeId === current.id,
+            }
+          : null,
       });
+
+      /* ---------- 「跟船队走」：这一项命中就不自己换图 ---------- */
+      if (decision.action === "follow") {
+        idle(`${trigger}：${decision.why}`);
+        return;
+      }
 
       if (decision.action === "stay") {
         idle(`${trigger}：${decision.why}`);
@@ -706,8 +775,8 @@ const definition: ModuleDefinition = {
         `经验只看天气加成${minImprovePct ? `，迟滞 ${minImprovePct}%` : ""}；` +
         `涌流目标 ${surgeBiomeId ? biomeName(surgeBiomeId) ?? surgeBiomeId : "已解锁的最高地图"}；` +
         (carryCrew
-          ? String(ctx.config.fleetMode) === "follow"
-            ? "带队换图已开启，但配置为「跟船队走」（本模块不换图，因此不会开船）"
+          ? priorities.includes("follow")
+            ? "带队换图已开启（需船长 / 舵手；跟船队走生效时不会开船）"
             : "带队换图已开启（需船长 / 舵手权限）"
           : "不带船员，仅自己换图"),
     );

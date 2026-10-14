@@ -55,7 +55,7 @@ import {
   useStartAccount,
   useStopAccount,
 } from "@/lib/mutations.ts";
-import { fmtNum, fmtRelative } from "@/lib/utils.ts";
+import { fmtCompact, fmtDuration, fmtExact, fmtNum, fmtRelative } from "@/lib/utils.ts";
 
 export default function AccountsPage() {
   const { data: accounts, isPending, error } = useAccounts();
@@ -248,6 +248,22 @@ function AccountCard({
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           {panel?.biomeName ? <Badge variant="secondary">{panel.biomeName}</Badge> : null}
           {panel?.level ? <Badge variant="secondary">Lv {fmtNum(panel.level)}</Badge> : null}
+          {panel?.xpRate ? (
+            <Badge
+              variant="idle"
+              title={
+                `近 ${Math.max(1, Math.round(panel.xpRate.windowSec / 60))} 分钟实测：${fmtExact(panel.xpRate.perHour)} 经验/时` +
+                (panel.xpRate.remaining != null ? ` · 距下一级还差 ${fmtExact(panel.xpRate.remaining)}` : "")
+              }
+            >
+              经验 +{fmtCompact(panel.xpRate.perHour)}/时
+              {panel.xpRate.etaSec != null
+                ? panel.xpRate.etaSec === 0
+                  ? " · 可升级"
+                  : ` · 约 ${fmtDuration(panel.xpRate.etaSec * 1000)}升级`
+                : ""}
+            </Badge>
+          ) : null}
           <LinkBadge running={running} sync={panel?.sync ?? null} />
           <span className="text-muted-foreground text-[11px]">
             上次同步 {account.lastSyncAt ? fmtRelative(account.lastSyncAt) : "—"}

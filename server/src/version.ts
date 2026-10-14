@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.7.1";
+export const VERSION = "1.8.0";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,29 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.8.0",
+    date: "2026-10-14",
+    title: "换图优先级改为可自行编排的列表；等级处显示经验速度与升级预计",
+    changes: [
+      {
+        kind: "feature",
+        text: "「自动切图」的换图优先级改为可自行编排的列表：点候选项加入、拖动或用上下按钮调序、不需要的项直接移除。原先它是下拉框，需要把每一种排列都生成成一个选项（3 项 6 条、4 项 24 条），候选项一多就无法使用",
+      },
+      {
+        kind: "feature",
+        text: "「跟船队走」并入优先级列表，不再单独占一个配置项：放在最前即完全不自己换图；未加入船队时该项跳过，继续按后面的优先级换图。旧配置的「跟船队走」会自动并到列表最前",
+      },
+      {
+        kind: "feature",
+        text: "状态面板与账号卡片新增经验速度：近 30 分钟实测的每小时经验，以及按该速度估算的升级剩余时间（样本不足或跨升级时不估算，显示「采样中」）",
+      },
+      {
+        kind: "improve",
+        text: "优先级改为有序子集后不再自动补齐未选中的项（此前会强行补上没选的优先级）",
+      },
+    ],
+  },
   {
     version: "1.7.1",
     date: "2026-10-13",

@@ -38,6 +38,13 @@ import { TimerPool, TtlCache } from "../lib/timers.ts";
 import { clamp, jitter, parseTime, randomStaggerMs, sleepUntil } from "../lib/util.ts";
 import { GameClient } from "./client.ts";
 import { GAME_ERROR_CODES, GameClientError } from "./errors.ts";
+import {
+  XP_RATE_WINDOW_MS,
+  XP_SAMPLE_MIN_GAP_MS,
+  computeXpRate,
+  type XpRate,
+  type XpSample,
+} from "./xp-rate.ts";
 import { ProxyDispatcherHolder, type ProxyConfig } from "./proxy.ts";
 import { getModule, MODULES } from "../modules/registry.ts";
 import { resolveModuleConfig, type ModuleContext, type ModuleDefinition } from "../modules/types.ts";
@@ -241,6 +248,14 @@ export class AccountRuntime {
   private lastSyncError: string | null = null;
   /** 同步连续失败次数（日志只在第 1 次与每 10 次时记一条，避免坏链路刷屏） */
   private syncFailStreak = 0;
+
+  /**
+   * 经验采样：用来算「每小时多少经验」「还差多久升级」。
+   *
+   * ★ 为什么要有：等级/经验进度只说「现在离下一级多远」，回答不了「这样挂下去多久能升级」，
+   *   也看不出「换了图/饵之后经验是变快还是变慢」。折算口径见 game/xp-rate.ts（那里有单测）。
+   */
+  private xpSamples: XpSample[] = [];
 
   constructor(deps: AccountRuntimeDeps) {
     this.deps = deps;
@@ -530,6 +545,37 @@ export class AccountRuntime {
       lastErrorAt: this.lastSyncErrorAt,
       lastError: this.lastSyncError,
     };
+  }
+
+  /**
+   * 采一条经验样本（读 `me` 的缓存，不会额外打接口）。
+   *
+   * 调用时机：keep-online 每轮同步后（大约每几秒一次），
+   * 但**同一等级内经验没变、或距上次采样不到 30 秒**时不记 —— 省内存，也不让速率被噪声带偏。
+   */
+  recordXpSample(): void {
+    const player = this.me?.player;
+    const xp = Number(player?.experience);
+    const level = Number(player?.level);
+    if (!Number.isFinite(xp) || !Number.isFinite(level)) return;
+
+    const now = Date.now();
+    const last = this.xpSamples[this.xpSamples.length - 1];
+    if (last) {
+      const tooSoon = now - last.t < XP_SAMPLE_MIN_GAP_MS;
+      const same = last.xp === xp && last.level === level;
+      if (same || tooSoon) return;
+    }
+
+    this.xpSamples.push({ t: now, xp, level });
+    // 只留窗口内的样本；升级会让本级经验归零，所以旧样本留着也没用（computeXpRate 也会跳过）
+    const since = now - XP_RATE_WINDOW_MS;
+    while (this.xpSamples.length > 2 && this.xpSamples[0]!.t < since) this.xpSamples.shift();
+  }
+
+  /** 经验速率（近 30 分钟；样本不足时返回 null，界面显示「采样中」而不是猜数字） */
+  get xpRate(): XpRate | null {
+    return computeXpRate(this.xpSamples);
   }
 
   reportOnlineCount(count: unknown): void {
@@ -878,6 +924,8 @@ export class AccountRuntime {
         if (this.isAborted()) return;
         this.reportOnlineCount(st?.onlinePlayerCount);
         await this.refreshDisplayData();
+        // 顺手采一条经验样本：面板要用它算「每小时经验 / 还差多久升级」
+        this.recordXpSample();
         this.reportStatusPanel(buildStatusPanel(st, this));
 
         let run: RunSnapshot | undefined = st?.run;

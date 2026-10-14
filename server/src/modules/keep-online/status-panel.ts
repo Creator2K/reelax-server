@@ -11,6 +11,7 @@
 //   活动 = admin_event / reincarnation_catch_up
 import { bpToMultiplier, weatherMultiplier, weatherName } from "./xp-multiplier.ts";
 import { baitName as baitNameOf } from "../shared/rarity.ts";
+import { withLevelEta, type XpRate, type XpRateView } from "../../game/xp-rate.ts";
 
 /** 八个分区（万分比） */
 export type XpSections = {
@@ -106,6 +107,12 @@ export type StatusPanel = {
   /** 同步健康度（近 10 分钟）：一眼看出「结算少」是不是链路问题 */
   sync: SyncHealthView | null;
 
+  /**
+   * 经验速率：近 30 分钟的「每小时经验」+ 按该速度估算的升级剩余时间。
+   * 样本不足时为 null（界面显示「采样中」）—— 挂机刚启动的前几分钟就属于这种情况。
+   */
+  xpRate: XpRateView | null;
+
   fleet: {
     boatName: string | null;
     boatBiomeId: string | null;
@@ -146,6 +153,8 @@ export type StatusPanelInputs = {
   lighthouse?: any;
   /** 同步健康度（由 AccountRuntime 提供；纯函数不自己去算） */
   sync?: SyncHealthView | null;
+  /** 经验速率（同样由 AccountRuntime 的采样算好；纯函数只负责拼上升级所需时间） */
+  xp?: XpRate | null;
 };
 
 /**
@@ -332,6 +341,11 @@ export function buildStatusPanel(inputs: StatusPanelInputs): StatusPanel {
       }
     : null;
 
+  /* ---------- 经验速率（每小时经验 / 升级剩余时间） ---------- */
+  const experience = numOrNull(me?.player?.experience);
+  const experienceToNextLevel = numOrNull(me?.player?.experienceToNextLevel);
+  const xpRate = withLevelEta(inputs.xp ?? null, experience, experienceToNextLevel);
+
   return {
     biomeId: run.biomeId ?? null,
     biomeName: biome?.name ?? null,
@@ -364,8 +378,8 @@ export function buildStatusPanel(inputs: StatusPanelInputs): StatusPanel {
     })),
 
     level: numOrNull(me?.player?.level),
-    experience: numOrNull(me?.player?.experience),
-    experienceToNextLevel: numOrNull(me?.player?.experienceToNextLevel),
+    experience,
+    experienceToNextLevel,
     gold: numOrNull(me?.player?.gold),
     relics: numOrNull(me?.player?.relics),
     fragments: numOrNull(me?.player?.fragments),
@@ -387,6 +401,8 @@ export function buildStatusPanel(inputs: StatusPanelInputs): StatusPanel {
     ].filter((p): p is PityProgressView => p !== null),
 
     sync: inputs.sync ?? null,
+
+    xpRate,
 
     fleet,
 

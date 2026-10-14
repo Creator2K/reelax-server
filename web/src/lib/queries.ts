@@ -61,6 +61,25 @@ export type SyncHealth = {
   lastError: string | null;
 };
 
+/**
+ * 经验速率（服务端按近 30 分钟的经验增量算好）。
+ * `remaining` / `etaSec` 也是服务端算的 —— 前端不重算，免得两处口径不一致。
+ */
+export type XpRate = {
+  /** 实际覆盖的时间跨度（秒） */
+  windowSec: number;
+  /** 每小时经验 */
+  perHour: number;
+  /** 参与折算的样本数 */
+  samples: number;
+  /** 窗口内升了几级 */
+  levelGain: number;
+  /** 距下一级还差多少经验（拿不到为 null） */
+  remaining: number | null;
+  /** 按当前速率估算的升级秒数（无法估算为 null，已经满了为 0） */
+  etaSec: number | null;
+};
+
 export type StatusPanel = {
   biomeId: string | null;
   biomeName: string | null;
@@ -85,6 +104,8 @@ export type StatusPanel = {
   pity: PityProgress[];
   /** 近 10 分钟的同步健康度（判断「结算变少」是不是链路问题） */
   sync: SyncHealth | null;
+  /** 经验速率：每小时经验 + 按该速度估算的升级剩余时间（样本不足时为 null） */
+  xpRate: XpRate | null;
   /** 当前是第几轮转生 */
   reincarnationRound?: number | null;
   fleet: { boatName: string | null; boatBiomeName: string | null; sameAsCurrent: boolean } | null;
@@ -179,6 +200,16 @@ export type ConfigField =
       hint?: string;
       default?: string[];
       options: { value: string; label: string; hint?: string }[];
+    }
+  | {
+      /** 有序列表：从固定清单里按顺序挑若干项（顺序有意义，值是一组 id） */
+      key: string;
+      type: "order";
+      label: string;
+      hint?: string;
+      default?: string[];
+      options: { value: string; label: string; hint?: string }[];
+      min?: number;
     }
   | {
       /**
