@@ -247,6 +247,7 @@ function AccountCard({
         {/* 位置与链路 */}
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           {panel?.biomeName ? <Badge variant="secondary">{panel.biomeName}</Badge> : null}
+          {panel?.weatherName ? <Badge variant="warn">{panel.weatherName}</Badge> : null}
           {panel?.level ? <Badge variant="secondary">Lv {fmtNum(panel.level)}</Badge> : null}
           {panel?.xpRate ? (
             <Badge

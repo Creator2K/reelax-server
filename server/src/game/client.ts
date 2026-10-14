@@ -497,6 +497,16 @@ export class GameClient {
   contentBootstrap() {
     return this.request("/api/content/bootstrap", { timeoutMs: 30_000 });
   }
+  /**
+   * 背包（鱼）设置：目前只有一项「自动锁定专精鱼」。
+   *
+   * 开启后**游戏服务端**会把当前专精目标鱼标记为系统锁（`isMasteryLocked`），
+   * 专精目标轮换时锁会自动转移、关闭时自动移除（手动锁保留）。
+   * 这是官方的"保护专精鱼"机制 —— 卖鱼只要跳过被锁的鱼即可，不必自己算目标鱼。
+   */
+  updateFishSettings(body: { autoLockMasteryFish: boolean }) {
+    return this.request("/api/inventory/fish/settings", { method: "PATCH", body });
+  }
   baits() {
     return this.request("/api/baits");
   }

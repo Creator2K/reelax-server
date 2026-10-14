@@ -111,11 +111,11 @@ describe("自动切图 · 「跟船队走」也参与排序", () => {
   it("★ 放在「经验」后面不会生效（经验在任何图上都有候选）—— 这是文档化的行为", () => {
     const d = planTravel({
       priorities: ["experience", "follow"] as Priority[],
-      unlocked: [HOME, MID, TOP], // 天气全一样 → 当前图就是最优
-      currentBiomeId: "b_001",
+      unlocked: [HOME, MID, TOP],
+      currentBiomeId: "b_009", // 已经是「天气相同里鱼价值最高」的那张 → 经验这一项结论是 stay
       competition: null,
       minImprovePct: 0,
-      party: { inParty: true, boatName: "芦汐轻舟", boatBiomeName: "月落溪谷", sameAsCurrent: true },
+      party: { inParty: true, boatName: "芦汐轻舟", boatBiomeName: "星渊圣海", sameAsCurrent: true },
     });
     // 经验先命中「当前已最优」→ 终局；想让它兜底必须把 follow 挪到经验前面
     expect(d).toMatchObject({ action: "stay", reason: "experience" });
@@ -137,6 +137,59 @@ describe("自动切图 · 「跟船队走」也参与排序", () => {
     const d = planTravel({ ...base, priorities: ["follow"] as Priority[], party: { inParty: false } });
     expect(d).toMatchObject({ action: "stay", reason: null });
     if (d.action === "stay") expect(d.why).toContain("没有可去的地图");
+  });
+});
+
+describe("自动切图 · 天气相同就看鱼价值（经验优先级）", () => {
+  // 两张雷暴图（天气倍率一样），鱼的等级 / 价值不同
+  const STORM_LOW = { id: "b_004", name: "雷痕峡湾", valueMultiplier: 1.15, weather: { weatherId: "tempest" } };
+  const STORM_HIGH = { id: "b_012", name: "熔潮环礁", valueMultiplier: 1.55, weather: { weatherId: "tempest" } };
+  // 天气更好但价值明显更低的反例素材（强风 ×1.10）
+  const RICH_WIND = { id: "b_015", name: "星渊圣海", valueMultiplier: 1.7, weather: { weatherId: "gale" } };
+
+  const plan = (input: {
+    unlocked: any[];
+    currentBiomeId: string;
+    minImprovePct?: number;
+  }) =>
+    planTravel({
+      priorities: ["experience"] as Priority[],
+      unlocked: input.unlocked,
+      currentBiomeId: input.currentBiomeId,
+      competition: null,
+      minImprovePct: input.minImprovePct ?? 3,
+    });
+
+  it("★ 两张都是雷暴：去**鱼价值更高**的那张，而不是 id 最小的", () => {
+    // 旧版按 id 兜底 → 会选 b_004（雷痕峡湾，价值 1.15）
+    const d = plan({ unlocked: [HOME, STORM_LOW, STORM_HIGH], currentBiomeId: "b_001" });
+    expect(d).toMatchObject({ action: "travel", biomeId: "b_012", reason: "experience" });
+  });
+
+  it("★ 已经在低价值那张雷暴图 → 换到高价值的那张（天气提升 0% 也动）", () => {
+    const d = plan({ unlocked: [STORM_LOW, STORM_HIGH], currentBiomeId: "b_004" });
+    expect(d).toMatchObject({ action: "travel", biomeId: "b_012", reason: "experience" });
+    if (d.action === "travel") expect(d.why).toContain("鱼价值");
+  });
+
+  it("已经站在价值最高的雷暴图 → 不动（不会来回横跳）", () => {
+    const d = plan({ unlocked: [STORM_LOW, STORM_HIGH], currentBiomeId: "b_012" });
+    expect(d).toMatchObject({ action: "stay", reason: "experience" });
+  });
+
+  it("★ 天气仍然是第一优先：价值低但天气更好的图照样去", () => {
+    // 当前是价值最高的图（1.7）但只有强风 ×1.10；别处雷暴 ×1.50（价值 1.55）→ 依然去雷暴图
+    const d = plan({ unlocked: [RICH_WIND, STORM_LOW, STORM_HIGH], currentBiomeId: "b_015" });
+    expect(d).toMatchObject({ action: "travel", biomeId: "b_012", reason: "experience" });
+    if (d.action === "travel") expect(d.why).toContain("天气经验更优");
+  });
+
+  it("天气提升没过迟滞门槛 → 不动（回归：避免天气小幅波动时来回横跳）", () => {
+    const RAIN = { id: "b_001", name: "月落溪谷", valueMultiplier: 1, weather: { weatherId: "rain" } }; // 1.05
+    const GALE = { id: "b_005", name: "星根洞窟", valueMultiplier: 1.2, weather: { weatherId: "gale" } }; // 1.10
+    const d = plan({ unlocked: [RAIN, GALE], currentBiomeId: "b_001", minImprovePct: 10 });
+    expect(d).toMatchObject({ action: "stay", reason: "experience" });
+    if (d.action === "stay") expect(d.why).toContain("迟滞门槛");
   });
 });
 

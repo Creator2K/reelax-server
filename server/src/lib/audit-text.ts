@@ -46,6 +46,10 @@ function detailNote(raw: string | null): string {
   }
   if (!d || typeof d !== "object") return "";
   if (d.reset === true) return "（恢复默认配置）";
+  // 手动换图：把目标地图与是否带队说清楚
+  if (typeof d.mapName === "string" && d.mapName) {
+    return `（切到「${d.mapName}」${d.mode === "party" ? "，带队一起走" : ""}）`;
+  }
   const parts: string[] = [];
   if (d.enabled === true) parts.push("启用");
   else if (d.enabled === false) parts.push("关闭");
@@ -111,6 +115,8 @@ export function describeAudit(row: AuditLike, r: AuditResolvers = {}): string {
       return `启动账号${accountText(target ?? "", r)}`;
     case "account.stopped":
       return `停止账号${accountText(target ?? "", r)}`;
+    case "account.travel":
+      return `手动切换账号${accountText(target ?? "", r)}的所在地图${note}`;
     case "account.credentials.updated":
       return `更新账号${accountText(target ?? "", r)}的登录凭证`;
 

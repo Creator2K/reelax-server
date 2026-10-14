@@ -179,14 +179,32 @@ export type TravelDecision =
 
 /** 比大小：先按主指标，再按 id 兜底，保证同一份数据每次选出同一张（可测） */
 function bestBy<T>(list: T[], score: (b: T) => number, idOf: (b: T) => string): T | null {
+  return bestByKeys(list, [score], idOf);
+}
+
+/**
+ * 比大小：按给定的多个打分函数**依次**比较（越大越好），最后按 id 兜底（越小越稳）。
+ *
+ * ★ 为什么需要多级：「经验」优先级原来只比天气倍率，平手时按 id 取最小的那张 ——
+ *   于是两张图都是雷暴时，会挑 id 最小（等级最低、鱼价值最差）的那张，
+ *   而不是同一天气里价值更高的那张。现在第二级比鱼价值倍率。
+ */
+function bestByKeys<T>(list: T[], scores: ((b: T) => number)[], idOf: (b: T) => string): T | null {
   let best: T | null = null;
+  let bestScores: number[] = [];
   for (const item of list) {
     if (!best) {
       best = item;
+      bestScores = scores.map((s) => s(item));
       continue;
     }
-    const d = score(item) - score(best);
-    if (d > 0 || (d === 0 && idOf(item) < idOf(best))) best = item;
+    const cur = scores.map((s) => s(item));
+    let cmp = 0;
+    for (let i = 0; i < cur.length && cmp === 0; i++) cmp = (cur[i] ?? 0) - (bestScores[i] ?? 0);
+    if (cmp > 0 || (cmp === 0 && idOf(item) < idOf(best))) {
+      best = item;
+      bestScores = cur;
+    }
   }
   return best;
 }
@@ -285,9 +303,11 @@ export function planTravel(input: {
       }
     }
 
-    const best = bestBy(unlocked, xpWeight, (b) => String(b?.id ?? ""));
+    // ★ 天气倍率相同时再比**鱼价值**：同样是雷暴，就该待在等级更高、鱼价值更高的那张图。
+    const best = bestByKeys(unlocked, [xpWeight, valueWeight], (b) => String(b?.id ?? ""));
     if (!best) continue;
     const bestXp = xpWeight(best);
+    const bestVal = valueWeight(best);
     if (best.id === currentBiomeId) {
       // 「当前图已经最好」也是「经验」这一项的结论（不是"没有候选"）：它就是终局。
       // 注意这意味着**排在「经验」后面的项不会生效** —— 因为经验在任何地图上都有候选，
@@ -295,28 +315,52 @@ export function planTravel(input: {
       return {
         action: "stay",
         reason: p,
-        why: `当前地图的天气经验已是最优（${weatherLabel(best)}，×${bestXp.toFixed(2)}）`,
+        why: `当前地图已是最优（天气${weatherLabel(best)}×${bestXp.toFixed(2)}，鱼价值×${bestVal.toFixed(2)}）`,
       };
     }
     const curXp = current ? xpWeight(current) : 1;
-    const improve = curXp > 0 ? bestXp / curXp - 1 : 1;
+    const curVal = current ? valueWeight(current) : 1;
     const threshold = Math.max(0, Number(input.minImprovePct) || 0);
-    if (improve * 100 < threshold) {
+    const improve = curXp > 0 ? bestXp / curXp - 1 : 1;
+
+    if (improve > 0) {
+      // 天气确实更好 → 按迟滞门槛判断（避免天气小幅波动时来回横跳）
+      if (improve * 100 < threshold) {
+        return {
+          action: "stay",
+          reason: p,
+          why:
+            `天气经验未达迟滞门槛：${best.name ?? best.id} ${weatherLabel(best)}×${bestXp.toFixed(2)}` +
+            ` 比当前 ${weatherLabel(current)}×${curXp.toFixed(2)} 高 ${(improve * 100).toFixed(1)}%（门槛 ${threshold}%）`,
+        };
+      }
       return {
-        action: "stay",
+        action: "travel",
+        biomeId: best.id,
         reason: p,
         why:
-          `天气经验未达迟滞门槛：${best.name ?? best.id} ${weatherLabel(best)}×${bestXp.toFixed(2)}` +
-          ` 比当前 ${weatherLabel(current)}×${curXp.toFixed(2)} 高 ${(improve * 100).toFixed(1)}%（门槛 ${threshold}%）`,
+          `天气经验更优：${weatherLabel(best)}×${bestXp.toFixed(2)}` +
+          `（当前 ${weatherLabel(current)}×${curXp.toFixed(2)}，高 ${(improve * 100).toFixed(1)}%，鱼价值×${bestVal.toFixed(2)}）`,
+      };
+    }
+
+    // 天气一样：这时才看鱼价值 —— 价值是地图的固定属性，不会抖动，所以不受迟滞门槛限制
+    if (bestVal > curVal) {
+      return {
+        action: "travel",
+        biomeId: best.id,
+        reason: p,
+        why:
+          `天气相同（${weatherLabel(best)}×${bestXp.toFixed(2)}），但鱼价值更高：` +
+          `×${bestVal.toFixed(2)} > 当前 ×${curVal.toFixed(2)}`,
       };
     }
     return {
-      action: "travel",
-      biomeId: best.id,
+      action: "stay",
       reason: p,
       why:
-        `天气经验更优：${weatherLabel(best)}×${bestXp.toFixed(2)}` +
-        `（当前 ${weatherLabel(current)}×${curXp.toFixed(2)}，高 ${(improve * 100).toFixed(1)}%）`,
+        `天气与鱼价值都不占优（当前 ${weatherLabel(current)}×${curXp.toFixed(2)}` +
+        `／鱼价值×${curVal.toFixed(2)}）`,
     };
   }
 

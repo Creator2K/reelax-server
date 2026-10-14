@@ -5,13 +5,14 @@
 import type { Repos } from "../db/repositories/index.ts";
 import type { AccountRow, AccountSafeRow } from "../db/repositories/accounts.ts";
 import { accountSafeToApi } from "../db/repositories/accounts.ts";
-import type { AccountStatus, ModuleRuntimeState, RunSnapshot, AccountStats } from "../game/account-runtime.ts";import type { RunnerRegistry } from "../game/runner-registry.ts";
+import type { AccountStatus, ModuleRuntimeState, RunSnapshot, AccountStats, AccountRuntime } from "../game/account-runtime.ts";import type { RunnerRegistry } from "../game/runner-registry.ts";
 import type { CredentialVault } from "../security/vault.ts";
 import { CredentialVault as Vault } from "../security/vault.ts";
 import { HttpError } from "../api/server.ts";
 import { MODULES, getModule } from "../modules/registry.ts";
 import { validateConfigPatch, type ConfigValues } from "../modules/types.ts";
 import { parseProxyInput, parseBaseUrl } from "./proxy-input.ts";
+import { buildMapsView, checkTravel, type AccountMapsView } from "./map-view.ts";
 
 export type AccountView = {
   id: string;
@@ -337,6 +338,114 @@ export class AccountService {
 
   /** 供路由层复用：解析并校验代理地址 */
   static parseProxyInput = parseProxyInput;
+
+  /* ---------- 地图与天气（手动换图面板） ---------- */
+
+  /**
+   * 面板数据：当前地图 + 全部地图（天气 / 鱼价值 / 比赛标记 / 解锁信息）+ 船队状态。
+   *
+   * 数据来源就是 `/api/biomes`（含 weather 与 activeCompetitions）与两个比赛 overview；
+   * 这里**强制刷新一次**缓存 —— 用户是主动点开这个面板的，看到的应该是"现在"的天气。
+   */
+  async maps(accountId: string, userId: string): Promise<AccountMapsView> {
+    const rt = this.requireRuntime(accountId, userId);
+    await rt.refreshDisplayData(true); // 内部已吞掉单个接口的失败，不会抛
+
+    const biomes = [...rt.biomes.values()];
+    if (!biomes.length) {
+      throw new HttpError(502, "GAME_UNREACHABLE", "读不到地图数据（账号可能还没连上游戏，稍后再试）");
+    }
+
+    return buildMapsView({
+      biomes,
+      myCompetitionBiomes: await this.myCompetitionBiomes(rt),
+      party: partyOf(rt),
+    });
+  }
+
+  /** 手动换图：solo = 只自己过去；party = 把整条船开过去（需船长 / 舵手） */
+  async travel(
+    accountId: string,
+    userId: string,
+    input: { biomeId: string; mode: "solo" | "party" },
+  ): Promise<{ ok: true; biomeId: string; name: string; mode: "solo" | "party" }> {
+    const rt = this.requireRuntime(accountId, userId);
+    await rt.refreshDisplayData(true);
+
+    const view = buildMapsView({ biomes: [...rt.biomes.values()], myCompetitionBiomes: new Map(), party: null });
+    const biome = view.maps.find((m) => m.id === input.biomeId) ?? null;
+
+    // ★ 带队换图要**现场**再看一次船队状态：状态面板里的船队信息可能是几分钟前的
+    let party = view.party;
+    if (input.mode === "party") {
+      try {
+        const st = await rt.client.fishingState();
+        const p = st?.party ?? null;
+        party = p
+          ? {
+              inParty: Boolean(p.isInParty),
+              canChangeBoatBiome: Boolean(p.canChangeBoatBiome),
+              boatName: p.boatName ?? null,
+              boatBiomeId: p.boatBiomeId ?? null,
+            }
+          : null;
+      } catch {
+        party = null; // 拿不到就当没有权限：checkTravel 会给出明确原因
+      }
+    }
+
+    const check = checkTravel({ biome, party, mode: input.mode });
+    if (!check.ok) throw new HttpError(400, check.code, check.message);
+
+    await rt.manualTravel({ biomeId: input.biomeId, name: biome?.name ?? input.biomeId, mode: input.mode });
+    return { ok: true, biomeId: input.biomeId, name: biome?.name ?? input.biomeId, mode: input.mode };
+  }
+
+  /** 账号运行时（不存在 = 账号不存在；越权一律 404） */
+  private requireRuntime(accountId: string, userId: string) {
+    this.requireOwned(accountId, userId);
+    const rt = this.registry.get(accountId);
+    if (!rt) throw new HttpError(404, "ACCOUNT_NOT_FOUND", "账号不存在");
+    return rt;
+  }
+
+  /**
+   * 「我报名的比赛在哪张图」：个人赛 / 公会赛各查一次，只认未结束的场次。
+   * 失败就当作没有（面板上少个标记，不该因此打不开面板）。
+   */
+  private async myCompetitionBiomes(rt: AccountRuntime): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const terminal = new Set(["ended", "finished", "settled", "settling", "canceled", "cancelled", "closed"]);
+    const consider = (t: any, registeredKey: string, kind: string) => {
+      if (!t?.[registeredKey]) return;
+      const status = String(t?.status ?? "").toLowerCase();
+      if (terminal.has(status)) return;
+      const biomeId = String(t?.assignedBiomeId ?? t?.biomeId ?? "");
+      if (!biomeId) return;
+      const phase = status === "active" ? "进行中" : "即将开赛";
+      out.set(biomeId, `${kind} #${t.sequence ?? "?"} ${phase}`);
+    };
+
+    const [personal, guild] = await Promise.all([
+      rt.client.tournamentsOverview().catch(() => null),
+      rt.client.guildTournamentsOverview().catch(() => null),
+    ]);
+    for (const t of [personal?.current, ...(personal?.upcoming ?? [])]) consider(t, "isRegistered", "个人赛");
+    for (const t of [guild?.current, ...(guild?.upcoming ?? [])]) consider(t, "entryStatus", "公会赛");
+    return out;
+  }
+}
+
+/** 状态面板里的船队信息 → 面板视图（没有就 null） */
+function partyOf(rt: AccountRuntime): AccountMapsView["party"] {
+  const fleet = (rt.statusPanel as { fleet?: Record<string, unknown> } | null)?.fleet ?? null;
+  if (!fleet) return null;
+  return {
+    inParty: true,
+    canChangeBoatBiome: Boolean(fleet.canChangeBoatBiome),
+    boatName: (fleet.boatName as string | null) ?? null,
+    boatBiomeId: (fleet.boatBiomeId as string | null) ?? null,
+  };
 }
 
 /** 运行时未建立时的静态模块状态（按数据库记录 + 模块默认值） */

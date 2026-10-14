@@ -307,17 +307,17 @@ describe("自动切图：涌流期间的目标（端到端接线）", () => {
     expect(travels(calls)).toEqual([`TRAVEL ${STORM}`]);
   });
 
-  it("没有涌流时不会因为配了涌流目标就跑过去", async () => {
+  it("没有涌流时不会因为配了涌流目标就跑过去（而是按「天气相同就看鱼价值」挑最高那张）", async () => {
     const { calls, start } = makeCtx({
       priorities: "golden,experience",
       weather: "clear",
-      config: { surgeBiome: GOLD },
+      config: { surgeBiome: STORM }, // 配的是价值较低的图
     });
     const run = await start();
 
     await run();
-    // 天气全是晴朗 ×1.0 → 「经验」看到的倍率全都一样，
-    // 高不出迟滞门槛（3%）→ 原地不动，而不是跑去配置的涌流目标图
-    expect(travels(calls)).toEqual([]);
+    // 天气全是晴朗 ×1.0 → 涌流分支进不去；「经验」看到倍率全都一样，
+    // 于是按鱼价值取最高（GOLD 1.2 > STORM 1.1）→ 去 GOLD，而不是配置的 STORM
+    expect(travels(calls)).toEqual([`TRAVEL ${GOLD}`]);
   });
 });

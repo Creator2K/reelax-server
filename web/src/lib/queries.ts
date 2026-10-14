@@ -168,6 +168,46 @@ export function useAccount(id: string | undefined) {
   return accounts?.find((a) => a.id === id) ?? null;
 }
 
+/* ---------- 地图与天气（手动换图面板） ---------- */
+
+export type MapWeather = { id: string; name: string; xpMultiplier: number };
+
+export type MapItem = {
+  id: string;
+  name: string;
+  isUnlocked: boolean;
+  isCurrent: boolean;
+  valueMultiplier: number;
+  weather: MapWeather | null;
+  /** 这张图上有比赛在跑 */
+  competitionActive: boolean;
+  /** 我报名的比赛就在这张图时的说明（进行中 / 即将开赛） */
+  myCompetition: string | null;
+  requiredLevel: number;
+  unlockCost: number;
+};
+
+export type AccountMaps = {
+  currentBiomeId: string | null;
+  current: MapItem | null;
+  party: { inParty: boolean; canChangeBoatBiome: boolean; boatName: string | null; boatBiomeId: string | null } | null;
+  maps: MapItem[];
+};
+
+/**
+ * 地图与天气：数据由服务端**强制刷新**一次游戏接口后返回（用户主动打开，看到的是"现在"）。
+ * 缓存时间给短一点，切完图回来能立刻看到新的「当前地图」。
+ */
+export function useAccountMaps(id: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ["account-maps", id],
+    queryFn: () => api.get<AccountMaps>(`/api/accounts/${id}/maps`),
+    enabled: Boolean(id) && enabled,
+    staleTime: 15_000,
+    retry: false,
+  });
+}
+
 /* ---------- 内置模块清单 ---------- */
 
 export type ConfigField =

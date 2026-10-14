@@ -1067,6 +1067,27 @@ export class AccountRuntime {
     };
   }
 
+  /**
+   * 手动换图（用户在界面上点的动作）。
+   *
+   * solo  = 只把自己挪过去（PUT /api/player/current-biome）
+   * party = 把整条船开过去（POST /api/party-boats/current-biome，需船长 / 舵手权限）
+   *
+   * ★ 与模块换图分开：这是**用户主动**发起的动作，一定落一条 info 日志 ——
+   *   否则「谁在什么时候把号挪到别的图了」在运行日志里查不到，会和自动切图混在一起。
+   */
+  async manualTravel(input: { biomeId: string; name: string; mode: "solo" | "party" }): Promise<unknown> {
+    const r =
+      input.mode === "party"
+        ? await this.client.partyBoatTravel(input.biomeId)
+        : await this.client.biomeTravel(input.biomeId);
+    this.log.info(
+      "手动换图",
+      `⛵ 换到「${input.name}」${input.mode === "party" ? "（带队：整条船一起走）" : "（只自己过去）"}`,
+    );
+    return r;
+  }
+
   get proxyFingerprint(): string {
     return this.proxyHolder.currentFingerprint;
   }

@@ -28,16 +28,27 @@ const MAX_ITEMS_PER_REQUEST = 100;
 
 const asStringArray = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)) : []);
 
+/**
+ * 从 `/api/inventory/fish` 的响应里读「自动锁定专精鱼」开关。
+ *
+ * 返回 `true/false` 表示开关现状；`null` = 响应里没有这项（游戏改版）→ 调用方按"读不到"处理。
+ */
+export function autoLockMasteryFishOf(inventory: any): boolean | null {
+  const v = inventory?.settings?.autoLockMasteryFish;
+  return typeof v === "boolean" ? v : null;
+}
+
 const definition: ModuleDefinition = {
   id: "auto-sell-fish",
   name: "自动卖鱼",
-  version: "1.0.0",
+  version: "1.2.0",
   description:
-    "按稀有度勾选把背包里的鱼卖给 NPC（换金币），不勾的留着。锁定的鱼与带泰坦倍率的鱼不动。建议第一次先开「干跑」看一天 —— 鱼同时是专精献祭的素材，别把要献祭的档位卖掉了。",
+    "按稀有度勾选把背包里的鱼卖给 NPC（换金币），不勾的留着。锁定的鱼、带泰坦倍率的鱼、以及被游戏「自动锁定专精鱼」标记的专精目标鱼都不卖。建议第一次先开「干跑」看一天。",
   defaultEnabled: false,
   defaultConfig: {
     sellRarities: ["common", "uncommon", "fine"],
     protectTitan: true,
+    protectMastery: true,
     maxPerRun: 2000,
     minIntervalMin: 10,
     dryRun: false,
@@ -47,7 +58,7 @@ const definition: ModuleDefinition = {
       key: "sellRarities",
       type: "multi-select",
       label: "直接卖掉这些品质的鱼",
-      hint: "勾哪个卖哪个，不勾的保留。空着 = 不卖任何鱼。鱼还是「自动专精献祭」的素材，别把要献的档位勾上。",
+      hint: "勾哪个卖哪个，不勾的保留。空着 = 不卖任何鱼。",
       default: ["common", "uncommon", "fine"],
       options: rarityCheckboxOptions(),
     },
@@ -56,6 +67,16 @@ const definition: ModuleDefinition = {
       type: "boolean",
       label: "保护带泰坦倍率的鱼",
       hint: "带有泰坦/巨型倍率的鱼价值远高于 NPC 回收价，默认不卖。",
+      default: true,
+    },
+    {
+      key: "protectMastery",
+      type: "boolean",
+      label: "不卖专精鱼（用游戏的自动锁定）",
+      hint:
+        "鱼同时是「自动专精献祭」的素材。游戏自己有这个机制：开启后服务端会把**当前专精目标鱼**打上系统锁，" +
+        "专精目标轮换时锁自动转移、关闭时自动移除（手动锁保留）。\n" +
+        "本功能开启时会确保游戏的「自动锁定专精鱼」处于开启状态，并跳过被锁的鱼（第一次开启的那一轮先不卖）。",
       default: true,
     },
     {
@@ -132,9 +153,40 @@ const definition: ModuleDefinition = {
       const protectTitan = ctx.config.protectTitan !== false;
       const defs = await fishDefs();
 
+      /* ---------- 专精鱼保护：交给游戏官方的「自动锁定专精鱼」 ---------- */
+      // ★ 为什么不自算：游戏自己有这套机制（PATCH /api/inventory/fish/settings），
+      //   开启后服务端会把"当前专精目标鱼"打上系统锁（isMasteryLocked），
+      //   专精目标轮换时锁自动转移、关闭时自动移除（手动锁保留）。
+      //   我们只要确保它开着，并在出售时跳过被锁的鱼即可 —— 比自己去算目标鱼更准。
+      const protectMastery = ctx.config.protectMastery !== false;
+      if (protectMastery) {
+        const autoLock = autoLockMasteryFishOf(resp);
+        if (autoLock === null) {
+          ctx.log.warn("卖鱼", "读不到「自动锁定专精鱼」设置，本轮不卖（避免把要献祭的鱼卖掉）");
+          return;
+        }
+        if (!autoLock) {
+          // 刚打开开关时，背包响应里的锁还是旧的 → 这一轮先不卖，下一轮起才安全
+          try {
+            await ctx.api.updateFishSettings({ autoLockMasteryFish: true });
+            ctx.log.info(
+              "卖鱼",
+              "已开启游戏的「自动锁定专精鱼」（之后专精目标轮换时锁会自动转移）；本轮先不卖，下一轮起只卖没被专精锁定的鱼",
+            );
+          } catch (err) {
+            ctx.log.warn(
+              "卖鱼",
+              `开启「自动锁定专精鱼」失败（${err instanceof Error ? err.message : String(err)}），本轮不卖`,
+            );
+          }
+          return;
+        }
+      }
+
       const pick: { fishId: string; quantity: number; rarity: string; name: string; unit: number }[] = [];
       let lockedSkipped = 0;
       let titanSkipped = 0;
+      let masterySkipped = 0;
 
       for (const item of items) {
         const fishId = String(item?.fishId ?? item?.id ?? "");
@@ -147,7 +199,9 @@ const definition: ModuleDefinition = {
         if (rarityRank(rarity) < 0 || !sellSet.has(rarity)) continue;
 
         if (item?.isLocked || item?.isManuallyLocked || item?.isMasteryLocked) {
-          lockedSkipped += 1;
+          // 专精锁单独计数：让用户能确认"官方保护"确实在生效
+          if (item?.isMasteryLocked) masterySkipped += 1;
+          else lockedSkipped += 1;
           continue;
         }
         if (protectTitan && item?.titanValueSummary != null) {
@@ -168,7 +222,8 @@ const definition: ModuleDefinition = {
         idle(
           `${trigger}：没有符合条件（勾选的品质）的鱼` +
             (lockedSkipped ? `，${lockedSkipped} 种被锁定跳过` : "") +
-            (titanSkipped ? `，${titanSkipped} 种因泰坦倍率保护跳过` : ""),
+            (titanSkipped ? `，${titanSkipped} 种因泰坦倍率保护跳过` : "") +
+            (masterySkipped ? `，${masterySkipped} 种因专精献祭保护跳过` : ""),
         );
         return;
       }
@@ -198,13 +253,17 @@ const definition: ModuleDefinition = {
         .map((p) => p.name)
         .join("、");
 
+      const skipNote =
+        (lockedSkipped ? `；另有 ${lockedSkipped} 种被锁定跳过` : "") +
+        (titanSkipped ? `；${titanSkipped} 种因泰坦倍率保护跳过` : "") +
+        (masterySkipped ? `；${masterySkipped} 种因专精献祭保护跳过` : "");
+
       if (ctx.config.dryRun) {
         ctx.log.info(
           "卖鱼",
           `[干跑] 本该卖 ${totalQuantity} 条（${rarityText}，如 ${sample}${chosen.length > 3 ? " 等" : ""}）` +
             (estGold ? `，约 ${estGold.toLocaleString("zh-CN")} 金币` : "") +
-            (lockedSkipped ? `；另有 ${lockedSkipped} 种被锁定跳过` : "") +
-            (titanSkipped ? `；${titanSkipped} 种因泰坦倍率保护跳过` : ""),
+            skipNote,
         );
         return;
       }
@@ -214,7 +273,8 @@ const definition: ModuleDefinition = {
       ctx.log.info(
         "卖鱼",
         `🐟 已卖 ${totalQuantity} 条（${rarityText}）` +
-          (gold ? `，获得 ${gold.toLocaleString("zh-CN")} 金币` : estGold ? `，约 ${estGold.toLocaleString("zh-CN")} 金币` : ""),
+          (gold ? `，获得 ${gold.toLocaleString("zh-CN")} 金币` : estGold ? `，约 ${estGold.toLocaleString("zh-CN")} 金币` : "") +
+          skipNote,
       );
     };
 

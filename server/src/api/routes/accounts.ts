@@ -37,6 +37,12 @@ const modulePatchSchema = z.object({
   config: z.record(z.string(), z.unknown()).optional(),
 });
 
+const travelSchema = z.object({
+  biomeId: z.string().min(1).max(80),
+  /** solo = 只自己过去；party = 把整条船开过去（需船长 / 舵手权限） */
+  mode: z.enum(["solo", "party"]).default("solo"),
+});
+
 export function createAccountsRouter(deps: {
   accounts: AccountService;
   registry: RunnerRegistry;
@@ -112,6 +118,28 @@ export function createAccountsRouter(deps: {
     const view = await deps.accounts.stop(id, userId);
     deps.audit.record({ userId, action: AUDIT_ACTIONS.ACCOUNT_STOPPED, target: id, ip: clientIp(req) });
     res.json(view);
+  });
+
+  /* ---------- 地图与天气 / 手动换图 ---------- */
+
+  /** 面板数据：全部地图（天气、鱼价值、比赛标记、解锁信息）+ 当前地图 + 船队状态 */
+  router.get("/:id/maps", async (req, res) => {
+    res.json(await deps.accounts.maps(req.params.id as string, currentUserId(req)));
+  });
+
+  /** 手动切换地图（个人换图 / 带队换图） */
+  router.post("/:id/travel", body(travelSchema), async (req, res) => {
+    const userId = currentUserId(req);
+    const id = req.params.id as string;
+    const result = await deps.accounts.travel(id, userId, req.body);
+    deps.audit.record({
+      userId,
+      action: AUDIT_ACTIONS.ACCOUNT_TRAVEL,
+      target: id,
+      detail: { biomeId: result.biomeId, mapName: result.name, mode: result.mode },
+      ip: clientIp(req),
+    });
+    res.json(result);
   });
 
   /* ---------- 模块（内置功能） ---------- */

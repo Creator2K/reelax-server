@@ -7,11 +7,15 @@
 //   · 背包条目没有 rarity 字段时，要用内容表补齐（否则会把不该卖的当成未知档）
 import { describe, expect, it } from "vitest";
 import type { ModuleContext } from "../src/modules/types.ts";
-import autoSellFish from "../src/modules/auto-sell-fish/index.ts";
+import autoSellFish, { autoLockMasteryFishOf } from "../src/modules/auto-sell-fish/index.ts";
 
 type Opts = {
   fish?: unknown[];
   content?: unknown;
+  /** /api/inventory/fish 里的 settings（默认：自动锁定专精鱼已开启） */
+  autoLockMasteryFish?: boolean | null;
+  /** true = 切换设置的接口直接报错 */
+  settingsError?: boolean;
   config?: Record<string, unknown>;
 };
 
@@ -19,9 +23,14 @@ function makeCtx(opts: Opts = {}) {
   const log = { info: [] as string[], warn: [] as string[], debug: [] as string[] };
   const sold: { fishId: string; quantity: number }[][] = [];
   const timers: Array<{ ms: number; fn: () => unknown }> = [];
+  const settingsCalls: { autoLockMasteryFish: boolean }[] = [];
+
+  const autoLock = opts.autoLockMasteryFish === undefined ? true : opts.autoLockMasteryFish;
 
   const api = {
     inventoryFish: async () => ({
+      // null = 响应里没有这项
+      ...(autoLock === null ? {} : { settings: { autoLockMasteryFish: autoLock } }),
       fish: opts.fish ?? [
         { fishId: "f_common", name: "小杂鱼", rarity: "common", quantity: 100, sellPrice: 5 },
         { fishId: "f_rare", name: "稀有鱼", rarity: "rare", quantity: 10, sellPrice: 500 },
@@ -30,6 +39,11 @@ function makeCtx(opts: Opts = {}) {
     }),
     contentBootstrap: async () =>
       opts.content ?? { fish: [{ id: "f_common", rarity: "common", name: "小杂鱼", sellPrice: 5 }] },
+    updateFishSettings: async (body: { autoLockMasteryFish: boolean }) => {
+      if (opts.settingsError) throw new Error("HTTP 500");
+      settingsCalls.push(body);
+      return {};
+    },
     sellFish: async (items: any[]) => {
       sold.push(items.map((i) => ({ fishId: String(i.fishId), quantity: Number(i.quantity) })));
       return { goldEarned: items.reduce((a, i) => a + Number(i.quantity) * 5, 0) };
@@ -41,6 +55,7 @@ function makeCtx(opts: Opts = {}) {
     config: {
       sellRarities: ["common", "uncommon", "fine"],
       protectTitan: true,
+      protectMastery: true,
       maxPerRun: 2000,
       minIntervalMin: 10,
       dryRun: false,
@@ -67,6 +82,7 @@ function makeCtx(opts: Opts = {}) {
     ctx,
     log,
     sold,
+    settingsCalls,
     start: async () => {
       await autoSellFish.onStart!(ctx);
       return async () => {
@@ -184,5 +200,82 @@ describe("自动卖鱼", () => {
     await run();
     expect(sold).toEqual([]);
     expect(log.debug.some((m) => m.includes("没有鱼"))).toBe(true);
+  });
+});
+
+describe("自动卖鱼 · 专精鱼保护（用游戏的自动锁定）", () => {
+  const FISH = [
+    { fishId: "f_common", name: "小杂鱼", rarity: "common", quantity: 100, sellPrice: 5 },
+    {
+      fishId: "f_target",
+      name: "专精目标鱼",
+      rarity: "common",
+      quantity: 30,
+      sellPrice: 5,
+      isLocked: true,
+      isMasteryLocked: true,
+    },
+    { fishId: "f_manual", name: "手动锁的鱼", rarity: "common", quantity: 5, sellPrice: 5, isLocked: true, isManuallyLocked: true },
+  ];
+
+  it("★ 被专精锁标记的鱼不卖，并单独计数（便于确认官方保护生效）", async () => {
+    const { sold, log, start } = makeCtx({ fish: FISH });
+    const run = await start();
+
+    await run();
+    expect(sold).toEqual([[{ fishId: "f_common", quantity: 100 }]]);
+    expect(log.info.some((m) => m.includes("因专精献祭保护跳过"))).toBe(true);
+  });
+
+  it("★ 游戏的「自动锁定专精鱼」关着 → 自动开启，且本轮先不卖", async () => {
+    const { sold, log, settingsCalls, start } = makeCtx({ fish: FISH, autoLockMasteryFish: false });
+    const run = await start();
+
+    await run();
+    expect(settingsCalls).toEqual([{ autoLockMasteryFish: true }]);
+    expect(sold).toEqual([]);
+    expect(log.info.some((m) => m.includes("已开启游戏的「自动锁定专精鱼」"))).toBe(true);
+  });
+
+  it("开启失败时本轮不卖（宁可少卖一轮，也不能把要献祭的鱼卖掉）", async () => {
+    const { sold, log, start } = makeCtx({ fish: FISH, autoLockMasteryFish: false, settingsError: true });
+    const run = await start();
+
+    await run();
+    expect(sold).toEqual([]);
+    expect(log.warn.some((m) => m.includes("本轮不卖"))).toBe(true);
+  });
+
+  it("响应里读不到这项设置 → 本轮不卖", async () => {
+    const { sold, log, start } = makeCtx({ fish: FISH, autoLockMasteryFish: null });
+    const run = await start();
+
+    await run();
+    expect(sold).toEqual([]);
+    expect(log.warn.some((m) => m.includes("读不到"))).toBe(true);
+  });
+
+  it("关掉保护后不会去改游戏设置（但仍不碰被锁的鱼）", async () => {
+    const { sold, settingsCalls, start } = makeCtx({
+      fish: FISH,
+      autoLockMasteryFish: false,
+      config: { protectMastery: false },
+    });
+    const run = await start();
+
+    await run();
+    expect(settingsCalls).toEqual([]);
+    expect(sold).toEqual([[{ fishId: "f_common", quantity: 100 }]]);
+  });
+});
+
+describe("autoLockMasteryFishOf（读背包响应里的开关）", () => {
+  it("认 true / false，其它一律 null（按读不到处理）", () => {
+    expect(autoLockMasteryFishOf({ settings: { autoLockMasteryFish: true } })).toBe(true);
+    expect(autoLockMasteryFishOf({ settings: { autoLockMasteryFish: false } })).toBe(false);
+    expect(autoLockMasteryFishOf({ settings: {} })).toBeNull();
+    expect(autoLockMasteryFishOf({})).toBeNull();
+    expect(autoLockMasteryFishOf(null)).toBeNull();
+    expect(autoLockMasteryFishOf({ settings: { autoLockMasteryFish: "true" } })).toBeNull();
   });
 });

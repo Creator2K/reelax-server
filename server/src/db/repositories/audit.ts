@@ -33,6 +33,8 @@ export const AUDIT_ACTIONS = {
   ACCOUNT_DELETED: "account.deleted",
   ACCOUNT_STARTED: "account.started",
   ACCOUNT_STOPPED: "account.stopped",
+  /** 手动换图（界面上点「切换到某张地图」） */
+  ACCOUNT_TRAVEL: "account.travel",
   ACCOUNT_CREDENTIALS_UPDATED: "account.credentials.updated",
   MODULE_UPDATED: "account.module.updated",
   PROXY_CREATED: "proxy.created",

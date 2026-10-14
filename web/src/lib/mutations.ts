@@ -136,6 +136,31 @@ export function useResetModule(accountId: string) {
   });
 }
 
+/* ---------------- 手动换图 ---------------- */
+
+/**
+ * 手动切换地图。
+ *
+ * `mode: "party"` = 把整条船一起开过去（只有船长 / 舵手能这么干，服务端会再校验一次）；
+ * 成功后顺手把地图面板与账号列表都刷新，界面上「当前地图」立刻更新。
+ */
+export function useTravelAccount(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ biomeId, mode }: { biomeId: string; mode: "solo" | "party" }) =>
+      api.post<{ ok: true; biomeId: string; name: string; mode: string }>(`/api/accounts/${accountId}/travel`, {
+        biomeId,
+        mode,
+      }),
+    onSuccess: (data) => {
+      void qc.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY });
+      void qc.invalidateQueries({ queryKey: ["account-maps", accountId] });
+      toast.success(`已切换到「${data.name}」${data.mode === "party" ? "（带队一起走）" : ""}`);
+    },
+    onError: (err) => toast.error(errMessage(err)),
+  });
+}
+
 /* ---------------- 代理 ---------------- */
 
 export type CreateProxyBody = {
