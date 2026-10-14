@@ -323,6 +323,8 @@ const definition: ModuleDefinition = {
       /** 天气缓存（省掉每 45 秒一次接口调用；只是缓存，跨重启残留也没关系） */
       weatherSurge?: boolean;
       weatherAt?: number;
+      /** 上次见过的方案指纹（改了方案就重新校验一次，见 onStart 里的说明） */
+      planSig?: string;
     };
     S.allocating = false;
     S.lastIdle = "";
@@ -356,6 +358,19 @@ const definition: ModuleDefinition = {
     const autoReset = Boolean(ctx.config.autoReset);
     const planLabel = (target: "surge" | "normal") => (target === "surge" ? "涌流方案" : "平时方案");
     const planCfg = (target: "surge" | "normal") => (target === "surge" ? surge : normal);
+
+    /**
+     * 方案指纹：用户改了任一套方案就先把手上的「已应用方案」作废，重新校验一次。
+     *
+     * ★ 为什么要它：appliedPlan 是跨重启保留的（否则每次容器重启都会重新洗点）。
+     *   但只按它判断的话，用户改了方案内容后不会重新生效（状态名没变）。
+     *   指纹只在**方案真的变了**时变，所以既不会误洗、也不会漏改。
+     */
+    const planSig = `${normal.mode}:${JSON.stringify(normal.plan)}|${surge.mode}:${JSON.stringify(surge.plan)}`;
+    if (S.planSig !== planSig) {
+      S.planSig = planSig;
+      S.appliedPlan = "";
+    }
 
     /** 当前已应用到哪套方案（跨重启保留；"" = 还没判断过） */
     const appliedPlan = () => (S.appliedPlan === "surge" ? "surge" : S.appliedPlan === "normal" ? "normal" : null);
