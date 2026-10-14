@@ -92,7 +92,12 @@ const UPGRADES: Record<string, Upgrade> = {
 
   /**
    * 自动专精献祭：`excludeBelow`（不献祭低于此档）→ 献祭模式 + 自选集合。
-   * 旧默认 "common" 等于「全部都献」→ 新默认模式 all。
+   *
+   * ★ 旧值等于旧默认（"common" = 不排除任何档 = 全部都献）时，换成**新默认**
+   *   （保护传说及以上）而不是「全部献祭」：那多半是用户从没动过这一项，
+   *   而新版本刻意把默认改成了保护高稀有度 —— 沿用一个没人选过的旧默认，
+   *   用户反而看不到这次新增的保护。
+   *   用户**特意**排除过低档位（rank > 0）时，按原意换算成自选集合。
    */
   "auto-mastery": {
     note: "excludeBelow → sacrificeMode / sacrificeRarities",
@@ -100,7 +105,7 @@ const UPGRADES: Record<string, Upgrade> = {
       if (!("excludeBelow" in config)) return null;
       const { excludeBelow, ...rest } = config;
       const rank = rarityRank(excludeBelow);
-      if (rank <= 0) return { ...rest, sacrificeMode: "all" };
+      if (rank <= 0) return { ...rest, sacrificeMode: "protectLegendary", sacrificeRarities: [] };
       return { ...rest, sacrificeMode: "custom", sacrificeRarities: raritiesAtOrAbove(excludeBelow) };
     },
   },

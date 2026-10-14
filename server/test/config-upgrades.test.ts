@@ -105,16 +105,16 @@ describe("配置升级：自动卖装备（阈值 → 勾选集合）", () => {
 });
 
 describe("配置升级：自动专精献祭（excludeBelow → 献祭模式）", () => {
-  it("旧默认 common = 全部都献 → 模式 all", () => {
+  it("★ 旧默认 common（从没动过这一项）→ 换成新默认「保护传说及以上」", () => {
     write("auto-mastery", { excludeBelow: "common", intervalMin: 12 });
     upgradeModuleConfigs(repos);
 
     const cfg = read("auto-mastery");
-    expect(cfg.sacrificeMode).toBe("all");
+    expect(cfg.sacrificeMode).toBe("protectLegendary");
     expect("excludeBelow" in cfg).toBe(false);
   });
 
-  it("★ excludeBelow=史诗 → 自选模式 + 「史诗及以上」的集合（保护低档位）", () => {
+  it("★ excludeBelow=史诗（特意排除过低档）→ 自选模式 + 「史诗及以上」的集合", () => {
     write("auto-mastery", { excludeBelow: "epic" });
     upgradeModuleConfigs(repos);
 
