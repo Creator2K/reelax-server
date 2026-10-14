@@ -389,6 +389,18 @@ export class GameClient {
   biomes() {
     return this.request("/api/biomes");
   }
+  /**
+   * 解锁一张地图（**直接扣金币**，不可退回）。
+   *
+   * 游戏要求「同时满足等级与金币」，两者不足都会返回业务错误；
+   * 幂等键是必须的：重试不能被当成「又买一张」。
+   */
+  biomeUnlock(biomeId: string) {
+    return this.request(`/api/biomes/${encodeURIComponent(biomeId)}/unlock`, {
+      method: "POST",
+      idempotent: true,
+    });
+  }
   biomeTravel(biomeId: string) {
     return this.request("/api/player/current-biome", { method: "PUT", body: { biomeId } });
   }

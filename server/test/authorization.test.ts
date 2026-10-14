@@ -221,16 +221,17 @@ describe("管理员专属路由", () => {
 });
 
 describe("模块清单", () => {
-  it("返回全部 17 个内置功能，且带 configSchema", async () => {
+  it("返回全部 18 个内置功能，且带 configSchema", async () => {
     const r = await app.get<
       { id: string; name: string; defaultEnabled: boolean; defaultConfig: Record<string, unknown>; configSchema: unknown[] }[]
     >("/api/modules", A.jar);
     expect(r.status).toBe(200);
-    expect(r.body).toHaveLength(17);
+    expect(r.body).toHaveLength(18);
     const ids = r.body.map((m) => m.id);
     expect(ids).toContain("keep-online");
     expect(ids).toContain("daily-digest");
     expect(ids).toContain("auto-loadout");
+    expect(ids).toContain("auto-unlock-biome");
     expect(ids).toContain("auto-schedule");
     expect(ids).toContain("auto-sell-fish");
     expect(ids).toContain("auto-sacrifice");

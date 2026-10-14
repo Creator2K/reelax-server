@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.10.0";
+export const VERSION = "1.11.0";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,21 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.11.0",
+    date: "2026-10-14",
+    title: "新增「自动解锁地图」",
+    changes: [
+      {
+        kind: "feature",
+        text: "新增「自动解锁地图」：按等级与金币条件自动解锁还没买的地图。解锁直接扣金币且不可退回，但地图永久保留（转生也不丢）；按所需等级从低到高逐张解锁，每张都在日志里写明花费与解锁后的余额",
+      },
+      {
+        kind: "improve",
+        text: "「自动解锁地图」默认每次只解锁 1 张（可调到 15 张），并提供「单个地图花费上限」「保留金币不下手」两道刹车（默认关闭）与「干跑」模式（只报告不动金币）",
+      },
+    ],
+  },
   {
     version: "1.10.0",
     date: "2026-10-14",
