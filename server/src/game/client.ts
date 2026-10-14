@@ -438,6 +438,32 @@ export class GameClient {
   partyInvitations(limit = 20) {
     return this.request(`/api/party-boats/invitations?limit=${encodeURIComponent(String(limit))}`);
   }
+  /** 船队总览：`{ party: { isInParty, role, boatBiomeId }, crew: { name, status, source, joinCode, capacity, isCrowdfunded, members: [...] } }` */
+  partyBoatsOverview() {
+    return this.request("/api/party-boats/overview");
+  }
+  /** 把某位船员移出船队（仅船长；众筹船不允许） */
+  partyRemoveMember(publicId: string) {
+    return this.request(`/api/party-boats/members/${encodeURIComponent(publicId)}/remove`, {
+      method: "POST",
+      idempotent: true,
+    });
+  }
+  /** 任命 / 撤销舵手（仅船长） */
+  partySetMemberRole(publicId: string, role: "helmsman" | "crew") {
+    return this.request(`/api/party-boats/members/${encodeURIComponent(publicId)}/role`, {
+      method: "POST",
+      idempotent: true,
+      body: { role },
+    });
+  }
+  /** 转让船长（仅租用中的船） */
+  partyTransferCaptain(publicId: string) {
+    return this.request(`/api/party-boats/members/${encodeURIComponent(publicId)}/captain`, {
+      method: "POST",
+      idempotent: true,
+    });
+  }
   /** 用邀请码加入船队 */
   partyJoinByCode(code: string) {
     return this.request("/api/party-boats/join-by-code", { method: "POST", idempotent: true, body: { code } });

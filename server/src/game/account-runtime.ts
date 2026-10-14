@@ -1112,6 +1112,25 @@ export class AccountRuntime {
     return r;
   }
 
+  /** 船队成员管理（仅船长）：移出 / 任命舵手 / 转让船长 —— 都写日志，便于事后追溯 */
+  async removePartyMember(publicId: string): Promise<unknown> {
+    const r = await this.client.partyRemoveMember(publicId);
+    this.log.info("船队", `已把成员 ${publicId} 移出船队`);
+    return r;
+  }
+
+  async setPartyMemberRole(publicId: string, role: "helmsman" | "crew"): Promise<unknown> {
+    const r = await this.client.partySetMemberRole(publicId, role);
+    this.log.info("船队", role === "helmsman" ? `已任命 ${publicId} 为舵手` : `已撤销 ${publicId} 的舵手`);
+    return r;
+  }
+
+  async transferPartyCaptain(publicId: string): Promise<unknown> {
+    const r = await this.client.partyTransferCaptain(publicId);
+    this.log.info("船队", `已把船长转让给 ${publicId}`);
+    return r;
+  }
+
   get proxyFingerprint(): string {
     return this.proxyHolder.currentFingerprint;
   }

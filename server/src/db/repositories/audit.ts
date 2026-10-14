@@ -39,6 +39,8 @@ export const AUDIT_ACTIONS = {
   ACCOUNT_PARTY_JOIN: "account.party.join",
   ACCOUNT_PARTY_LEAVE: "account.party.leave",
   ACCOUNT_PARTY_INVITATION: "account.party.invitation",
+  /** 船队成员管理（移出 / 任命舵手 / 转让船长） */
+  ACCOUNT_PARTY_MEMBER: "account.party.member",
   ACCOUNT_CREDENTIALS_UPDATED: "account.credentials.updated",
   MODULE_UPDATED: "account.module.updated",
   PROXY_CREATED: "proxy.created",

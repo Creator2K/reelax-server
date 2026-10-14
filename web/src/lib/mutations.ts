@@ -207,6 +207,35 @@ export function useRespondPartyInvitation(accountId: string) {
   });
 }
 
+/** 船队成员管理（仅船长）：移出成员 / 任命舵手 / 转让船长 */
+export function useManagePartyMember(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      publicId,
+      action,
+      role,
+    }: {
+      publicId: string;
+      action: "remove" | "role" | "captain";
+      role?: "helmsman" | "crew";
+    }) => api.post(`/api/accounts/${accountId}/party/members/${publicId}`, { action, role }),
+    onSuccess: (_data, vars) => {
+      invalidateParty(qc, accountId);
+      const text =
+        vars.action === "remove"
+          ? "已移出该成员"
+          : vars.action === "captain"
+            ? "已转让船长"
+            : vars.role === "helmsman"
+              ? "已任命舵手"
+              : "已撤销舵手";
+      toast.success(text);
+    },
+    onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
+  });
+}
+
 /* ---------------- 代理 ---------------- */
 
 export type CreateProxyBody = {

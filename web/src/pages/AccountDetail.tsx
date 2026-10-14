@@ -108,15 +108,11 @@ export default function AccountDetailPage() {
         </Alert>
       ) : null}
 
-      {/* 地图要宽、船队面板窄：宽屏上一左一右，窄屏自动堆叠 */}
-      <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
-        <MapPicker accountId={account.id} />
-        <PartyCard accountId={account.id} />
-      </div>
-
       <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
         <div className="space-y-4">
           <StatusPanelCard panel={account.statusPanel} />
+          <MapPicker accountId={account.id} />
+          <PartyCard accountId={account.id} />
           <AccountMetaCard account={account} />
         </div>
 

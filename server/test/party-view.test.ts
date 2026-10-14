@@ -3,7 +3,13 @@
 // 这块判错的后果很具体：把"船长不能离开"说成任意失败、或把邀请的昵称显示错，
 // 用户就会反复点、或者跑去游戏里看 —— 所以逐条钉住。
 import { describe, expect, it } from "vitest";
-import { buildPartyView, invitationList, partyErrorMessage, CAPTAIN_LEAVE_HINT } from "../src/services/party-view.ts";
+import {
+  buildPartyView,
+  invitationList,
+  partyErrorMessage,
+  partyRoleLabel,
+  CAPTAIN_LEAVE_HINT,
+} from "../src/services/party-view.ts";
 
 describe("buildPartyView", () => {
   it("★ 在船队里：船名 / 所在地图 / 权限 / 被带走开关都摊平出来", () => {
@@ -70,6 +76,96 @@ describe("buildPartyView", () => {
   it("响应为空时不抛错", () => {
     expect(buildPartyView({ party: null }).invitations).toEqual([]);
     expect(buildPartyView({ party: null, invitations: undefined }).inParty).toBe(false);
+  });
+});
+
+describe("buildPartyView · 成员列表（船长管理用）", () => {
+  const OVERVIEW = {
+    party: { isInParty: true, role: "captain", boatBiomeId: "b_004" },
+    crew: {
+      name: "奥潮远洋舰",
+      status: "active",
+      source: "rented",
+      joinCode: "REELAX-8899",
+      capacity: 7,
+      isCrowdfunded: false,
+      members: [
+        {
+          identity: { publicId: "p1", nickname: "我", level: 8114 },
+          role: "captain",
+          currentBiomeId: "b_004",
+          fishingStatus: "online_fishing",
+          isEffectiveForCurrentPlayer: true,
+        },
+        {
+          identity: { publicId: "p2", nickname: "北辰", level: 200 },
+          role: "helmsman",
+          currentBiomeId: "b_002",
+          fishingStatus: "offline_fishing",
+          isEffectiveForCurrentPlayer: false,
+        },
+        { role: "crew" }, // 没有 identity → 跳过
+      ],
+    },
+  };
+
+  it("★ 成员的身份、所在地图、钓鱼状态、是否计入协作都摊平出来", () => {
+    const view = buildPartyView({ overview: OVERVIEW, biomeName: (id) => (id === "b_004" ? "雷痕峡湾" : "雾语湿地") });
+
+    expect(view.role).toBe("captain");
+    expect(view.isCaptain).toBe(true);
+    expect(view.boatName).toBe("奥潮远洋舰");
+    expect(view.joinCode).toBe("REELAX-8899");
+    expect(view.capacity).toBe(7);
+    expect(view.isCrowdfunded).toBe(false);
+    expect(view.canTransferCaptain).toBe(true); // source = rented
+    expect(view.members).toHaveLength(2);
+    expect(view.members[1]).toEqual({
+      publicId: "p2",
+      nickname: "北辰",
+      level: 200,
+      role: "helmsman",
+      biomeId: "b_002",
+      biomeName: "雾语湿地",
+      fishing: "offline",
+      effective: false,
+    });
+    // 船长自己也算一名成员（界面上要能看出谁是谁）
+    expect(view.members[0]?.role).toBe("captain");
+    expect(view.members[0]?.fishing).toBe("online");
+  });
+
+  it("非船长：没有改航线权限（除非钓鱼状态里说可以），并给出不能离开的说明边界", () => {
+    const crew = buildPartyView({
+      overview: { ...OVERVIEW, party: { ...OVERVIEW.party, role: "crew" } },
+      party: { isInParty: true, canChangeBoatBiome: false },
+    });
+    expect(crew.role).toBe("crew");
+    expect(crew.isCaptain).toBe(false);
+    expect(crew.canChangeBoatBiome).toBe(false);
+    expect(crew.leaveBlockedReason).toBeNull();
+    // 众筹船不能踢人，界面据此隐藏按钮
+    expect(crew.isCrowdfunded).toBe(false);
+  });
+
+  it("非租用来源的船不能转让船长", () => {
+    const owned = buildPartyView({ overview: { ...OVERVIEW, crew: { ...OVERVIEW.crew, source: "purchased" } } });
+    expect(owned.canTransferCaptain).toBe(false);
+  });
+
+  it("船队状态（停航待保养 / 租赁到期）原样带出来，界面据此提示", () => {
+    expect(buildPartyView({ overview: { ...OVERVIEW, crew: { ...OVERVIEW.crew, status: "maintenance_due" } } }).status).toBe(
+      "maintenance_due",
+    );
+  });
+});
+
+describe("partyRoleLabel / 钓鱼状态映射", () => {
+  it("角色与钓鱼状态的中文说法", () => {
+    expect(partyRoleLabel("captain")).toBe("船长");
+    expect(partyRoleLabel("helmsman")).toBe("舵手");
+    expect(partyRoleLabel("crew")).toBe("船员");
+    expect(partyRoleLabel(undefined)).toBe("船员");
   });
 });
 

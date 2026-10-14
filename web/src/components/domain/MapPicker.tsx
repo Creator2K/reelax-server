@@ -40,16 +40,29 @@ import { useAccountMaps, type MapItem } from "@/lib/queries.ts";
 import { useTravelAccount } from "@/lib/mutations.ts";
 import { cn, fmtCompact } from "@/lib/utils.ts";
 
-/** 天气 → 图标与配色（与游戏里的天气一一对应；不认识的天气走默认样式） */
-const WEATHER_STYLE: Record<string, { icon: typeof IconSun; className: string }> = {
+/**
+ * 天气 → 图标与配色。
+ *
+ * `prominent: true` 的两种是**真正值得为它换图**的天气（雷暴 = 经验最高、涌流 = 奥秘鱼涌流），
+ * 所以加粗 + 加一圈描边，在一屏十几张地图里能一眼扫到（用户明确要求高亮这两个）。
+ */
+const WEATHER_STYLE: Record<string, { icon: typeof IconSun; className: string; prominent?: boolean }> = {
   clear: { icon: IconSun, className: "bg-muted text-muted-foreground" },
   rain: { icon: IconDroplet, className: "bg-blue-500/12 text-blue-600 dark:text-blue-400" },
   gale: { icon: IconWind, className: "bg-teal-500/12 text-teal-600 dark:text-teal-400" },
   mist: { icon: IconCloudFog, className: "bg-slate-500/12 text-slate-600 dark:text-slate-400" },
   heatwave: { icon: IconFlame, className: "bg-orange-500/12 text-orange-600 dark:text-orange-400" },
-  tempest: { icon: IconBolt, className: "bg-sky-500/12 text-sky-600 dark:text-sky-400" },
+  tempest: {
+    icon: IconBolt,
+    className: "bg-sky-500/18 text-sky-700 ring-1 ring-inset ring-sky-500/40 dark:text-sky-300",
+    prominent: true,
+  },
   gilded_current: { icon: IconCoins, className: "bg-amber-500/14 text-amber-600 dark:text-amber-400" },
-  arcane_surge: { icon: IconSparkles, className: "bg-violet-500/12 text-violet-600 dark:text-violet-400" },
+  arcane_surge: {
+    icon: IconSparkles,
+    className: "bg-violet-500/18 text-violet-700 ring-1 ring-inset ring-violet-500/40 dark:text-violet-300",
+    prominent: true,
+  },
   wither_tide: { icon: IconWash, className: "bg-stone-500/12 text-stone-600 dark:text-stone-400" },
 };
 const weatherStyle = (id: string | undefined) => WEATHER_STYLE[id ?? ""] ?? WEATHER_STYLE.clear!;
@@ -57,17 +70,18 @@ const weatherStyle = (id: string | undefined) => WEATHER_STYLE[id ?? ""] ?? WEAT
 /** 天气小徽章：图标 + 名字 + 经验倍率（不换行；窄了就让整行换行，别把名字拆开） */
 function WeatherBadge({ weather }: { weather: MapItem["weather"] }) {
   if (!weather) return <span className="text-muted-foreground text-[11px]">天气未知</span>;
-  const { icon: Icon, className } = weatherStyle(weather.id);
+  const { icon: Icon, className, prominent } = weatherStyle(weather.id);
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap",
+        "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] whitespace-nowrap",
+        prominent ? "font-bold" : "font-medium",
         className,
       )}
     >
-      <Icon className="size-3" />
+      <Icon className={cn("size-3", prominent && "size-3.5")} />
       {weather.name}
-      <span className="opacity-75">经验×{weather.xpMultiplier.toFixed(2)}</span>
+      <span className={cn(prominent ? "opacity-90" : "opacity-75")}>经验×{weather.xpMultiplier.toFixed(2)}</span>
     </span>
   );
 }
@@ -215,22 +229,26 @@ export function MapPicker({ accountId }: { accountId: string }) {
               </div>
             ) : null}
 
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-              {unlocked.map((m) => (
-                <MapCard key={m.id} map={m} disabled={travel.isPending} onPick={() => pick(m)} />
-              ))}
-            </div>
-
-            {locked.length ? (
-              <div className="space-y-1.5">
-                <div className="text-muted-foreground text-[11px]">未解锁（可以在「自动解锁地图」里买）</div>
-                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                  {locked.map((m) => (
-                    <MapCard key={m.id} map={m} disabled onPick={() => {}} />
-                  ))}
-                </div>
+            {/* 一行 1–2 张：按**面板自身宽度**决定（@container），而不是整屏宽度 ——
+                左侧栏只有 ~380px，用 lg:grid-cols-3 那种断点会被挤到溢出 */}
+            <div className="@container">
+              <div className="grid grid-cols-1 gap-2 @[22rem]:grid-cols-2">
+                {unlocked.map((m) => (
+                  <MapCard key={m.id} map={m} disabled={travel.isPending} onPick={() => pick(m)} />
+                ))}
               </div>
-            ) : null}
+
+              {locked.length ? (
+                <div className="mt-3 space-y-1.5">
+                  <div className="text-muted-foreground text-[11px]">未解锁（可以在「自动解锁地图」里买）</div>
+                  <div className="grid grid-cols-1 gap-2 @[22rem]:grid-cols-2">
+                    {locked.map((m) => (
+                      <MapCard key={m.id} map={m} disabled onPick={() => {}} />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
           </>
         ) : null}
       </CardContent>

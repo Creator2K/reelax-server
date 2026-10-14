@@ -134,6 +134,13 @@ export function describeAudit(row: AuditLike, r: AuditResolvers = {}): string {
       return `让账号${accountText(target ?? "", r)}离开船队`;
     case "account.party.invitation":
       return `让账号${accountText(target ?? "", r)}${detailJsonFlag(row, "action") === "accept" ? "接受" : "拒绝"}组队邀请`;
+    case "account.party.member": {
+      const act = detailJsonFlag(row, "action") ?? "";
+      const who = detailJsonFlag(row, "member") ?? "某成员";
+      const text =
+        act === "remove" ? "移出成员" : act === "captain" ? "转让船长给" : act === "role:helmsman" ? "任命舵手" : "撤销舵手";
+      return `在账号${accountText(target ?? "", r)}的船队里${text} ${who}`;
+    }
     case "account.credentials.updated":
       return `更新账号${accountText(target ?? "", r)}的登录凭证`;
 

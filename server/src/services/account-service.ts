@@ -425,20 +425,22 @@ export class AccountService {
 
   /* ---------- 船队（组队） ---------- */
 
-  /** 船队面板：当前状态 + 待处理邀请（每次现读，船队状态变化频繁） */
+  /** 船队面板：当前状态 + 成员 + 待处理邀请（每次现读，船队状态变化频繁） */
   async party(accountId: string, userId: string): Promise<PartyView> {
     const rt = this.requireRuntime(accountId, userId);
 
-    const [state, invitations] = await Promise.all([
+    const [state, overview, invitations] = await Promise.all([
       rt.client.fishingState().catch(() => null),
+      rt.client.partyBoatsOverview().catch(() => null),
       rt.client.partyInvitations().catch(() => null),
     ]);
-    if (!state) {
+    if (!state && !overview) {
       throw new HttpError(502, "GAME_UNREACHABLE", "读不到船队状态（账号可能还没连上游戏，稍后再试）");
     }
 
     return buildPartyView({
       party: state?.party ?? null,
+      overview,
       invitations: invitationList(invitations),
       biomeName: biomeName,
     });
@@ -480,6 +482,30 @@ export class AccountService {
       throw new HttpError(400, "PARTY_INVITATION_FAILED", partyErrorMessage(err));
     }
     return { ok: true, action };
+  }
+
+  /**
+   * 船队成员管理（仅船长，游戏侧也会再校验一次）：
+   *  · remove  → 把某人移出船队
+   *  · role    → 任命 / 撤销舵手
+   *  · captain → 转让船长（只有租用中的船可以）
+   */
+  async managePartyMember(
+    accountId: string,
+    userId: string,
+    publicId: string,
+    action: "remove" | "role" | "captain",
+    role?: "helmsman" | "crew",
+  ): Promise<{ ok: true; action: string }> {
+    const rt = this.requireRuntime(accountId, userId);
+    try {
+      if (action === "remove") await rt.removePartyMember(publicId);
+      else if (action === "role") await rt.setPartyMemberRole(publicId, role === "helmsman" ? "helmsman" : "crew");
+      else await rt.transferPartyCaptain(publicId);
+    } catch (err) {
+      throw new HttpError(400, "PARTY_MEMBER_FAILED", partyErrorMessage(err));
+    }
+    return { ok: true, action: action === "role" && role ? `role:${role}` : action };
   }
 }
 

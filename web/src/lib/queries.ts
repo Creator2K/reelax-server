@@ -212,16 +212,40 @@ export function useAccountMaps(id: string | undefined, enabled = true) {
 
 export type PartyInvitation = { id: string; from: string | null; boatName: string | null };
 
+export type PartyMember = {
+  publicId: string;
+  nickname: string;
+  level: number | null;
+  role: "captain" | "helmsman" | "crew";
+  biomeId: string | null;
+  biomeName: string | null;
+  fishing: "online" | "offline" | "none";
+  /** 是否计入本船的经验加成（同船同图） */
+  effective: boolean;
+};
+
 export type AccountParty = {
   inParty: boolean;
   boatName: string | null;
   boatBiomeId: string | null;
   boatBiomeName: string | null;
+  /** 我在船上的身份 */
+  role: "captain" | "helmsman" | "crew" | null;
+  isCaptain: boolean;
   /** 能否改变船队航线（= 船长 / 舵手） */
   canChangeBoatBiome: boolean;
   /** 是否允许船长 / 舵手换图时把自己一起带走 */
   canBeSummoned: boolean;
   onBoat: boolean | null;
+  /** 船队运营状态（停航待保养 / 租赁到期） */
+  status: string | null;
+  /** 邀请码（船长与船员都能分享） */
+  joinCode: string | null;
+  capacity: number | null;
+  isCrowdfunded: boolean;
+  /** 只有租用中的船可以转让船长 */
+  canTransferCaptain: boolean;
+  members: PartyMember[];
   /** 船长不能直接离开时的说明 */
   leaveBlockedReason: string | null;
   invitations: PartyInvitation[];

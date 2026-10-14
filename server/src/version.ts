@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.13.0";
+export const VERSION = "1.14.0";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,25 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.14.0",
+    date: "2026-10-14",
+    title: "船队支持成员管理；地图与船队面板回到左栏；雷暴/涌流高亮",
+    changes: [
+      {
+        kind: "feature",
+        text: "「船队」面板支持成员管理（只有船长能看到按钮）：任命或撤销舵手、把成员移出船队（众筹船不支持）、把船长转让给某人（仅租用中的船）。面板同时列出每位成员的身份、所在地图、是否在线钓鱼、是否计入协作，以及船队邀请码（可一键复制）与停航待保养 / 租赁到期提示",
+      },
+      {
+        kind: "improve",
+        text: "「地图与天气」「船队」回到账号详情页左侧栏：地图卡片按**面板自身宽度**自动排 1–2 列（够宽排两列，排两列会挤就排一列），不再出现文字被截断或溢出卡片",
+      },
+      {
+        kind: "improve",
+        text: "「地图与天气」里「雷暴」与「奥秘涌流」两种天气加粗高亮显示，一屏十几张地图里能一眼扫到（这两种才是值得为它换图的天气）",
+      },
+    ],
+  },
   {
     version: "1.13.0",
     date: "2026-10-14",

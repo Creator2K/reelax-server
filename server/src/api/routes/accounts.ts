@@ -52,6 +52,13 @@ const partyInvitationSchema = z.object({
   action: z.enum(["accept", "reject"]),
 });
 
+const partyMemberSchema = z.object({
+  /** remove = 移出船队；role = 任命/撤销舵手；captain = 转让船长 */
+  action: z.enum(["remove", "role", "captain"]),
+  /** action = role 时必填 */
+  role: z.enum(["helmsman", "crew"]).optional(),
+});
+
 export function createAccountsRouter(deps: {
   accounts: AccountService;
   registry: RunnerRegistry;
@@ -197,6 +204,23 @@ export function createAccountsRouter(deps: {
       action: AUDIT_ACTIONS.ACCOUNT_PARTY_INVITATION,
       target: id,
       detail: { action: req.body.action },
+      ip: clientIp(req),
+    });
+    res.json(result);
+  });
+
+  /* ---------- 船队成员管理（仅船长） ---------- */
+
+  router.post("/:id/party/members/:publicId", body(partyMemberSchema), async (req, res) => {
+    const userId = currentUserId(req);
+    const id = req.params.id as string;
+    const publicId = req.params.publicId as string;
+    const result = await deps.accounts.managePartyMember(id, userId, publicId, req.body.action, req.body.role);
+    deps.audit.record({
+      userId,
+      action: AUDIT_ACTIONS.ACCOUNT_PARTY_MEMBER,
+      target: id,
+      detail: { action: result.action, member: publicId },
       ip: clientIp(req),
     });
     res.json(result);
