@@ -3,12 +3,13 @@
 //  1) 模块的 bus 订阅从不释放 —— 停/启或改配置后旧实例继续收 fishing:sync，
 //     两个 auto-bait 同时买饵、两个 auto-travel 抢着切图，且随每次重启线性累积。
 //  2) tickLoop 每轮都调 setStatus("online", null) —— 每个账号每 ~6 秒白写一次 SQLite。
-//  3) `Math.max(0, indexOf(primary)) || 1` —— 下标 0（力量）是 falsy，被静默改成智力。
+//  3) `Math.max(0, indexOf(primary)) || 1` —— 下标 0（力量）是 falsy，被静默改成智力
+//     （该字段已被「属性顺序」列表取代，这里改为钉住新语义：顺序第一项就是主属性）。
 //  4) cookie 的 Max-Age 取自启动时的 env 值 —— 后台改「登录态有效期」不生效。
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildFullApp, type FullApp } from "./helpers/full-app.ts";
 import type { ModuleDefinition } from "../src/modules/types.ts";
-import { statIndex } from "../src/modules/auto-stats/index.ts";
+import { planStatAllocation } from "../src/modules/auto-stats/index.ts";
 import { isFreshDay, isReportDue, parseReportAt } from "../src/modules/daily-digest/index.ts";
 import { shouldSnapshot, SNAPSHOT_INTERVAL_MS } from "../src/lib/maintenance.ts";
 import { randomStaggerMs } from "../src/lib/util.ts";
@@ -129,18 +130,24 @@ describe("状态写库（曾经每轮都写）", () => {
   });
 });
 
-describe("自动加点的主属性下标（曾经把「力量」改成「智力」）", () => {
-  it("★ 下标 0 的力量不会被改成下标 1", () => {
-    expect(statIndex("strength")).toBe(0);
-    expect(statIndex("intelligence")).toBe(1);
-    expect(statIndex("luck")).toBe(2);
-    expect(statIndex("endurance")).toBe(3);
-  });
-
-  it("名字不认识 / 为空时退回「智力」（下标 1）", () => {
-    expect(statIndex("bogus")).toBe(1);
-    expect(statIndex(undefined)).toBe(1);
-    expect(statIndex("")).toBe(1);
+describe("自动加点：顺序由用户排（曾经把「力量」静默改成「智力」）", () => {
+  it("★ 顺序里的第一项就是加点的目标（不再有下标映射，也就不可能被静默改掉）", () => {
+    const r = planStatAllocation({
+      mode: "priority",
+      unspent: 7,
+      invested: [0, 0, 0, 0],
+      // 用户把「力量」放在第一位 —— 旧版这里会因为下标 0 是 falsy 而改成智力
+      plan: [
+        { key: "strength", value: 0 },
+        { key: "intelligence", value: 0 },
+        { key: "luck", value: 0 },
+        { key: "endurance", value: 0 },
+      ],
+      autoReset: false,
+      minPoints: 1,
+    });
+    if (!("amounts" in r)) throw new Error("应当给出方案");
+    expect(r.amounts).toEqual([7, 0, 0, 0]);
   });
 });
 

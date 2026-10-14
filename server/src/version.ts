@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.8.0";
+export const VERSION = "1.9.0";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,37 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.9.0",
+    date: "2026-10-14",
+    title: "新增自动卖鱼；稀有度改为勾选；加点顺序可自定义",
+    changes: [
+      {
+        kind: "feature",
+        text: "新增「自动卖鱼」：按稀有度勾选把背包里的鱼卖给 NPC。锁定的鱼与带泰坦倍率的鱼不动，支持「只报告不动作」与每轮条数上限",
+      },
+      {
+        kind: "improve",
+        text: "「自动卖装备」的稀有度选择从阈值下拉改为勾选：勾了「直接卖」的品质卖给 NPC，勾了「分解」的品质分解成装备结晶（分解优先，仅传说 / 神话 / 奇异可分解）",
+      },
+      {
+        kind: "feature",
+        text: "「自动专精献祭」新增高稀有度保护：三个预设（全部献祭 / 保护传说及以上 / 保护奇异及以上）加一个自选模式（勾选要献祭的档位），默认保护传说及以上",
+      },
+      {
+        kind: "feature",
+        text: "「自动加点」的属性顺序由拖动决定，列表里的数字按策略解释为目标值或配比权重：点数不足时按该顺序依次分配，配比余数给顺序里的最后一项",
+      },
+      {
+        kind: "improve",
+        text: "保底进度里的「奇异鱼」在任何条件下都会显示：当前条件没有硬保底时给出已连续未出多少杆，不再整行隐藏",
+      },
+      {
+        kind: "improve",
+        text: "升级时自动把旧配置换算为新格式（换图优先级、卖装备稀有度、献祭保护、加点顺序）并删除旧键；此前旧键会一直留在库里，使旧设置永久生效、无法改回",
+      },
+    ],
+  },
   {
     version: "1.8.0",
     date: "2026-10-14",

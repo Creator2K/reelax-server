@@ -42,8 +42,40 @@ export function rarityOptions(): { value: string; label: string }[] {
   return RARITIES.map((r, i) => ({ value: r, label: `${i + 1}级·${RARITY_LABELS[r]}` }));
 }
 
+/**
+ * 供 multi-select（勾选框）字段用：九档全列出来，用户勾哪些就哪些生效。
+ *
+ * ★ 为什么统一改成勾选框：以前是「低于 X 档就卖」这种阈值下拉，把一个**集合**压成了一个点 ——
+ *   想「只卖普通和精良、史诗也卖、但稀有留着」这种组合就表达不出来；
+ *   而且阈值语义是「以下全包含」，调到某一档会连带影响它下面所有档，用户很难预期。
+ */
+export function rarityCheckboxOptions(opts: { include?: readonly Rarity[] } = {}): {
+  value: string;
+  label: string;
+}[] {
+  const list = opts.include ?? RARITIES;
+  return list.map((r) => ({ value: r, label: `${RARITIES.indexOf(r) + 1}级·${RARITY_LABELS[r]}` }));
+}
+
+/** 低于某档的全部稀有度（可含自身）——用于把旧的阈值配置换算成集合 */
+export function raritiesBelow(rarity: unknown, opts: { includeSelf?: boolean } = {}): Rarity[] {
+  const rank = rarityRank(rarity);
+  if (rank < 0) return [];
+  return RARITIES.filter((_r, i) => (opts.includeSelf ? i <= rank : i < rank));
+}
+
+/** 某档及以上的全部稀有度 ——用于把「保护高稀有度」换算成集合 */
+export function raritiesAtOrAbove(rarity: unknown): Rarity[] {
+  const rank = rarityRank(rarity);
+  if (rank < 0) return [];
+  return RARITIES.filter((_r, i) => i >= rank);
+}
+
 /** 高价值档位（日报里单独一行展示的那几档） */
 export const HIGH_RARITIES: Rarity[] = ["legendary", "mythic", "exotic", "arcane"];
+
+/** 游戏只允许分解这三档装备（分解得到装备结晶） */
+export const DISMANTLABLE_RARITIES: Rarity[] = ["legendary", "mythic", "exotic"];
 
 /** 四项属性的中文名 */
 export const STAT_LABELS = {

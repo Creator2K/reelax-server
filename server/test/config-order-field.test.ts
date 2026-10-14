@@ -95,3 +95,96 @@ describe("order 字段：校验（validateConfigPatch）", () => {
     expect(validateConfigPatch(two, { plan: ["a", "b"] }).errors).toEqual([]);
   });
 });
+
+/* ---------------- order-number：顺序 + 数值 ---------------- */
+
+const numDef = {
+  id: "t2",
+  name: "测试模块",
+  version: "1.0.0",
+  description: "",
+  defaultEnabled: false,
+  defaultConfig: {
+    plan: [
+      { key: "a", value: 10 },
+      { key: "b", value: 0 },
+    ],
+  },
+  configSchema: [
+    {
+      key: "plan",
+      type: "order-number",
+      label: "顺序与数值",
+      default: [
+        { key: "a", value: 10 },
+        { key: "b", value: 0 },
+      ],
+      options: [
+        { value: "a", label: "A" },
+        { value: "b", label: "B" },
+        { value: "c", label: "C" },
+      ],
+      min: 0,
+      max: 1000,
+    },
+  ],
+} as unknown as ModuleDefinition;
+
+describe("order-number 字段：解析", () => {
+  it("★ 顺序原样保留，缺的项补在末尾（四维不会被静默漏掉）", () => {
+    const r = resolveModuleConfig(numDef, { plan: [{ key: "c", value: 5 }] });
+    expect(r.config.plan).toEqual([
+      { key: "c", value: 5 },
+      { key: "a", value: 10 },
+      { key: "b", value: 0 },
+    ]);
+  });
+
+  it("去重、丢不认识的键、数值取整并夹到边界", () => {
+    const r = resolveModuleConfig(numDef, {
+      plan: [
+        { key: "a", value: 1.6 },
+        { key: "a", value: 99 },
+        { key: "zzz", value: 3 },
+        { key: "b", value: 99_999 },
+      ],
+    });
+    const plan = r.config.plan as { key: string; value: number }[];
+    expect(plan.find((p) => p.key === "a")?.value).toBe(2);
+    expect(plan.find((p) => p.key === "b")?.value).toBe(1000); // max 夹住
+    expect(plan.some((p) => p.key === "zzz")).toBe(false);
+    expect(r.issues.some((i) => String(i.message).includes("zzz"))).toBe(true);
+  });
+
+  it("兼容对象形式的历史写法 { a: 3 }", () => {
+    const r = resolveModuleConfig(numDef, { plan: { b: 7 } });
+    expect(r.config.plan).toEqual([
+      { key: "b", value: 7 },
+      { key: "a", value: 10 },
+      { key: "c", value: 0 },
+    ]);
+  });
+
+  it("非法数值按 0；类型完全不对 → 回到默认", () => {
+    const bad = resolveModuleConfig(numDef, { plan: [{ key: "a", value: "abc" }] });
+    expect((bad.config.plan as { key: string; value: number }[])[0]).toEqual({ key: "a", value: 0 });
+    expect(resolveModuleConfig(numDef, { plan: 5 }).config.plan).toEqual(numDef.defaultConfig.plan);
+  });
+});
+
+describe("order-number 字段：校验", () => {
+  it("保留顺序与数值", () => {
+    const r = validateConfigPatch(numDef, { plan: [{ key: "b", value: 3 }, { key: "a", value: 1 }] });
+    expect(r.errors).toEqual([]);
+    expect(r.patch.plan).toEqual([
+      { key: "b", value: 3 },
+      { key: "a", value: 1 },
+      { key: "c", value: 0 },
+    ]);
+  });
+
+  it("不认识的键报错（不静默丢弃）", () => {
+    const r = validateConfigPatch(numDef, { plan: [{ key: "nope", value: 1 }] });
+    expect(r.errors[0]?.message).toContain("nope");
+  });
+});

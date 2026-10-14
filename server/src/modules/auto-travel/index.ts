@@ -75,14 +75,15 @@ const isPriority = (v: unknown): v is Priority => ALL_PRIORITIES.includes(v as P
 /**
  * 解析「换图优先级」（值形如 ["competition","golden"] 或 "competition,golden"）。
  *
- * ★ 与旧版的区别：**不再自动补齐缺失的项**。优先级现在是一个「有序子集」——
- *   用户只想按金风切图时，就不该被硬塞一个「经验」在后面（更不该被塞「跟船队走」）。
- *   解析结果为空时退回默认顺序。
+ * ★ 它是**有序子集**：不自动补齐缺失的项 —— 用户只想按金风切图时，就不该被硬塞一个「经验」
+ *   在后面（更不该被塞「跟船队走」）。解析结果为空时退回默认顺序。
  *
- * `legacyFollow`：1.7.x 之前「跟船队走」是独立开关（fleetMode=follow，含义是"完全不自己换图"），
- * 老配置读进来要把它并到最前面，否则用户会以为它还生效。
+ * 旧版本的两个键（1.7.x 的 fleetMode、1.7.0 短暂存在的 surge）都不在这里兼容：
+ * 前者由 `modules/config-upgrades.ts` 一次性换算并**从库里删除**，
+ * 后者本来就是认不出的项、直接丢掉。运行时的兼容分支会永久生效（旧键永远在库里），
+ * 那样用户就再也改不掉了 —— 所以兼容只做一次，做在升级里。
  */
-export function parsePriorities(value: unknown, opts: { legacyFollow?: boolean } = {}): Priority[] {
+export function parsePriorities(value: unknown): Priority[] {
   const list = Array.isArray(value)
     ? value.map((x) => String(x))
     : String(value ?? "")
@@ -98,7 +99,6 @@ export function parsePriorities(value: unknown, opts: { legacyFollow?: boolean }
       out.push(item);
     }
   }
-  if (opts.legacyFollow && !seen.has("follow")) out.unshift("follow");
   return out.length ? out : [...DEFAULT_PRIORITIES];
 }
 
@@ -481,10 +481,8 @@ const definition: ModuleDefinition = {
     S.crewLastSummary = "";
 
     // 优先级只在启动时解析一次（改配置会重启模块，所以不必每轮重算）
-    // legacyFollow：1.7.x 的独立开关「跟船队走」并进优先级列表（老配置不至于静默失效）
-    const priorities = parsePriorities(ctx.config.priorities, {
-      legacyFollow: String(ctx.config.fleetMode ?? "") === "follow",
-    });
+    // 1.7.x 的独立开关 fleetMode 已由 config-upgrades 一次性并进这个列表（并删掉旧键）
+    const priorities = parsePriorities(ctx.config.priorities);
     const minImprovePct = Math.max(0, Number(ctx.config.minImprovePct) || 0);
     const surgeBiomeId = String(ctx.config.surgeBiome ?? "").trim();
     const carryCrew = String(ctx.config.crewTravel ?? "off") === "carry";

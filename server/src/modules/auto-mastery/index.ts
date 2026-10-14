@@ -15,18 +15,49 @@
 // 这里做的是把鱼献给自己地图的专精等级（/api/mastery）。
 import { type ModuleDefinition } from "../types.ts";
 import { jitter } from "../../lib/util.ts";
-import { RARITIES, RARITY_LABELS } from "../shared/rarity.ts";
+import { RARITIES, RARITY_LABELS, rarityCheckboxOptions } from "../shared/rarity.ts";
+
+/**
+ * 献祭模式 → 要献祭的稀有度集合。
+ *
+ * ★ 为什么要「保护」：高稀有度鱼有别的用处（卖价、鱼类订单、图鉴），
+ *   一键全献祭会把传说 / 奇异 / 奥秘也烧掉，而且不可撤回。
+ *   三种预设 + 自选，够覆盖「随便献」「保高档」「只献垃圾」这几类需求。
+ */
+export const SACRIFICE_MODES = {
+  all: { label: "全部献祭（不保护）", sacrificed: [...RARITIES] },
+  protectLegendary: { label: "保护传说及以上（只献祭 ≤ 史诗）", sacrificed: [...RARITIES].slice(0, 5) },
+  protectExotic: { label: "保护奇异及以上（只献祭 ≤ 神话）", sacrificed: [...RARITIES].slice(0, 7) },
+  custom: { label: "自选（用下面的勾选）", sacrificed: null },
+} as const;
+
+export type SacrificeMode = keyof typeof SACRIFICE_MODES;
+
+/**
+ * 算出「要献祭哪些稀有度」（纯函数，便于单测）。
+ * 返回的集合之外的那些稀有度会作为 `excludedRarities` 传给游戏接口。
+ */
+export function sacrificedRarities(mode: unknown, custom: unknown): string[] {
+  const key = (typeof mode === "string" && mode in SACRIFICE_MODES ? mode : "protectLegendary") as SacrificeMode;
+  const preset = SACRIFICE_MODES[key].sacrificed;
+  if (preset) return [...preset];
+
+  const picked = Array.isArray(custom) ? custom.map((x) => String(x)) : [];
+  // 自选：按稀有度阶梯排序，并且只认认识的档位
+  return RARITIES.filter((r) => picked.includes(r));
+}
 
 const definition: ModuleDefinition = {
   id: "auto-mastery",
   name: "自动专精献祭",
-  version: "2.0.0",
+  version: "3.0.0",
   description:
-    "把背包里多余的鱼献祭给地图专精，从等级最低的地图开始，逐步提升各地图加成。",
+    "把背包里多余的鱼献祭给地图专精，从等级最低的地图开始，逐步提升各地图加成。可以保护高稀有度：只献祭某个档位及以下的鱼，或者自己勾选要献的档位。",
   defaultEnabled: false,
   defaultConfig: {
     intervalMin: 12,
-    excludeBelow: "common",
+    sacrificeMode: "protectLegendary",
+    sacrificeRarities: ["common", "uncommon", "fine", "rare", "epic"],
   },
   configSchema: [
     {
@@ -40,12 +71,25 @@ const definition: ModuleDefinition = {
       step: 1,
     },
     {
-      key: "excludeBelow",
+      key: "sacrificeMode",
       type: "select",
-      label: "不献祭低于此档的鱼",
-      hint: "默认「普通」= 全部都献。想保住低稀有度鱼就往上调。",
-      default: "common",
-      options: RARITIES.map((r, i) => ({ value: r, label: `${i + 1}级·${RARITY_LABELS[r]}` })),
+      label: "献祭哪些稀有度",
+      hint:
+        "献祭不可撤回，所以默认保护传说及以上。\n" +
+        "想全献就选「全部献祭」；想只献垃圾档就选「自选」并在下面勾选。",
+      default: "protectLegendary",
+      options: (Object.keys(SACRIFICE_MODES) as SacrificeMode[]).map((k) => ({
+        value: k,
+        label: SACRIFICE_MODES[k].label,
+      })),
+    },
+    {
+      key: "sacrificeRarities",
+      type: "multi-select",
+      label: "自选：要献祭的稀有度",
+      hint: "只在上面选了「自选」时生效。勾哪个献哪个，没勾的保留。",
+      default: ["common", "uncommon", "fine", "rare", "epic"],
+      options: rarityCheckboxOptions(),
     },
   ],
 
@@ -87,14 +131,9 @@ const definition: ModuleDefinition = {
         const { biome, items } = candidates[0] as { biome: any; items: any[] };
         const name = biome.biomeName ?? biome.biomeId;
 
-        // 排除低稀有度：把配置档位及以下都排除
-        const excludeRank = RARITIES.indexOf(String(ctx.config.excludeBelow) as (typeof RARITIES)[number]);
-        const excluded: string[] = [];
-        if (excludeRank > 0) {
-          for (const r of RARITIES) {
-            if (RARITIES.indexOf(r) < excludeRank) excluded.push(r);
-          }
-        }
+        // 保护高稀有度：把「不献祭的那些档位」作为 excludedRarities 传给游戏接口
+        const sacrificed = new Set(sacrificedRarities(ctx.config.sacrificeMode, ctx.config.sacrificeRarities));
+        const excluded = RARITIES.filter((r) => !sacrificed.has(r));
 
         const r = await ctx.api.masteryContributeAll(biome.biomeId, excluded);
         const gained = r?.contributedCount ?? r?.contributed ?? items.length;
@@ -105,7 +144,7 @@ const definition: ModuleDefinition = {
           "自动献祭",
           `${trigger}：${name} 献祭 ${gained} 项` +
             (level != null ? `（专精等级 ${level}）` : "") +
-            (excluded.length ? `，已排除 ${excluded.map((x) => RARITY_LABELS[x as never]).join("/")}` : ""),
+            (excluded.length ? `，保护 ${excluded.map((x) => RARITY_LABELS[x]).join("/")}` : ""),
         );
       } catch (err) {
         ctx.log.warn("自动献祭", `${trigger} 失败：${err instanceof Error ? err.message : String(err)}`);

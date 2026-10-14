@@ -22,8 +22,13 @@ import { GAME_ERROR_CODES, GameClientError, codeForStatus, looksLikeSignatureIss
 import { classifyProxyError, describeProxyError } from "./proxy.ts";
 import { b64urlEncode, parseTime } from "../lib/util.ts";
 
-/** 免签名白名单 */
-const SIGNED_SKIP = new Set(["/api/auth/login", "/api/me", "/api/meta/frontend-release"]);
+/** 免签名白名单（与游戏前端一致：这几个接口不需要 request proof） */
+const SIGNED_SKIP = new Set([
+  "/api/auth/login",
+  "/api/me",
+  "/api/content/bootstrap",
+  "/api/meta/frontend-release",
+]);
 
 /** 登录接口：它的 401 是「凭据被拒」，不是「会话失效」 */
 const LOGIN_PATH = "/api/auth/login";
@@ -470,6 +475,15 @@ export class GameClient {
   }
   sellFish(items: unknown[]) {
     return this.request("/api/inventory/fish/sell", { method: "POST", body: { items }, idempotent: true });
+  }
+  /**
+   * 游戏内容表（鱼 / 稀有度 / 鱼饵等静态定义）。
+   *
+   * 免签名（不在 proof 覆盖范围内），且内容基本不变 —— 调用方应当缓存，别每轮都拉。
+   * 卖鱼要用它把 `fishId` 映射到「稀有度」：`/api/inventory/fish` 的条目有时只有 id 与数量。
+   */
+  contentBootstrap() {
+    return this.request("/api/content/bootstrap", { timeoutMs: 30_000 });
   }
   baits() {
     return this.request("/api/baits");

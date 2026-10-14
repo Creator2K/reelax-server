@@ -187,32 +187,47 @@ export type PityProgressView = {
   label: string;
   /** 已累计多少（杆 / 个） */
   dry: number;
-  /** 硬保底阈值 */
-  total: number;
-  /** 还差多少 */
-  remaining: number;
-  /** 0~100 */
-  percent: number;
+  /** 硬保底阈值；**null = 当前条件下游戏没有硬保底**（只显示已连空多少） */
+  total: number | null;
+  /** 还差多少（没有硬保底时也是 null） */
+  remaining: number | null;
+  /** 0~100；没有硬保底时 null */
+  percent: number | null;
   /** 是否已到保底（下一杆/下一个必出） */
   ready: boolean;
+  /**
+   * 是否真有硬保底。
+   *
+   * ★ 为什么单独标出来：游戏会在「当前条件无保底」时把 `hardPityCasts` 给成 null
+   *   （例如换了鱼饵 / 天气之后），旧版直接把这整行**藏掉** ——
+   *   用户看到的现象是「保底里怎么没有奇异鱼」，以为它没被监控。
+   *   现在照常显示这一行，只是不给进度条、写明「当前条件无保底」。
+   */
+  hardPity: boolean;
 };
 
 /** 从 /api/statistics 的 pity 里取一个稀有度 */
 function pityOf(statistics: any, key: "exotic" | "arcane", label: string): PityProgressView | null {
   const block = statistics?.pity?.[key];
-  if (!block) return null;
-  const total = num(block.hardPityCasts);
-  if (total <= 0) return null;
+  if (!block) return null; // 接口里没有这一档（游戏改版）→ 不显示，而不是显示 0
   const dry = Math.max(0, num(block.currentDryCasts));
-  const remaining = Math.max(0, total - dry);
+
+  const hardRaw = block.hardPityCasts;
+  const hard = hardRaw === null || hardRaw === undefined ? 0 : num(hardRaw);
+  if (hard <= 0) {
+    return { key, label, dry, total: null, remaining: null, percent: null, ready: false, hardPity: false };
+  }
+
+  const remaining = Math.max(0, hard - dry);
   return {
     key,
     label,
     dry,
-    total,
+    total: hard,
     remaining,
-    percent: Math.min(100, Math.round((dry / total) * 100)),
+    percent: Math.min(100, Math.round((dry / hard) * 100)),
     ready: remaining === 0,
+    hardPity: true,
   };
 }
 
@@ -234,6 +249,7 @@ function chestPityOf(chests: any): PityProgressView | null {
       remaining,
       percent: Math.min(100, Math.round((dry / total) * 100)),
       ready: remaining === 0,
+      hardPity: true,
     };
   }
   return null;
@@ -258,6 +274,7 @@ function lighthousePityOf(lh: any): PityProgressView | null {
     remaining: remaining ?? Math.max(0, total - dry),
     percent: Math.min(100, Math.round((dry / total) * 100)),
     ready: (remaining ?? Math.max(0, total - dry)) === 0,
+    hardPity: true,
   };
 }
 

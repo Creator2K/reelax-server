@@ -245,8 +245,11 @@ describe("自动切图：「跟船队走」作为优先级的一项（端到端�
     expect(log.debug.some((m) => m.includes("跟船队走") && m.includes("芦汐轻舟"))).toBe(true);
   });
 
-  it("★ 老配置：fleetMode=follow 自动并进优先级（不会静默失效）", async () => {
-    const { calls, log, start } = makeCtx({
+  it("★ 旧键 fleetMode 在运行时被忽略（换算只做一次，见 config-upgrades）", async () => {
+    // 旧版这里会「fleetMode=follow → 自动把跟船队走加进列表」，那是错的：
+    // 旧键永远留在库里，用户把它从列表里删掉也会被加回来。现在换算由启动时的
+    // config-upgrades 一次性完成并删除旧键，模块本身不再认它。
+    const { calls, start } = makeCtx({
       priorities: "golden,experience",
       party: inFleet,
       config: { fleetMode: "follow" },
@@ -254,8 +257,7 @@ describe("自动切图：「跟船队走」作为优先级的一项（端到端�
     const run = await start();
 
     await run();
-    expect(travels(calls)).toEqual([]);
-    expect(log.debug.some((m) => m.includes("跟船队走"))).toBe(true);
+    expect(travels(calls)).toEqual([`TRAVEL ${GOLD}`]);
   });
 
   it("★ 没加入船队 → 跳过这一项，照常按后面的优先级换图", async () => {

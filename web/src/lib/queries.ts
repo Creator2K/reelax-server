@@ -35,14 +35,16 @@ export type PityProgress = {
   label: string;
   /** 已累计（杆 / 个） */
   dry: number;
-  /** 硬保底阈值 */
-  total: number;
-  /** 还差多少 */
-  remaining: number;
-  /** 0~100 */
-  percent: number;
+  /** 硬保底阈值；null = 当前条件下游戏没有硬保底 */
+  total: number | null;
+  /** 还差多少（没有硬保底时为 null） */
+  remaining: number | null;
+  /** 0~100（没有硬保底时为 null） */
+  percent: number | null;
   /** 下一杆/下一个必出 */
   ready: boolean;
+  /** false = 当前条件无硬保底（界面写明，而不是把这一行藏掉） */
+  hardPity: boolean;
 };
 
 /** 近 10 分钟同步健康度（服务端滚动窗口算好） */
@@ -210,6 +212,19 @@ export type ConfigField =
       default?: string[];
       options: { value: string; label: string; hint?: string }[];
       min?: number;
+    }
+  | {
+      /** 有序 + 带数值的列表：每一项都有一个数字，顺序也有意义 */
+      key: string;
+      type: "order-number";
+      label: string;
+      hint?: string;
+      default?: { key: string; value: number }[];
+      options: { value: string; label: string; hint?: string }[];
+      unit?: string;
+      min?: number;
+      max?: number;
+      step?: number;
     }
   | {
       /**

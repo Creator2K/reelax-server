@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge.tsx";
 import { ModulePreview } from "@/components/domain/ModulePreview.tsx";
 import { OrderFieldEditor } from "@/components/domain/OrderFieldEditor.tsx";
+import { OrderNumberFieldEditor } from "@/components/domain/OrderNumberFieldEditor.tsx";
 import { TemplateFieldEditor } from "@/components/domain/TemplateFieldEditor.tsx";
 import { cn } from "@/lib/utils.ts";
 
@@ -291,6 +292,16 @@ function Field({
     case "order":
       return (
         <OrderFieldEditor
+          field={field}
+          value={value}
+          {...(disabled !== undefined ? { disabled } : {})}
+          onChange={(v) => onChange(v)}
+        />
+      );
+
+    case "order-number":
+      return (
+        <OrderNumberFieldEditor
           field={field}
           value={value}
           {...(disabled !== undefined ? { disabled } : {})}

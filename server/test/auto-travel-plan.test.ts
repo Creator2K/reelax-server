@@ -46,12 +46,11 @@ describe("自动切图 · 优先级解析", () => {
     expect(parsePriorities(null)).toEqual(DEFAULT_PRIORITIES);
   });
 
-  it("★ 1.7.x 的独立开关 fleetMode=follow 自动并到最前面（老配置不至于静默失效）", () => {
-    expect(parsePriorities("competition,golden", { legacyFollow: true })).toEqual(["follow", "competition", "golden"]);
-    // 列表里已经有 follow 就不重复插
-    expect(parsePriorities(["follow", "golden"], { legacyFollow: true })).toEqual(["follow", "golden"]);
-    // 默认（solo）不加
-    expect(parsePriorities("golden", { legacyFollow: false })).toEqual(["golden"]);
+  it("1.7.x 的独立开关 fleetMode 由配置升级换算（这里不再有运行时兼容分支）", () => {
+    // 运行时兼容会让旧键永久生效（用户删掉「跟船队走」也会被加回来），
+    // 所以换算只在 modules/config-upgrades.ts 里做一次 —— 见 config-upgrades.test.ts
+    expect(autoTravel.configSchema.some((f) => f.key === "fleetMode")).toBe(false);
+    expect(parsePriorities("golden")).toEqual(["golden"]);
   });
 
   it("候选项：4 项且含「跟船队走」，不再是排列组合的下拉框", () => {

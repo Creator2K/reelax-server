@@ -5,8 +5,9 @@
 // （加错点、卖错装备、把号从比赛图拽走），所以必须有测试。
 import { describe, expect, it } from "vitest";
 import { MODULES, assertRegistryValid } from "../src/modules/registry.ts";
-import { investedOf, parseRatio, parseTargets, planAllocation } from "../src/modules/auto-stats/index.ts";
+import { investedOf, planStatAllocation, readStatPlan } from "../src/modules/auto-stats/index.ts";
 import { bucketOf } from "../src/modules/auto-sell-gear/index.ts";
+import { sacrificedRarities } from "../src/modules/auto-mastery/index.ts";
 import {
   DEFAULT_PRIORITIES,
   describeBiome,
@@ -19,29 +20,35 @@ import {
 
 /* ==================== 自动加点 ==================== */
 
-describe("parseRatio / parseTargets", () => {
-  it("解析冒号分隔的四项", () => {
-    expect(parseRatio("2:3:0:1")).toEqual([2, 3, 0, 1]);
-    expect(parseRatio("0:2000:0:100")).toEqual([0, 2000, 0, 100]);
+/** 造一份「顺序 + 数值」的配置（顺序 = 数组顺序） */
+const plan4 = (keys: string[], values: number[]) => keys.map((key, i) => ({ key, value: values[i] ?? 0 }));
+
+describe("readStatPlan", () => {
+  it("★ 保留用户排的顺序，四维一定是完整的（缺的补在末尾）", () => {
+    const plan = readStatPlan([
+      { key: "luck", value: 100 },
+      { key: "intelligence", value: 2000 },
+    ]);
+    expect(plan.map((p) => p.key)).toEqual(["luck", "intelligence", "strength", "endurance"]);
+    expect(plan[0]?.value).toBe(100);
   });
 
-  it("容忍中文冒号、逗号与空格", () => {
-    expect(parseRatio("2：3：0：1")).toEqual([2, 3, 0, 1]);
-    expect(parseRatio("2,3,0,1")).toEqual([2, 3, 0, 1]);
-    expect(parseRatio(" 2 3 0 1 ")).toEqual([2, 3, 0, 1]);
+  it("认不出的 key 丢掉、重复的只留第一次、非法值归 0", () => {
+    const plan = readStatPlan([
+      { key: "luck", value: 5 },
+      { key: "luck", value: 9 },
+      { key: "nope", value: 1 },
+      { key: "strength", value: -3 },
+    ]);
+    expect(plan.find((p) => p.key === "luck")?.value).toBe(5);
+    expect(plan.find((p) => p.key === "strength")?.value).toBe(0);
+    expect(plan.some((p) => p.key === "nope")).toBe(false);
+    expect(plan).toHaveLength(4);
   });
 
-  it("项数不对或含非法值时返回 null", () => {
-    expect(parseRatio("1:2:3")).toBeNull();
-    expect(parseRatio("1:2:3:4:5")).toBeNull();
-    expect(parseRatio("a:b:c:d")).toBeNull();
-    expect(parseRatio("-1:2:3:4")).toBeNull();
-    expect(parseRatio("")).toBeNull();
-  });
-
-  it("全 0 的配比视为无效（ratio 模式），但目标值允许全 0", () => {
-    expect(parseRatio("0:0:0:0")).toBeNull();
-    expect(parseTargets("0:0:0:0")).toEqual([0, 0, 0, 0]);
+  it("空 / 非法输入 → 四维全 0（不抛错）", () => {
+    expect(readStatPlan(null).map((p) => p.value)).toEqual([0, 0, 0, 0]);
+    expect(readStatPlan("nope").map((p) => p.key)).toEqual(["strength", "intelligence", "luck", "endurance"]);
   });
 });
 
@@ -57,29 +64,25 @@ describe("investedOf", () => {
   });
 });
 
-describe("planAllocation（priority）", () => {
-  it("全部点数投给主属性", () => {
-    const r = planAllocation({
+describe("planStatAllocation（priority：全部给顺序第一项）", () => {
+  it("★ 第一项就是主属性（顺序即配置）", () => {
+    const r = planStatAllocation({
       mode: "priority",
       unspent: 10,
       invested: [0, 0, 0, 0],
-      ratio: null,
-      targets: null,
-      primary: 1, // 智力
+      plan: plan4(["luck", "intelligence", "strength", "endurance"], [0, 0, 0, 0]),
       autoReset: false,
       minPoints: 1,
     });
-    expect("amounts" in r && r.amounts).toEqual([0, 10, 0, 0]);
+    expect("amounts" in r && r.amounts).toEqual([0, 0, 10, 0]);
   });
 
   it("低于门槛时跳过", () => {
-    const r = planAllocation({
+    const r = planStatAllocation({
       mode: "priority",
       unspent: 0,
       invested: [0, 0, 0, 0],
-      ratio: null,
-      targets: null,
-      primary: 1,
+      plan: plan4(["strength", "intelligence", "luck", "endurance"], [0, 0, 0, 0]),
       autoReset: false,
       minPoints: 1,
     });
@@ -87,15 +90,13 @@ describe("planAllocation（priority）", () => {
   });
 });
 
-describe("planAllocation（ratio）", () => {
-  it("按权重分摊，且总和恰好等于可用点数", () => {
-    const r = planAllocation({
+describe("planStatAllocation（ratio：按配比，余数给顺序最后一项）", () => {
+  it("按权重分摊，总和恰好等于可用点数", () => {
+    const r = planStatAllocation({
       mode: "ratio",
       unspent: 100,
       invested: [0, 0, 0, 0],
-      ratio: [1, 1, 1, 1],
-      targets: null,
-      primary: 1,
+      plan: plan4(["strength", "intelligence", "luck", "endurance"], [1, 1, 1, 1]),
       autoReset: false,
       minPoints: 1,
     });
@@ -106,165 +107,211 @@ describe("planAllocation（ratio）", () => {
     }
   });
 
-  it("不能整除时余数归最后一维（耐力），总和仍然守恒", () => {
-    const r = planAllocation({
+  it("★ 余数归**用户排的最后一项**（旧版写死给耐力）", () => {
+    const r = planStatAllocation({
       mode: "ratio",
       unspent: 10,
       invested: [0, 0, 0, 0],
-      ratio: [1, 1, 1, 1],
-      targets: null,
-      primary: 1,
+      // 顺序：力量 → 智力 → 耐力 → 运气（运气在最后）
+      plan: plan4(["strength", "intelligence", "endurance", "luck"], [1, 1, 1, 1]),
       autoReset: false,
       minPoints: 1,
     });
     if ("amounts" in r) {
-      const sum = r.amounts.reduce((a, b) => a + b, 0);
-      expect(sum).toBe(10);
-      // 前三维各 floor(10/4)=2，最后一维吃掉剩余 4
-      expect(r.amounts).toEqual([2, 2, 2, 4]);
+      expect(r.amounts).toEqual([2, 2, 4, 2]); // 运气（顺序最后一项）吃掉余数
+      expect(r.amounts.reduce((a, b) => a + b, 0)).toBe(10);
+    } else {
+      throw new Error("应当给出方案");
     }
   });
 
-  it("配比为 0 的属性分不到点", () => {
-    const r = planAllocation({
+  it("权重不同的按比例分摊", () => {
+    const r = planStatAllocation({
       mode: "ratio",
-      unspent: 10,
+      unspent: 1000,
       invested: [0, 0, 0, 0],
-      ratio: [0, 1, 0, 1],
-      targets: null,
-      primary: 1,
+      plan: plan4(["strength", "intelligence", "luck", "endurance"], [1, 2, 0, 1]),
       autoReset: false,
       minPoints: 1,
     });
     if ("amounts" in r) {
-      expect(r.amounts[0]).toBe(0);
+      expect(r.amounts[0]).toBe(250);
+      expect(r.amounts[1]).toBe(500);
       expect(r.amounts[2]).toBe(0);
-      expect(r.amounts[1] + r.amounts[3]).toBe(10);
+      expect(r.amounts[3]).toBe(250);
     }
   });
 
-  it("配比无效时报错", () => {
-    const r = planAllocation({
+  it("配比全 0 → 报错（提示去填权重）", () => {
+    const r = planStatAllocation({
       mode: "ratio",
       unspent: 10,
       invested: [0, 0, 0, 0],
-      ratio: null,
-      targets: null,
-      primary: 1,
+      plan: plan4(["strength", "intelligence", "luck", "endurance"], [0, 0, 0, 0]),
       autoReset: false,
       minPoints: 1,
     });
-    expect("error" in r).toBe(true);
+    expect("error" in r && r.error).toContain("配比全为 0");
   });
 });
 
-describe("planAllocation（target）", () => {
-  const base = {
-    mode: "target",
-    invested: [0, 0, 0, 0],
-    ratio: null,
-    primary: 1,
-    autoReset: false,
-    minPoints: 1,
-  };
+describe("planStatAllocation（target：按目标值补齐）", () => {
+  const plan = plan4(["strength", "intelligence", "luck", "endurance"], [0, 2000, 0, 100]);
 
-  it("点数充裕时按缺口补齐", () => {
-    const r = planAllocation({ ...base, unspent: 5000, targets: [0, 2000, 0, 100] });
-    expect("amounts" in r && r.amounts).toEqual([0, 2000, 0, 100]);
-    if ("amounts" in r) expect(r.notes.join()).toContain("溢出");
-  });
-
-  it("已达标时跳过（不浪费点数）", () => {
-    const r = planAllocation({
-      ...base,
-      unspent: 100,
-      invested: [0, 2000, 0, 100],
-      targets: [0, 2000, 0, 100],
-    });
-    expect("skip" in r).toBe(true);
-  });
-
-  it("点数不足且无可搬运时按顺序尽量填，不超额", () => {
-    const r = planAllocation({ ...base, unspent: 1500, targets: [0, 2000, 0, 100] });
-    if ("amounts" in r) {
-      expect(r.amounts.reduce((a, b) => a + b, 0)).toBe(1500);
-      // 顺序填：先把智力填满 1500（缺口 2000），耐力还轮不到
-      expect(r.amounts[1]).toBe(1500);
-      expect(r.amounts[3]).toBe(0);
-    }
-  });
-
-  it("需搬运但未开启洗点 → 跳过并说明原因", () => {
-    // 已投入 力量 3000（超目标 0），目标需要智力 2000 → 需搬运
-    const r = planAllocation({
-      ...base,
-      unspent: 100,
-      invested: [3000, 0, 0, 0],
-      targets: [0, 2000, 0, 0],
+  it("点数够 → 一次补齐，多的留存", () => {
+    const r = planStatAllocation({
+      mode: "target",
+      unspent: 5000,
+      invested: [0, 0, 0, 0],
+      plan,
       autoReset: false,
+      minPoints: 1,
     });
-    expect("skip" in r).toBe(true);
-    if ("skip" in r) expect(r.skip).toContain("搬运");
+    if (!("amounts" in r)) throw new Error("应当给出方案");
+    expect(r.amounts).toEqual([0, 2000, 0, 100]);
+    expect(r.notes.join()).toContain("溢出");
   });
 
-  it("需搬运且开启洗点 → 返回重置信号", () => {
-    const r = planAllocation({
-      ...base,
+  it("已经达标的部分不再补", () => {
+    const r = planStatAllocation({
+      mode: "target",
+      unspent: 5000,
+      invested: [0, 1500, 0, 100],
+      plan,
+      autoReset: false,
+      minPoints: 1,
+    });
+    if (!("amounts" in r)) throw new Error("应当给出方案");
+    expect(r.amounts).toEqual([0, 500, 0, 0]);
+  });
+
+  it("全部达标 → 跳过", () => {
+    const r = planStatAllocation({
+      mode: "target",
+      unspent: 5000,
+      invested: [0, 2000, 0, 100],
+      plan,
+      autoReset: false,
+      minPoints: 1,
+    });
+    expect("skip" in r && r.skip).toContain("达到目标值");
+  });
+
+  it("★ 点数不够时按**用户排的顺序**依次填（旧版写死 力量→智力→运气→耐力）", () => {
+    const r = planStatAllocation({
+      mode: "target",
+      unspent: 600,
+      invested: [0, 0, 0, 0],
+      // 顺序：运气 → 智力 → 力量 → 耐力；目标各 500（耐力 0）
+      plan: plan4(["luck", "intelligence", "strength", "endurance"], [500, 500, 500, 0]),
+      autoReset: false,
+      minPoints: 1,
+    });
+    if (!("amounts" in r)) throw new Error("应当给出方案");
+    // 600 点：运气先拿满 500，剩下 100 给智力 → 力量一点没拿到
+    expect(r.amounts).toEqual([0, 100, 500, 0]);
+  });
+
+  it("点数不够且有剩余时给出说明", () => {
+    const r = planStatAllocation({
+      mode: "target",
+      unspent: 300,
+      invested: [0, 0, 0, 0],
+      plan: plan4(["luck", "intelligence", "strength", "endurance"], [500, 500, 500, 0]),
+      autoReset: false,
+      minPoints: 1,
+    });
+    if (!("amounts" in r)) throw new Error("应当给出方案");
+    expect(r.notes.join()).toContain("先投 300 点");
+  });
+
+  it("需要洗点搬运且开启时 → 交给调用方洗点（__NEED_RESET__）", () => {
+    const r = planStatAllocation({
+      mode: "target",
       unspent: 100,
-      invested: [3000, 0, 0, 0],
-      targets: [0, 2000, 0, 0],
+      invested: [800, 0, 0, 0], // 力量超出目标 800，可搬
+      plan: plan4(["strength", "intelligence", "luck", "endurance"], [0, 300, 0, 0]),
       autoReset: true,
+      minPoints: 1,
     });
     expect("error" in r && r.error).toBe("__NEED_RESET__");
   });
 
-  it("目标值无效时报错", () => {
-    const r = planAllocation({ ...base, unspent: 100, targets: null });
-    expect("error" in r).toBe(true);
+  it("需要搬运但没开洗点 → 跳过并说明", () => {
+    const r = planStatAllocation({
+      mode: "target",
+      unspent: 100,
+      invested: [800, 0, 0, 0],
+      plan: plan4(["strength", "intelligence", "luck", "endurance"], [0, 300, 0, 0]),
+      autoReset: false,
+      minPoints: 1,
+    });
+    expect("skip" in r && r.skip).toContain("自动洗点搬运");
   });
 });
 
-/* ==================== 装备分档 ==================== */
+/* ==================== 自动卖装备 ==================== */
 
-describe("bucketOf（装备分档）", () => {
-  // 阶梯：common(0) uncommon(1) fine(2) rare(3) epic(4) legendary(5) mythic(6) exotic(7) arcane(8)
-  const LEGENDARY = 5;
+describe("bucketOf（装备分档：两个勾选集合）", () => {
+  const SELL = new Set(["common", "uncommon", "fine", "rare", "epic"]);
+  const NONE = new Set<string>();
+  const DISMANTLE = new Set(["legendary", "mythic", "exotic"]);
 
-  it("低于阈值 → 卖", () => {
+  it("勾了「直接卖」的品质才卖，没勾的保留", () => {
     for (const r of ["common", "uncommon", "fine", "rare", "epic"]) {
-      expect(bucketOf(r, LEGENDARY, -1), r).toBe("sell");
+      expect(bucketOf(r, SELL, NONE), r).toBe("sell");
     }
-  });
-
-  it("达到阈值且未开分解 → 保留", () => {
     for (const r of ["legendary", "mythic", "exotic", "arcane"]) {
-      expect(bucketOf(r, LEGENDARY, -1), r).toBe("keep");
+      expect(bucketOf(r, SELL, NONE), r).toBe("keep");
     }
   });
 
-  it("★ 只有传说/神话/奇异可分解；奥秘落在分解档也必须保留（否则等于凭空销毁）", () => {
-    // 分解到 exotic(7)：传说、神话、奇异可分解
-    expect(bucketOf("legendary", LEGENDARY, 7)).toBe("dismantle");
-    expect(bucketOf("mythic", LEGENDARY, 7)).toBe("dismantle");
-    expect(bucketOf("exotic", LEGENDARY, 7)).toBe("dismantle");
-    // 奥秘(8) 超出分解上限 → 保留
-    expect(bucketOf("arcane", LEGENDARY, 7)).toBe("keep");
+  it("★ 分解优先于出售，但只对「可分解」的档位生效", () => {
+    expect(bucketOf("legendary", SELL, DISMANTLE)).toBe("dismantle");
+    expect(bucketOf("exotic", SELL, DISMANTLE)).toBe("dismantle");
+    // 奥秘游戏不允许分解 → 即使两边都勾了，也按出售处理
+    expect(bucketOf("arcane", new Set(["arcane"]), new Set(["arcane"]))).toBe("sell");
   });
 
-  it("分解上限低于出售阈值时等价于不分解", () => {
-    expect(bucketOf("legendary", LEGENDARY, LEGENDARY - 1)).toBe("keep");
-  });
-
-  it("未知稀有度一律保留（安全侧）", () => {
-    expect(bucketOf("unknown", LEGENDARY, 7)).toBe("keep");
-    expect(bucketOf(undefined, LEGENDARY, 7)).toBe("keep");
-    expect(bucketOf(null, LEGENDARY, -1)).toBe("keep");
-  });
-
-  it("把出售阈值调到最低时不卖任何东西", () => {
+  it("两个集合都没勾 → 全部保留", () => {
     for (const r of ["common", "legendary", "arcane"]) {
-      expect(bucketOf(r, 0, -1), r).toBe("keep");
+      expect(bucketOf(r, NONE, NONE), r).toBe("keep");
     }
+  });
+
+  it("不认识的稀有度一律保留（不猜、不误卖）", () => {
+    expect(bucketOf("unknown", SELL, DISMANTLE)).toBe("keep");
+    expect(bucketOf(undefined, SELL, DISMANTLE)).toBe("keep");
+    expect(bucketOf(null, SELL, DISMANTLE)).toBe("keep");
+    expect(bucketOf("", SELL, DISMANTLE)).toBe("keep");
+  });
+});
+
+/* ==================== 自动专精献祭：保护高稀有度 ==================== */
+
+describe("sacrificedRarities（献祭哪些档位）", () => {
+  it("★ 默认保护传说及以上", () => {
+    expect(sacrificedRarities("protectLegendary", [])).toEqual(["common", "uncommon", "fine", "rare", "epic"]);
+  });
+
+  it("三种预设 + 自选", () => {
+    expect(sacrificedRarities("all", [])).toHaveLength(9);
+    expect(sacrificedRarities("protectExotic", [])).toEqual([
+      "common",
+      "uncommon",
+      "fine",
+      "rare",
+      "epic",
+      "legendary",
+      "mythic",
+    ]);
+    expect(sacrificedRarities("custom", ["exotic", "common", "nope"])).toEqual(["common", "exotic"]);
+  });
+
+  it("模式认不出时退回默认（保护传说及以上），自选为空时什么都不献", () => {
+    expect(sacrificedRarities("bogus", [])).toEqual(["common", "uncommon", "fine", "rare", "epic"]);
+    expect(sacrificedRarities("custom", [])).toEqual([]);
+    expect(sacrificedRarities(undefined, [])).toEqual(["common", "uncommon", "fine", "rare", "epic"]);
   });
 });
 

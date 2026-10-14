@@ -66,6 +66,27 @@ export type OrderField = ConfigFieldBase & {
 };
 
 /**
+ * 有序 + 带数值的列表：每一项都有一个数字，顺序也有意义。
+ *
+ * 用途（自动加点）：四项属性既要排「先加谁」，又要写「目标值 / 配比权重」。
+ * 旧版把数值写成 "2:3:0:1" 这种**按固定位置解释**的字符串 ——
+ * 顺序写死在代码里（力量:智力:运气:耐力），用户既改不了顺序，写错顺序还不会报错。
+ *
+ * 值形如 `[{ key: "intelligence", value: 2000 }, …]`：顺序 = 数组顺序。
+ * 清单里的候选项**一定都会出现**（缺的补在末尾、值 0），这样四项属性不会被静默漏掉。
+ */
+export type OrderNumberField = ConfigFieldBase & {
+  type: "order-number";
+  default: { key: string; value: number }[];
+  options: { value: string; label: string; hint?: string }[];
+  /** 数值单位（界面提示用，例如「点」「权重」） */
+  unit?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+};
+
+/**
  * 模板：一段带 {变量} 占位符的文本。
  *
  * 与 textarea 的区别在前端：模板会额外渲染「可插入的变量按钮」与实时预览，
@@ -91,6 +112,7 @@ export type ConfigField =
   | SelectField
   | MultiSelectField
   | OrderField
+  | OrderNumberField
   | TemplateField;
 
 export type ConfigValues = Record<string, unknown>;
@@ -176,6 +198,67 @@ export function defaultsFromSchema(schema: ConfigField[]): ConfigValues {
 /* ---------- 配置合并与校验 ---------- */
 
 export type ConfigIssue = { key: string; message: string; value: unknown };
+
+/** 该字段的数值边界（默认 0 ~ 1e9 的整数） */
+function clampValue(v: unknown, min: number | undefined, max: number | undefined): number | null {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return null;
+  const lo = min ?? 0;
+  const hi = max ?? 1_000_000_000;
+  return Math.round(Math.min(hi, Math.max(lo, n)));
+}
+
+/**
+ * 把「有序 + 带数值」的原始值收敛成合法数组（resolveConfig 与 validateConfigPatch 共用）。
+ *
+ * 规则：
+ *  · 只认清单里的 key，重复的只留第一次出现的那个；
+ *  · 顺序 = 原始顺序；**清单里缺的项补在末尾（值 0）**，保证不会静默漏掉某一项；
+ *  · 数值取整并夹到 [min, max]；非法数值按 0 处理。
+ * 形态完全无法解析时返回 null。
+ */
+export function normalizeOrderNumber(
+  value: unknown,
+  allowed: string[],
+  bounds: { min?: number; max?: number },
+  fallback: { key: string; value: number }[],
+): { list: { key: string; value: number }[]; dropped: string[] } | null {
+  let raw: { key: string; value: unknown }[] | null = null;
+
+  if (Array.isArray(value)) {
+    raw = value.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const rec = item as { key?: unknown; value?: unknown };
+      return typeof rec.key === "string" ? [{ key: rec.key, value: rec.value }] : [];
+    });
+  } else if (value && typeof value === "object") {
+    // 兼容「对象形式」的历史写法：{ intelligence: 3, luck: 1 }
+    raw = Object.entries(value as Record<string, unknown>).map(([key, v]) => ({ key, value: v }));
+  }
+  if (raw === null) return null;
+
+  const allowedSet = new Set(allowed);
+  const list: { key: string; value: number }[] = [];
+  const dropped: string[] = [];
+
+  for (const item of raw) {
+    if (!allowedSet.has(item.key)) {
+      if (!dropped.includes(item.key)) dropped.push(item.key);
+      continue;
+    }
+    if (list.some((x) => x.key === item.key)) continue; // 重复的只留第一次
+    list.push({ key: item.key, value: clampValue(item.value, bounds.min, bounds.max) ?? 0 });
+  }
+
+  // 清单里缺的补在末尾（值取默认里的值，没有则 0）—— 四项属性永远都在列表里
+  for (const key of allowed) {
+    if (list.some((x) => x.key === key)) continue;
+    const d = fallback.find((x) => x.key === key);
+    list.push({ key, value: clampValue(d?.value, bounds.min, bounds.max) ?? 0 });
+  }
+
+  return { list, dropped };
+}
 
 /**
  * 把「有序列表」的原始值收敛成 id 数组（resolveConfig 与 validateConfigPatch 共用）。
@@ -311,6 +394,28 @@ export function resolveModuleConfig(
         merged[field.key] = parsed.list;
         break;
       }
+      case "order-number": {
+        const parsed = normalizeOrderNumber(
+          raw,
+          field.options.map((o) => o.value),
+          { min: field.min, max: field.max },
+          field.default,
+        );
+        if (!parsed) {
+          issues.push({ key: field.key, message: "应为列表", value: raw });
+          merged[field.key] = field.default;
+          break;
+        }
+        if (parsed.dropped.length) {
+          issues.push({
+            key: field.key,
+            message: `已忽略不再支持的选项：${parsed.dropped.join("、")}`,
+            value: parsed.dropped,
+          });
+        }
+        merged[field.key] = parsed.list;
+        break;
+      }
     }
   }
 
@@ -430,6 +535,24 @@ export function validateConfigPatch(
           break;
         }
         // ★ 保留用户给的顺序 —— 顺序就是这个配置本身，不能像 multi-select 那样按定义顺序重排
+        out[k] = parsed.list;
+        break;
+      }
+      case "order-number": {
+        const parsed = normalizeOrderNumber(
+          v,
+          field.options.map((o) => o.value),
+          { min: field.min, max: field.max },
+          field.default,
+        );
+        if (!parsed) {
+          errors.push({ key: k, message: "应为列表", value: v });
+          break;
+        }
+        if (parsed.dropped.length) {
+          errors.push({ key: k, message: `不支持的选项：${parsed.dropped.join("、")}`, value: parsed.dropped });
+          break;
+        }
         out[k] = parsed.list;
         break;
       }

@@ -7,40 +7,38 @@
 //    ★ 四个字段必须**全部出现**（可为 0），缺字段会被服务端拒绝
 //  - POST /api/player/stats/reset 洗点（会消耗资源，默认不允许）
 //
-// 三种策略（与旧版行为一致）：
-//   priority 全部点数投入主属性
-//   ratio    按权重分摊，余数给力量
-//   target   按目标值缺口补齐；点数不够时可（可选）洗点搬运
+// 三种策略：
+//   priority 全部点数投入**顺序里的第一项**
+//   ratio    按权重分摊（权重就是列表里的数字），余数给顺序的最后一项
+//   target   按目标值缺口补齐；点数不够时**按用户排的顺序**依次填（可洗点搬运）
+//
+// ★ 顺序由用户决定（配置里的 `statPlan`：有序 + 带数值的列表）。
+//   旧版是 "2:3:0:1" 这种**按固定位置解释**的字符串，顺序写死在代码里
+//   （力量:智力:运气:耐力），用户既改不了「先加谁」，写错顺序也不会报错 ——
+//   真踩过：`Math.max(0, STAT_KEYS.indexOf(x)) || 1` 把「力量」静默换成「智力」。
 import { type ModuleDefinition } from "../types.ts";
 import { STAT_KEYS, STAT_LABELS, type StatKey } from "../shared/rarity.ts";
 
-export type Ratio = Record<StatKey, number>;
+/** 配置里的「属性顺序 + 数值」一项 */
+export type StatPlanItem = { key: string; value: number };
 
-/** 解析 "2:3:0:1" → [2,3,0,1]（顺序固定为 力量:智力:运气:耐力） */
-export function parseRatio(input: unknown): number[] | null {
-  const parts = String(input ?? "")
-    .split(/[:：,，\s]+/)
-    .map((x) => x.trim())
-    .filter((x) => x !== "");
-  if (parts.length !== 4) return null;
-  const nums = parts.map((x) => Number(x));
-  if (nums.some((n) => !Number.isFinite(n) || n < 0)) return null;
-  if (nums.every((n) => n === 0)) return null;
-  return nums as number[];
-}
+/** 归一化配置里的 statPlan：只认四维、按配置顺序保留、缺的补 0 */
+export function readStatPlan(input: unknown): { key: StatKey; value: number }[] {
+  const raw = Array.isArray(input) ? input : [];
+  const seen = new Set<string>();
+  const out: { key: StatKey; value: number }[] = [];
 
-export function parseTargets(input: unknown): number[] | null {
-  const r = parseRatio(input);
-  // 目标值允许全 0（表示不加点）
-  if (r) return r;
-  const parts = String(input ?? "")
-    .split(/[:：,，\s]+/)
-    .map((x) => x.trim())
-    .filter((x) => x !== "");
-  if (parts.length !== 4) return null;
-  const nums = parts.map((x) => Number(x));
-  if (nums.some((n) => !Number.isFinite(n) || n < 0)) return null;
-  return nums as number[];
+  for (const item of raw) {
+    const key = String((item as { key?: unknown })?.key ?? "");
+    if (!(STAT_KEYS as readonly string[]).includes(key) || seen.has(key)) continue;
+    seen.add(key);
+    const v = Number((item as { value?: unknown })?.value);
+    out.push({ key: key as StatKey, value: Number.isFinite(v) && v > 0 ? Math.floor(v) : 0 });
+  }
+  for (const key of STAT_KEYS) {
+    if (!seen.has(key)) out.push({ key, value: 0 });
+  }
+  return out;
 }
 
 /** 读四维已投入（缺字段按 0） */
@@ -50,19 +48,6 @@ export function investedOf(base: unknown): number[] {
     const v = Number(b[k]);
     return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
   });
-}
-
-/**
- * 配置里的主属性名 → STAT_KEYS 下标；名字不认识时退回「智力」。
- *
- * ★ 单独抽成函数并加测试，是因为这里踩过坑：
- *   原写法 `Math.max(0, STAT_KEYS.indexOf(x)) || 1` —— 下标 **0 是 falsy**，
- *   于是用户选「力量」（STAT_KEYS[0]）会被静默改成下标 1 的「智力」：
- *   界面上勾了力量，点数全加到智力上，而且没有任何报错。
- */
-export function statIndex(primary: unknown): number {
-  const idx = (STAT_KEYS as readonly string[]).indexOf(String(primary));
-  return idx >= 0 ? idx : 1;
 }
 
 export type AllocationPlan = {
@@ -75,54 +60,61 @@ export type AllocationPlan = {
 /**
  * 算出本轮投放方案（纯函数，便于单测）。
  *
- * @param mode      策略
+ * @param mode      策略：priority / ratio / target
  * @param unspent   可用点数
- * @param invested  四维已投入
- * @param ratio     权重（ratio / priority 用）
- * @param targets   目标值（target 用）
- * @param primary   主属性下标（priority 用）
+ * @param invested  四维已投入（与 STAT_KEYS 同序）
+ * @param plan      属性顺序 + 数值（顺序 = 用户排的先后）
  * @param autoReset 是否允许洗点搬运
  * @param minPoints 门槛
  */
-export function planAllocation(input: {
+export function planStatAllocation(input: {
   mode: string;
   unspent: number;
   invested: number[];
-  ratio: number[] | null;
-  targets: number[] | null;
-  primary: number;
+  plan: { key: StatKey; value: number }[];
   autoReset: boolean;
   minPoints: number;
 }): AllocationPlan | { error: string } | { skip: string } {
-  const { mode, unspent, invested, ratio, targets, primary, autoReset, minPoints } = input;
+  const { mode, unspent, invested, plan, autoReset, minPoints } = input;
   const amounts = [0, 0, 0, 0];
   const notes: string[] = [];
 
   if (unspent < minPoints) return { skip: `可用点数 ${unspent} 未达门槛（${minPoints}）` };
+  if (!plan.length) return { error: "属性列表为空" };
+
+  /** 用户排出来的顺序（下标 → STAT_KEYS 下标） */
+  const order = plan.map((p) => STAT_KEYS.indexOf(p.key));
+  const valueAt = (statIdx: number) => plan.find((p) => STAT_KEYS.indexOf(p.key) === statIdx)?.value ?? 0;
 
   if (mode === "priority") {
-    amounts[primary] = unspent;
+    // 全部投给顺序里的第一项（旧版是单独一个「主属性」下拉框，现在顺序本身就是它）
+    amounts[order[0]!] = unspent;
   } else if (mode === "ratio") {
-    if (!ratio) return { error: "配比配置无效" };
-    const total = ratio.reduce((a, b) => a + b, 0);
-    if (total <= 0) return { error: "配比全为 0" };
-    let left = unspent;
-    // 最后一维吃掉舍入余数，保证 sum(amounts) === unspent。
-    // 这是刻意与旧版保持一致的分配顺序（从力量到耐力依次取 floor 份额）。
-    STAT_KEYS.forEach((_k, i) => {
-      const isLast = i === STAT_KEYS.length - 1;
-      const share = isLast ? left : Math.floor((unspent * (ratio[i] ?? 0)) / total);
-      amounts[i] = Math.max(0, share);
-      left -= amounts[i] as number;
-    });
-    // 理论上 left 此时为 0（最后一维已吃掉全部剩余）；防御性兜底
-    if (left > 0) amounts[STAT_KEYS.length - 1] = (amounts[STAT_KEYS.length - 1] as number) + left;
-  } else if (mode === "target") {
-    if (!targets) return { error: "目标值配置无效" };
+    const weights = plan.map((p) => Math.max(0, Math.floor(p.value)));
+    const total = weights.reduce((a, b) => a + b, 0);
+    if (total <= 0) return { error: "配比全为 0（请在属性列表里填权重）" };
 
-    const missing = targets.map((t, i) => Math.max(0, Math.floor(t) - (invested[i] ?? 0)));
+    let left = unspent;
+    // ★ 按**用户排的顺序**依次取整，余数给顺序里的最后一项（既保证 sum=unspent，也可预期）
+    order.forEach((statIdx, pos) => {
+      const isLast = pos === order.length - 1;
+      const share = isLast ? left : Math.floor((unspent * (weights[pos] ?? 0)) / total);
+      amounts[statIdx] = Math.max(0, share);
+      left -= amounts[statIdx] as number;
+    });
+    if (left > 0) {
+      const last = order[order.length - 1]!;
+      amounts[last] = (amounts[last] as number) + left;
+    }
+    notes.push(
+      `配比 ${plan.map((p) => `${STAT_LABELS[p.key]}${Math.max(0, Math.floor(p.value))}`).join(":")}` +
+        `（余数给 ${STAT_LABELS[plan[plan.length - 1]!.key]}）`,
+    );
+  } else if (mode === "target") {
+    const missing = new Array(4).fill(0) as number[];
+    for (let i = 0; i < 4; i++) missing[i] = Math.max(0, valueAt(i) - (invested[i] ?? 0));
     const missingTotal = missing.reduce((a, b) => a + b, 0);
-    const surplus = invested.reduce((a, have, i) => a + Math.max(0, have - Math.floor(targets[i] ?? 0)), 0);
+    const surplus = invested.reduce((a, have, i) => a + Math.max(0, have - valueAt(i)), 0);
 
     if (missingTotal === 0) return { skip: "已全部达到目标值" };
 
@@ -139,14 +131,15 @@ export function planAllocation(input: {
       if (canRecover && !autoReset) {
         return { skip: `需搬运 ${surplus} 点才能补齐目标，未开启「自动洗点搬运」，点数保留` };
       }
-      // 无法补齐：按 力量→智力→运气→耐力 顺序尽量填，不超额
+      // 无法补齐：**按用户排的顺序**依次填，不超额（旧版写死 力量→智力→运气→耐力）
       let pool = unspent;
-      missing.forEach((m, i) => {
-        const put = Math.min(pool, m);
-        amounts[i] = put;
+      for (const statIdx of order) {
+        const put = Math.min(pool, missing[statIdx] ?? 0);
+        amounts[statIdx] = put;
         pool -= put;
-      });
-      if (pool > 0) notes.push(`目标未达成（缺 ${missingTotal - unspent} 点），本次先投 ${unspent} 点`);
+        if (pool <= 0) break;
+      }
+      notes.push(`目标未达成（缺 ${missingTotal - unspent} 点），本次按顺序先投 ${unspent} 点`);
     }
   } else {
     return { error: `未知策略：${mode}` };
@@ -162,15 +155,18 @@ export function planAllocation(input: {
 const definition: ModuleDefinition = {
   id: "auto-stats",
   name: "自动加点",
-  version: "2.0.0",
+  version: "3.0.0",
   description:
-    "有可用属性点时自动分配。支持「主属性优先」「按比例」「加到目标值」三种策略；目标模式下点数已达标的属性不再动，避免浪费。",
+    "有可用属性点时自动分配。属性顺序由你拖动决定，每种策略都按这个顺序执行：「全部投给第一项」「按配比分摊（余数给最后一项）」「按目标值补齐（点数不够时按顺序依次填）」。",
   defaultEnabled: false,
   defaultConfig: {
-    mode: "priority",
-    primary: "intelligence",
-    ratio: "2:3:0:1",
-    targets: "0:2000:0:100",
+    mode: "target",
+    statPlan: [
+      { key: "intelligence", value: 2000 },
+      { key: "endurance", value: 100 },
+      { key: "strength", value: 0 },
+      { key: "luck", value: 0 },
+    ],
     autoReset: false,
     minPoints: 1,
   },
@@ -179,35 +175,34 @@ const definition: ModuleDefinition = {
       key: "mode",
       type: "select",
       label: "加点策略",
-      default: "priority",
+      hint:
+        "三种策略都用下面那份「属性顺序 + 数值」，只是数字的含义不同：\n" +
+        "到目标值 = 数字是各属性的目标值；按配比 = 数字是权重；全部给第一项 = 数字忽略。",
+      default: "target",
       options: [
-        { value: "priority", label: "主属性优先（全部投给主属性）" },
-        { value: "ratio", label: "按比例分摊" },
-        { value: "target", label: "加到目标值" },
+        { value: "target", label: "到目标值（数字 = 目标值）" },
+        { value: "ratio", label: "按配比（数字 = 权重）" },
+        { value: "priority", label: "全部投给第一项" },
       ],
     },
     {
-      key: "primary",
-      type: "select",
-      label: "主属性（priority 模式）",
-      default: "intelligence",
+      key: "statPlan",
+      type: "order-number",
+      label: "属性顺序与数值",
+      hint:
+        "拖动或用 ↑ ↓ 调整顺序：到目标值模式下顺序决定「点数不够时先补谁」，按配比模式下余数给最后一项，" +
+        "「全部给第一项」模式下顺序第一项就是主属性。",
+      default: [
+        { key: "intelligence", value: 2000 },
+        { key: "endurance", value: 100 },
+        { key: "strength", value: 0 },
+        { key: "luck", value: 0 },
+      ],
       options: STAT_KEYS.map((k) => ({ value: k, label: STAT_LABELS[k] })),
-    },
-    {
-      key: "ratio",
-      type: "string",
-      label: "配比（ratio 模式）",
-      hint: "四项按 力量:智力:运气:耐力 的顺序，用冒号分隔，例如 2:3:0:1",
-      default: "2:3:0:1",
-      placeholder: "2:3:0:1",
-    },
-    {
-      key: "targets",
-      type: "string",
-      label: "目标值（target 模式）",
-      hint: "四项按 力量:智力:运气:耐力 的顺序。某位写 0 表示该属性不加",
-      default: "0:2000:0:100",
-      placeholder: "0:2000:0:100",
+      unit: "值",
+      min: 0,
+      max: 10_000_000,
+      step: 1,
     },
     {
       key: "autoReset",
@@ -263,17 +258,15 @@ const definition: ModuleDefinition = {
           return;
         }
 
-        const mode = String(ctx.config.mode ?? "priority");
-        const primaryIdx = statIndex(ctx.config.primary);
+        const mode = String(ctx.config.mode ?? "target");
+        const statPlan = readStatPlan(ctx.config.statPlan);
 
         const callPlan = (invested: number[], spendable: number) =>
-          planAllocation({
+          planStatAllocation({
             mode,
             unspent: spendable,
             invested,
-            ratio: parseRatio(ctx.config.ratio),
-            targets: parseTargets(ctx.config.targets),
-            primary: primaryIdx,
+            plan: statPlan,
             autoReset: Boolean(ctx.config.autoReset),
             minPoints,
           });

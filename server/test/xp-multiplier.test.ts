@@ -462,14 +462,33 @@ describe("buildStatusPanel · 保底进度", () => {
     expect(panel.pity).toEqual([]);
   });
 
-  it("数据缺字段 / 阈值非法时跳过该项，不产生 NaN", () => {
+  it("★ 当前条件无硬保底时仍然显示这一行（只说已连空多少，不再整行藏掉）", () => {
     const panel = buildStatusPanel({
       ...base,
-      statistics: { pity: { arcane: {}, exotic: { hardPityCasts: -1, currentDryCasts: 5 } } },
+      statistics: { pity: { arcane: {}, exotic: { hardPityCasts: null, currentDryCasts: 137 } } },
       chests: { chests: [{ chestId: "x", pity: { hardPityOpens: 0 } }] },
       lighthouse: { player: {} },
     });
-    expect(panel.pity).toEqual([]);
+    // 旧版这里会把两档都藏掉，用户看到的现象是「奇异鱼怎么没被监控」
+    expect(panel.pity).toHaveLength(2);
+    const exotic = panel.pity.find((p) => p.key === "exotic");
+    expect(exotic?.hardPity).toBe(false);
+    expect(exotic?.dry).toBe(137);
+    expect(exotic?.remaining).toBeNull();
+    expect(exotic?.percent).toBeNull();
+    expect(exotic?.ready).toBe(false);
+    expect(panel.pity.find((p) => p.key === "arcane")?.hardPity).toBe(false);
+  });
+
+  it("硬保底阈值非法（负数）同样按「无硬保底」显示，不产生 NaN", () => {
+    const panel = buildStatusPanel({
+      ...base,
+      statistics: { pity: { arcane: { hardPityCasts: -1, currentDryCasts: 5 } } },
+    });
+    const arcane = panel.pity.find((p) => p.key === "arcane");
+    expect(arcane?.hardPity).toBe(false);
+    expect(arcane?.dry).toBe(5);
+    expect(Number.isNaN(arcane?.percent as number)).toBe(false);
   });
 
   it("多个宝箱时取第一个有保底的", () => {

@@ -30,6 +30,7 @@ import { createNotifyRouter } from "./api/routes/notify-routes.ts";
 import { parseGlobalProxy } from "./game/proxy.ts";
 import { assertRegistryValid } from "./modules/registry.ts";
 import { bootstrapModules } from "./modules/bootstrap.ts";
+import { upgradeModuleConfigs } from "./modules/config-upgrades.ts";
 import { createAuthRouter } from "./api/routes/auth.ts";
 import { createAccountsRouter } from "./api/routes/accounts.ts";
 import { createProxiesRouter } from "./api/routes/proxy-routes.ts";
@@ -106,6 +107,21 @@ function buildContext(): Ctx {
   const repos = createRepos(db);
   // 上次进程被杀留下的 running 状态是脏数据，启动时复位
   repos.accounts.resetAllStatuses();
+
+  // 一次性配置升级（旧键换算成新键并删除旧键）：必须早于任何账号运行时启动，
+  // 否则模块会先按「旧键 + 兼容分支」跑一轮
+  try {
+    const upgraded = upgradeModuleConfigs(repos);
+    if (upgraded.changed.length) {
+      logger.info(
+        "配置升级",
+        `已把 ${upgraded.changed.length} 份旧配置换算为新格式：${upgraded.changed.slice(0, 5).join("、")}` +
+          (upgraded.changed.length > 5 ? " 等" : ""),
+      );
+    }
+  } catch (err) {
+    logger.warn("配置升级", `跳过：${err instanceof Error ? err.message : String(err)}`);
+  }
 
   const vault = new CredentialVault(env.masterKey, logger);
   const limiters = new Limiters();

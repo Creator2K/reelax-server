@@ -443,7 +443,9 @@ function PitySection({ list }: { list: PityProgress[] }) {
     <div className="grid gap-2.5 sm:grid-cols-2">
       {list.map((p) => {
         // 临近保底（还剩 10% 以内）用警示色，出货前一眼可见
-        const near = p.remaining > 0 && p.remaining <= Math.max(1, Math.round(p.total * 0.1));
+        const total = p.total ?? 0;
+        const remaining = p.remaining ?? 0;
+        const near = p.hardPity && remaining > 0 && remaining <= Math.max(1, Math.round(total * 0.1));
         const tone = p.ready ? "success" : near ? "warning" : "neutral";
         return (
           <div
@@ -459,24 +461,35 @@ function PitySection({ list }: { list: PityProgress[] }) {
           >
             <div className="flex items-center justify-between gap-2">
               <span className="truncate text-xs font-medium">{p.label}</span>
-              {p.ready ? (
+              {!p.hardPity ? (
+                <span className="text-muted-foreground shrink-0 text-[11px]">当前条件无硬保底</span>
+              ) : p.ready ? (
                 <Badge variant="online" className="gap-1">
                   <IconRefresh className="size-3" />
                   下一杆必出
                 </Badge>
               ) : (
                 <span className="mono-num text-muted-foreground shrink-0 text-[11px]">
-                  还差 <span className="text-foreground font-semibold">{p.remaining}</span>
+                  还差 <span className="text-foreground font-semibold">{remaining}</span>
                 </span>
               )}
             </div>
 
             <div className="mono-num text-muted-foreground mt-1.5 text-[11px]">
-              已累计 <span className="text-foreground">{fmtNum(p.dry)}</span> / {fmtNum(p.total)}
-              <span className="ml-1.5 opacity-70">({p.percent}%)</span>
+              {p.hardPity ? (
+                <>
+                  已累计 <span className="text-foreground">{fmtNum(p.dry)}</span> / {fmtNum(total)}
+                  <span className="ml-1.5 opacity-70">({p.percent}%)</span>
+                </>
+              ) : (
+                <>
+                  已连续未出 <span className="text-foreground">{fmtNum(p.dry)}</span> 杆
+                  <span className="ml-1.5 opacity-70">（换鱼饵 / 天气等条件后会重新给保底）</span>
+                </>
+              )}
             </div>
 
-            <ProgressBar className="mt-2" value={p.dry} max={p.total} tone={tone} />
+            {p.hardPity ? <ProgressBar className="mt-2" value={p.dry} max={total} tone={tone} /> : null}
           </div>
         );
       })}

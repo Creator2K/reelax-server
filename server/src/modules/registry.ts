@@ -18,6 +18,7 @@ import autoBait from "./auto-bait/index.ts";
 import autoTournament from "./auto-tournament/index.ts";
 import autoWorldBoss from "./auto-world-boss/index.ts";
 import autoSellGear from "./auto-sell-gear/index.ts";
+import autoSellFish from "./auto-sell-fish/index.ts";
 import autoLoadout from "./auto-loadout/index.ts";
 import autoXpBuff from "./auto-xp-buff/index.ts";
 import dailyDigest from "./daily-digest/index.ts";
@@ -39,6 +40,7 @@ export const MODULES: ModuleDefinition[] = [
   autoTournament,
   autoWorldBoss,
   autoSellGear,
+  autoSellFish,
   autoLoadout,
   autoXpBuff,
   dailyDigest,

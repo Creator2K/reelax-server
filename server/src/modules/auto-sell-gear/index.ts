@@ -1,4 +1,4 @@
-// 自动卖装备：按稀有度阈值处理背包装备
+// 自动卖装备：按稀有度**勾选**处理背包装备
 //
 // 协议：
 //  - GET  /api/inventory/gear?cursor=  → { gear: [{ id, name, rarity, quality, slot,
@@ -6,55 +6,41 @@
 //  - POST /api/inventory/gear/sell       { gearIds } → { goldEarned, player, ... }
 //  - POST /api/inventory/gear/dismantle  { gearIds } → 装备结晶（游戏只允许 传说/神话/奇异）
 //
-// ★ 分档是纯阈值判断（不做「保留每部位最优」的复杂排序）：
-//     稀有度 < sellBelow        → 卖
-//     稀有度 在 [sellBelow, dismantleUpTo] 且可分解 → 分解
-//     其余                      → 保留
-//   这样规则可预测：用户看一眼配置就知道会卖掉什么。
+// ★ 分档是「两个勾选集合」（v3 起）：
+//     稀有度 ∈ 分解集合（且游戏允许分解） → 分解
+//     稀有度 ∈ 出售集合                   → 卖
+//     其余                                → 保留
+//   旧版是「低于 X 档就卖」这种阈值下拉，把一个集合压成了一个点：
+//   想「普通/精良卖、稀有留着、史诗又卖」这种组合根本表达不出来，
+//   而且阈值是「以下全包含」，调一档会连带影响它下面所有档，用户很难预期。
 //
 // 安全底线（任何模式下都不动）：
 //   已穿戴（equippedSlot）/ 已锁定（isLocked）/ 已挂市场（marketOrderId）
 // 另有 maxPerRun 限流与 dryRun 干跑，避免一次误操作清空背包。
 import { type ModuleDefinition } from "../types.ts";
+import { DISMANTLABLE_RARITIES, rarityCheckboxOptions, rarityLabel, rarityRank } from "../shared/rarity.ts";
 
-/** 游戏只允许分解这三档 */
-const DISMANTLABLE = ["legendary", "mythic", "exotic"];
-const DISMANTLE_OFF = "";
+const gearRarityRank = rarityRank;
+const rarityOptions = rarityCheckboxOptions;
 
-/** 装备稀有度阶梯（与游戏一致，低 → 高） */
-const GEAR_RARITIES = ["common", "uncommon", "fine", "rare", "epic", "legendary", "mythic", "exotic", "arcane"];
-const GEAR_RARITY_LABELS: Record<string, string> = {
-  common: "普通",
-  uncommon: "罕见",
-  fine: "精良",
-  rare: "稀有",
-  epic: "史诗",
-  legendary: "传说",
-  mythic: "神话",
-  exotic: "奇异",
-  arcane: "奥秘",
-};
+/** 配置里的多选值（已由 resolveModuleConfig 归一化成数组，这里只做防御） */
+const asStringArray = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)) : []);
 
-const gearRarityRank = (r: unknown): number => GEAR_RARITIES.indexOf(String(r ?? ""));
-const rarityLabel = (r: unknown): string => GEAR_RARITY_LABELS[String(r ?? "")] ?? String(r ?? "未知");
-const rarityOptions = GEAR_RARITIES.map((r, i) => ({ value: r, label: `${i + 1}级·${GEAR_RARITY_LABELS[r]}` }));
-
-/** 纯阈值分档：sell / dismantle / keep */
+/**
+ * 纯集合分档：dismantle / sell / keep。
+ *
+ * 分解优先于出售：同时勾了两边的档位走分解（分解拿结晶，比 NPC 回收值钱），
+ * 但只在游戏允许分解的档位上生效（传说 / 神话 / 奇异）。
+ */
 export function bucketOf(
   rarity: unknown,
-  sellBelowRank: number,
-  dismantleUpToRank: number,
+  sellRarities: ReadonlySet<string>,
+  dismantleRarities: ReadonlySet<string>,
 ): "sell" | "dismantle" | "keep" {
-  const rank = gearRarityRank(rarity);
-  if (rank < 0) return "keep";
-  if (rank < sellBelowRank) return "sell";
-  if (
-    dismantleUpToRank >= sellBelowRank &&
-    rank <= dismantleUpToRank &&
-    DISMANTLABLE.includes(String(rarity))
-  ) {
-    return "dismantle";
-  }
+  const r = String(rarity ?? "");
+  if (gearRarityRank(r) < 0) return "keep"; // 不认识的稀有度：不碰
+  if (dismantleRarities.has(r) && (DISMANTLABLE_RARITIES as readonly string[]).includes(r)) return "dismantle";
+  if (sellRarities.has(r)) return "sell";
   return "keep";
 }
 
@@ -76,33 +62,33 @@ async function fetchAllGear(api: { gearInventory: (cursor?: string) => Promise<a
 const definition: ModuleDefinition = {
   id: "auto-sell-gear",
   name: "自动卖装备",
-  version: "2.0.0",
+  version: "3.0.0",
   description:
-    "按稀有度阈值处理背包装备：低于设定档位的直接卖（NPC 回收），可选把更高一档分解成装备结晶（默认关闭）。已穿戴 / 已锁定 / 已挂市场的装备始终不动。建议第一次先开「干跑」看一天。",
+    "按稀有度勾选处理背包装备：勾了「直接卖」的品质卖给 NPC，勾了「分解」的品质分解成装备结晶（分解优先，且只有传说 / 神话 / 奇异可分解）。已穿戴 / 已锁定 / 已挂市场的装备始终不动。建议第一次先开「干跑」看一天。",
   defaultEnabled: false,
   defaultConfig: {
-    sellBelow: "legendary",
-    dismantleUpTo: DISMANTLE_OFF,
+    sellRarities: ["common", "uncommon", "fine", "rare", "epic"],
+    dismantleRarities: [],
     maxPerRun: 100,
     minIntervalMin: 10,
     dryRun: false,
   },
   configSchema: [
     {
-      key: "sellBelow",
-      type: "select",
-      label: "低于此稀有度：直接卖（NPC 回收）",
-      hint: "默认「传说」= 普通 / 罕见 / 精良 / 稀有 / 史诗 直接卖",
-      default: "legendary",
-      options: rarityOptions,
+      key: "sellRarities",
+      type: "multi-select",
+      label: "直接卖（NPC 回收）这些品质",
+      hint: "勾哪个卖哪个，不勾的保留。空着 = 不卖任何装备。",
+      default: ["common", "uncommon", "fine", "rare", "epic"],
+      options: rarityOptions(),
     },
     {
-      key: "dismantleUpTo",
-      type: "select",
-      label: "分解到（换装备结晶，默认关闭）",
-      hint: "从上面那一档起、到这个稀有度为止的装备拿去分解。游戏只允许分解 传说/神话/奇异，其它档位会自动保留（不会被卖掉）。",
-      default: DISMANTLE_OFF,
-      options: [{ value: DISMANTLE_OFF, label: "不分解（只卖）" }, ...rarityOptions],
+      key: "dismantleRarities",
+      type: "multi-select",
+      label: "这些品质拿去分解（换装备结晶）",
+      hint: "游戏只允许分解 传说 / 神话 / 奇异，所以这里只列这三档。同时勾了「直接卖」与「分解」时按分解处理。",
+      default: [],
+      options: rarityCheckboxOptions({ include: DISMANTLABLE_RARITIES }),
     },
     {
       key: "maxPerRun",
@@ -133,10 +119,9 @@ const definition: ModuleDefinition = {
   ],
 
   async onStart(ctx) {
-    const S = ctx.state as { running: boolean; lastIdle: string; lastSkipNote: string };
+    const S = ctx.state as { running: boolean; lastIdle: string };
     S.running = false;
     S.lastIdle = "";
-    S.lastSkipNote = "";
 
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
@@ -157,16 +142,19 @@ const definition: ModuleDefinition = {
         return;
       }
 
-      const sellRank = gearRarityRank(ctx.config.sellBelow);
-      const disRank = ctx.config.dismantleUpTo ? gearRarityRank(ctx.config.dismantleUpTo) : -1;
-      if (sellRank < 0) {
-        ctx.log.warn("卖装备", `出售阈值配置无效：「${String(ctx.config.sellBelow)}」`);
+      const sellSet = new Set(asStringArray(ctx.config.sellRarities).filter((r) => gearRarityRank(r) >= 0));
+      const dismantleSet = new Set(
+        asStringArray(ctx.config.dismantleRarities).filter((r) =>
+          (DISMANTLABLE_RARITIES as readonly string[]).includes(r),
+        ),
+      );
+      if (!sellSet.size && !dismantleSet.size) {
+        idle("没有勾选任何要处理（卖 / 分解）的品质");
         return;
       }
 
       const toSell: any[] = [];
       const toDismantle: any[] = [];
-      const skippedDismantle: any[] = [];
       let kept = 0;
 
       for (const item of gear) {
@@ -175,38 +163,16 @@ const definition: ModuleDefinition = {
           kept++;
           continue;
         }
-        const bucket = bucketOf(item.rarity, sellRank, disRank);
-        if (bucket === "sell") {
-          toSell.push(item);
-        } else if (bucket === "dismantle") {
-          toDismantle.push(item);
-        } else {
-          kept++;
-          // 落在分解档但游戏不允许分解（非传说/神话/奇异）→ 保留，并让原因可见
-          const rank = gearRarityRank(item.rarity);
-          if (disRank >= sellRank && rank >= sellRank && rank <= disRank) skippedDismantle.push(item);
-        }
+        const bucket = bucketOf(item.rarity, sellSet, dismantleSet);
+        if (bucket === "sell") toSell.push(item);
+        else if (bucket === "dismantle") toDismantle.push(item);
+        else kept++;
       }
 
       // 每轮上限：先满足出售，余额给分解
       const cap = Math.max(1, Number(ctx.config.maxPerRun) || 100);
       const sellNow = toSell.slice(0, cap);
       const dismantleNow = toDismantle.slice(0, Math.max(0, cap - sellNow.length));
-
-      if (skippedDismantle.length) {
-        const byRarity: Record<string, number> = {};
-        for (const i of skippedDismantle) {
-          byRarity[i.rarity] = (byRarity[i.rarity] ?? 0) + 1;
-        }
-        const text = Object.entries(byRarity)
-          .map(([r, n]) => `${label(r)}×${n}`)
-          .join("、");
-        const note = `${text} 落在分解档，但游戏只允许分解传说/神话/奇异，已保留`;
-        if (S.lastSkipNote !== note) {
-          S.lastSkipNote = note;
-          ctx.log.info("卖装备", note);
-        }
-      }
 
       if (!sellNow.length && !dismantleNow.length) {
         idle(`${trigger}：没有需要处理的装备（保留 ${kept} 件）`);
