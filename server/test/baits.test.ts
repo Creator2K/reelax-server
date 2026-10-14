@@ -5,6 +5,7 @@
 //   「每次检查都判定没饵 → 反复购买 200 个」，白花金币且日志刷屏。
 //   这类接口契约错误只能靠测试钉住。
 import { describe, expect, it } from "vitest";
+import { BAIT_TIERS_NOTE, baitOptions } from "../src/modules/shared/rarity.ts";
 import {
   baitDisplayName,
   baitPrice,
@@ -197,5 +198,27 @@ describe("金币不足 → 降级阶梯", () => {
     expect(needsCheaperBait({ code: "RATE_LIMITED", message: "请求过于频繁" })).toBe(false);
     expect(needsCheaperBait(new Error("请求超时（10000ms）"))).toBe(false);
     expect(needsCheaperBait(null)).toBe(false);
+  });
+});
+
+describe("baitOptions（下拉选项文案）", () => {
+  it("★ 选项只留「名称（价格）」——之前的长文案会把下拉框挤破", () => {
+    const opts = baitOptions();
+    expect(opts.find((o) => o.value === "bait_high")?.label).toBe("高级饵（200 金币）");
+    expect(opts.find((o) => o.value === "bait_basic")?.label).toBe("基础饵（免费）");
+    expect(opts.find((o) => o.value === "bait_supreme")?.label).toBe("顶级饵（1000 金币）");
+    for (const o of opts) expect(o.label.length).toBeLessThanOrEqual(12);
+  });
+
+  it("includeEmpty 时第一项是「不切换」", () => {
+    const opts = baitOptions({ includeEmpty: true, emptyLabel: "不切换（沿用平时）" });
+    expect(opts[0]).toEqual({ value: "", label: "不切换（沿用平时）" });
+    expect(opts).toHaveLength(6);
+  });
+
+  it("幸运 / 稀有度加成改在字段说明里给出（信息没丢）", () => {
+    expect(BAIT_TIERS_NOTE).toContain("幸运 500");
+    expect(BAIT_TIERS_NOTE).toContain("×1.25");
+    expect(BAIT_TIERS_NOTE).toContain("顶级饵 1000");
   });
 });

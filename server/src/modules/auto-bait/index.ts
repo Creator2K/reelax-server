@@ -20,7 +20,7 @@
 //   然后**继续用没有库存的高级饵去钓**。现在按单价从高到低逐级往下试，
 //   选到买得起 / 有库存的那一档换上；试过的档位 10 分钟冷却，避免重复刷失败。
 import { type ModuleDefinition } from "../types.ts";
-import { baitOptions, baitName } from "../shared/rarity.ts";
+import { baitOptions, baitName, BAIT_TIERS_NOTE } from "../shared/rarity.ts";
 import {
   baitDisplayName,
   decideRefill,
@@ -69,7 +69,7 @@ const definition: ModuleDefinition = {
       key: "personalCompetitionBait",
       type: "select",
       label: "个人赛期间用哪种饵",
-      hint: "已报名且比赛进行中 / 即将开赛时使用。比赛成绩看单杆质量，建议最高档。",
+      hint: `已报名且比赛进行中 / 即将开赛时使用。比赛成绩看单杆质量，建议最高档。\n${BAIT_TIERS_NOTE}`,
       default: "bait_supreme",
       options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（沿用平时）" }),
     },
@@ -77,7 +77,7 @@ const definition: ModuleDefinition = {
       key: "guildCompetitionBait",
       type: "select",
       label: "公会赛期间用哪种饵",
-      hint: "已报名公会赛且比赛进行中 / 即将开赛时使用。",
+      hint: `已报名公会赛且比赛进行中 / 即将开赛时使用。\n${BAIT_TIERS_NOTE}`,
       default: "bait_supreme",
       options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（沿用平时）" }),
     },
@@ -85,7 +85,7 @@ const definition: ModuleDefinition = {
       key: "goldenBait",
       type: "select",
       label: "金风期间用哪种饵",
-      hint: "金风（gilded_current）时鱼价值更高、经验打折，用高档饵提高稀有度通常更划算。默认不切换。",
+      hint: `金风（gilded_current）时鱼价值更高、经验打折，用高档饵提高稀有度通常更划算。默认不切换。\n${BAIT_TIERS_NOTE}`,
       default: "",
       options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（沿用平时）" }),
     },
@@ -93,7 +93,7 @@ const definition: ModuleDefinition = {
       key: "surgeBait",
       type: "select",
       label: "奥秘涌流期间用哪种饵",
-      hint: "涌流时经验倍率最高，用更好的饵提高稀有度更划算。",
+      hint: `涌流时经验倍率最高，用更好的饵提高稀有度更划算。\n${BAIT_TIERS_NOTE}`,
       default: "bait_high",
       options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（沿用平时）" }),
     },
@@ -101,7 +101,7 @@ const definition: ModuleDefinition = {
       key: "normalBait",
       type: "select",
       label: "平时用哪种饵",
-      hint: "没有比赛、也没有金风 / 涌流时使用。「不切换」= 保持游戏里当前选中的饵。",
+      hint: `没有比赛、也没有金风 / 涌流时使用。「不切换」= 保持游戏里当前选中的饵。\n${BAIT_TIERS_NOTE}`,
       default: "bait_medium",
       options: baitOptions({ includeEmpty: true, emptyLabel: "不切换（手动）" }),
     },

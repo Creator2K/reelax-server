@@ -242,7 +242,7 @@ describe("自动切图：「跟船队走」作为优先级的一项（端到端�
 
     await run();
     expect(travels(calls)).toEqual([]);
-    expect(log.debug.some((m) => m.includes("跟船队走") && m.includes("芦汐轻舟"))).toBe(true);
+    expect(log.info.some((m) => m.includes("跟船队走") && m.includes("芦汐轻舟"))).toBe(true);
   });
 
   it("★ 旧键 fleetMode 在运行时被忽略（换算只做一次，见 config-upgrades）", async () => {
@@ -274,7 +274,7 @@ describe("自动切图：「跟船队走」作为优先级的一项（端到端�
 
     await run();
     expect(travels(calls)).toEqual([]);
-    expect(log.debug.some((m) => m.includes("没有可去的地图"))).toBe(true);
+    expect(log.info.some((m) => m.includes("没有可去的地图"))).toBe(true);
   });
 });
 

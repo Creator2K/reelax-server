@@ -21,9 +21,15 @@
 // 与官方航线助手：本模块也是"换图"，因此与助手的「自动换图」是硬冲突 —— 拒绝启动。
 
 /** 从 /api/statistics 的 pity 结构里算保底进度 */
+/** 游戏只提供这两档硬保底 */
+export type PityRarity = "exotic" | "arcane";
+
+export const PITY_LABELS: Record<PityRarity, string> = { exotic: "奇异鱼", arcane: "奥秘鱼" };
+export const PITY_RARITIES: PityRarity[] = ["exotic", "arcane"];
+
 export type PityProgress = {
   /** 目标稀有度 */
-  rarity: "exotic" | "arcane";
+  rarity: PityRarity;
   /** 保底总杆数（随条件变化） */
   totalCasts: number;
   /** 已经连空多少杆 */
@@ -34,7 +40,7 @@ export type PityProgress = {
   ready: boolean;
 };
 
-export function readPity(pity: any, rarity: "exotic" | "arcane"): PityProgress | null {
+export function readPity(pity: any, rarity: PityRarity): PityProgress | null {
   const block = pity?.[rarity];
   if (!block) return null;
   const total = Number(block.hardPityCasts);
@@ -75,8 +81,8 @@ export type PityDecision =
  *   `hardPityCasts === null` —— 游戏里显示「当前条件无保底」，接口一点问题都没有。
  *   排查时被这句话带偏过，所以单独拆出来。
  */
-export function pityUnavailableReason(pity: unknown, rarity: "exotic" | "arcane"): string {
-  const label = rarity === "arcane" ? "奥秘鱼" : "奇异鱼";
+export function pityUnavailableReason(pity: unknown, rarity: PityRarity): string {
+  const label = PITY_LABELS[rarity];
   const block = (pity as Record<string, { hardPityCasts?: unknown } | undefined> | null | undefined)?.[rarity];
   if (!block) return `读不到${label}的保底数据（响应里没有 pity.${rarity}，游戏可能改版了）`;
   if (block.hardPityCasts === null) {
@@ -142,4 +148,31 @@ export function decidePityAction(opts: {
     biomeId: targetBiome,
     reason: `距保底还差 ${remaining} 杆，切到保底地图`,
   };
+}
+
+/**
+ * 多目标：没人正守着保底图时，该去守哪一个。
+ *
+ * 规则（用户定的）：
+ *  · 只看「还差 ≤ 各自阈值」且配了目标地图的档位；
+ *  · **更接近保底的那个优先**（先必出的先守）；
+ *  · 一样近时**奥秘优先**（更稀有）。
+ *
+ * 同一时刻只能在一张图上，所以每次只会选出一个。
+ */
+export function pickPityTarget(
+  targets: { rarity: PityRarity; remaining: number | null; threshold: number; targetBiome: string }[],
+): { rarity: PityRarity; targetBiome: string; remaining: number } | null {
+  const ready: { rarity: PityRarity; targetBiome: string; remaining: number }[] = [];
+  for (const t of targets) {
+    if (t.remaining === null) continue;
+    if (!t.targetBiome) continue;
+    if (t.remaining > t.threshold) continue;
+    ready.push({ rarity: t.rarity, targetBiome: t.targetBiome, remaining: t.remaining });
+  }
+  if (!ready.length) return null;
+
+  const priority: Record<PityRarity, number> = { arcane: 0, exotic: 1 };
+  ready.sort((a, b) => a.remaining - b.remaining || priority[a.rarity] - priority[b.rarity]);
+  return ready[0]!;
 }

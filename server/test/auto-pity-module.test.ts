@@ -59,9 +59,12 @@ function makeCtx(opts: FakeOpts = {}) {
   const ctx = {
     moduleId: "auto-pity",
     config: {
-      rarity: "arcane",
-      thresholdCasts: 30,
-      targetBiome: BIOME_PITY,
+      // 多目标：默认测试只盯奥秘（与旧配置等价）；需要时用 opts.config 加奇异
+      rarities: ["arcane"],
+      arcaneBiome: BIOME_PITY,
+      arcaneThreshold: 30,
+      exoticBiome: BIOME_PITY,
+      exoticThreshold: 30,
       checkEverySec: 60,
       returnDelaySec: 0,
       pauseAutoTravel: true,
@@ -112,9 +115,10 @@ function makeCtx(opts: FakeOpts = {}) {
 }
 
 const count = (calls: string[], needle: string) => calls.filter((c) => c === needle).length;
-/** 把"出货后的缓冲截止时间"拨到过去，等价于等够了 returnDelaySec 秒 */
-const passReturnBuffer = (ctx: ModuleContext) => {
-  (ctx.state as { returnAt?: number }).returnAt = Date.now() - 1;
+/** 把某个档位「出货后的缓冲截止时间」拨到过去，等价于等够了 returnDelaySec 秒 */
+const passReturnBuffer = (ctx: ModuleContext, rarity: "exotic" | "arcane" = "arcane") => {
+  const flows = (ctx.state as { flows?: Record<string, { returnAt?: number }> }).flows;
+  if (flows?.[rarity]) flows[rarity].returnAt = Date.now() - 1;
 };
 
 describe("保底切图模块", () => {
@@ -169,7 +173,7 @@ describe("保底切图模块", () => {
   });
 
   it("不到阈值不切图", async () => {
-    const { calls, start } = makeCtx({ config: { thresholdCasts: 5 } });
+    const { calls, start } = makeCtx({ config: { arcaneThreshold: 5 } });
     const run = await start();
 
     await run(); // 还差 20 杆 > 阈值 5
@@ -300,5 +304,109 @@ describe("保底切图模块", () => {
 
     await autoPity.onStop!(ctx);
     expect(isTravelHeld(ACCOUNT)).toBe(false);
+  });
+});
+
+describe("保底切图模块 · 多目标（同时监控奇异 + 奥秘）", () => {
+  beforeEach(() => clearTravelLocks());
+
+  const BIOME_EXOTIC = "b_012"; // 假设奇异鱼的保底图
+  const both = {
+    rarities: ["exotic", "arcane"],
+    arcaneBiome: BIOME_PITY,
+    arcaneThreshold: 30,
+    exoticBiome: BIOME_EXOTIC,
+    exoticThreshold: 30,
+  };
+
+  /** 同时给出两档进度（世界对象里的 dry 只控制奥秘；奇异用 dryExotic） */
+  function makeBoth(opts: { dryExotic?: number; dryArcane?: number; config?: Record<string, unknown> } = {}) {
+    const built = makeCtx({ config: { ...both, ...(opts.config ?? {}) } });
+    const world = built.world as { dry: number; dryExotic?: number; currentBiome: string };
+    world.dry = opts.dryArcane ?? 1200; // 1 → 已在保底（还差 0）
+    world.dryExotic = opts.dryExotic ?? 1200;
+    (built.ctx.api as unknown as { statistics: () => Promise<unknown> }).statistics = async () => ({
+      pity: {
+        arcane: { hardPityCasts: 1200, currentDryCasts: world.dry },
+        exotic: { hardPityCasts: 500, currentDryCasts: world.dryExotic ?? 0 },
+      },
+    });
+    return built;
+  }
+
+  it("★ 谁更接近保底就先守谁（奥秘还差 20 杆、奇异还差 5 杆 → 守奇异）", async () => {
+    const { calls, world, start } = makeBoth({ dryArcane: 1180, dryExotic: 495 });
+    const run = await start();
+
+    await run();
+    expect(count(calls, `TRAVEL ${BIOME_EXOTIC}`)).toBe(1);
+    expect(world.currentBiome).toBe(BIOME_EXOTIC);
+  });
+
+  it("★ 一样近时优先奥秘", async () => {
+    const { calls, start } = makeBoth({ dryArcane: 1180, dryExotic: 480 });
+    const run = await start();
+
+    await run();
+    expect(count(calls, `TRAVEL ${BIOME_PITY}`)).toBe(1);
+  });
+
+  it("★ 各档位各自记住原图：守完奇异切回后，再守奥秘时记住的是当时所在的图", async () => {
+    const { calls, world, start } = makeBoth({ dryArcane: 1180, dryExotic: 495 });
+    const run = await start();
+
+    await run(); // 奇异还差 5 杆、奥秘还差 20 杆 → 先守更接近的奇异
+    expect(world.currentBiome).toBe(BIOME_EXOTIC);
+
+    // 奇异出货 → 切回原图（月落溪谷）
+    world.dryExotic = 0;
+    await run();
+    expect(count(calls, `TRAVEL ${BIOME_HOME}`)).toBe(1);
+    expect(world.currentBiome).toBe(BIOME_HOME);
+
+    // 现在轮到奥秘（还差 20 杆 ≤ 30）→ 切到奥秘的保底图，原图仍是月落溪谷
+    await run();
+    expect(count(calls, `TRAVEL ${BIOME_PITY}`)).toBe(1);
+    expect(world.currentBiome).toBe(BIOME_PITY);
+  });
+
+  it("守着一个时，另一个的进度照常记录（前者出货后能接着守后者）", async () => {
+    const { calls, world, start } = makeBoth({ dryArcane: 1180, dryExotic: 100 });
+    const run = await start();
+
+    await run(); // 奥秘还差 20 杆先守它；奇异还早（还差 400）
+    expect(count(calls, `TRAVEL ${BIOME_PITY}`)).toBe(1);
+
+    // 奇异也进入阈值（还差 5 杆）——但此刻正守着奥秘，不该被抢走
+    world.dryExotic = 495;
+    await run();
+    expect(count(calls, `TRAVEL ${BIOME_EXOTIC}`)).toBe(0);
+
+    // 奥秘出货并切回 → 下一轮才轮到奇异
+    world.dry = 0;
+    await run();
+    expect(count(calls, `TRAVEL ${BIOME_HOME}`)).toBe(1);
+
+    await run();
+    expect(count(calls, `TRAVEL ${BIOME_EXOTIC}`)).toBe(1);
+  });
+
+  it("只勾选一档时另一档完全不参与", async () => {
+    const { calls, world, start } = makeBoth({ dryArcane: 1200, dryExotic: 499, config: { rarities: ["exotic"] } });
+    const run = await start();
+
+    await run();
+    // 只勾了奇异 → 切到奇异的图；另一档（奥秘）即便已到保底也不管
+    expect(calls.filter((c) => c.startsWith("TRAVEL"))).toEqual([`TRAVEL ${BIOME_EXOTIC}`]);
+    expect(world.currentBiome).toBe(BIOME_EXOTIC);
+  });
+
+  it("一个档位都没勾时不换图，并写清楚原因", async () => {
+    const { calls, log, start } = makeBoth({ config: { rarities: [] } });
+    const run = await start();
+
+    await run();
+    expect(calls.filter((c) => c.startsWith("TRAVEL"))).toEqual([]);
+    expect(log.info.some((m) => m.includes("没有勾选"))).toBe(true);
   });
 });

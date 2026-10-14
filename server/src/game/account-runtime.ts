@@ -139,6 +139,8 @@ const TRANSIENT_ERROR_CODES = new Set([
 
 /** 展示数据刷新间隔 */
 const BIOMES_TTL_MS = 5 * 60_000;
+/** 玩家资料 / 终身统计的刷新间隔（经验速率依赖它，所以比地图表短） */
+const DISPLAY_FAST_TTL_MS = 90_000;
 const BAIT_TTL_MS = 90_000;
 
 type ModuleInstance = {
@@ -227,10 +229,14 @@ export class AccountRuntime {
   /** 缓存的展示数据 */
   private biomesCache = new TtlCache<Map<string, any>>(BIOMES_TTL_MS);
   private baitCache = new TtlCache<any>(BAIT_TTL_MS);
-  private meCache = new TtlCache<any>(BIOMES_TTL_MS);
+  /**
+   * 玩家资料 / 终身统计的刷新间隔刻意短于地图表：
+   * 经验速率用它们（每 60 秒一个样本），刷新太慢会让「经验/时」迟迟出不来。
+   */
+  private meCache = new TtlCache<any>(DISPLAY_FAST_TTL_MS);
   private reincarnationCache = new TtlCache<any>(BIOMES_TTL_MS);
-  /** 稀有鱼硬保底进度（奇异 / 奥秘） */
-  private statisticsCache = new TtlCache<any>(BIOMES_TTL_MS);
+  /** 稀有鱼硬保底进度（奇异 / 奥秘）+ 终身累计经验（算经验速率用） */
+  private statisticsCache = new TtlCache<any>(DISPLAY_FAST_TTL_MS);
   /** 奥术宝箱硬保底 */
   private chestsCache = new TtlCache<any>(BIOMES_TTL_MS);
   /** 灯塔神器保底 */
@@ -548,16 +554,17 @@ export class AccountRuntime {
   }
 
   /**
-   * 采一条经验样本（读 `me` 的缓存，不会额外打接口）。
+   * 采一条经验样本（读缓存，不会额外打接口）。
    *
-   * 调用时机：keep-online 每轮同步后（大约每几秒一次），
-   * 但**同一等级内经验没变、或距上次采样不到 30 秒**时不记 —— 省内存，也不让速率被噪声带偏。
+   * ★ 用**终身累计经验**（`/api/statistics` 的 totals.fishingExperience），
+   *   不是本级经验 —— 本级经验每次升级都归零，用它算速率会一直"采样中"（升级很快）。
+   *
+   * 调用时机：keep-online 每轮同步后；同一数值或距上次不足 60 秒时不记。
    */
   recordXpSample(): void {
-    const player = this.me?.player;
-    const xp = Number(player?.experience);
-    const level = Number(player?.level);
-    if (!Number.isFinite(xp) || !Number.isFinite(level)) return;
+    const xp = Number(this.statistics?.totals?.fishingExperience);
+    const level = Number(this.me?.player?.level);
+    if (!Number.isFinite(xp) || xp < 0 || !Number.isFinite(level)) return;
 
     const now = Date.now();
     const last = this.xpSamples[this.xpSamples.length - 1];
@@ -568,7 +575,6 @@ export class AccountRuntime {
     }
 
     this.xpSamples.push({ t: now, xp, level });
-    // 只留窗口内的样本；升级会让本级经验归零，所以旧样本留着也没用（computeXpRate 也会跳过）
     const since = now - XP_RATE_WINDOW_MS;
     while (this.xpSamples.length > 2 && this.xpSamples[0]!.t < since) this.xpSamples.shift();
   }

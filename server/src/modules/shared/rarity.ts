@@ -147,23 +147,26 @@ export function baitName(id: unknown): string | null {
   return baitById(id)?.name ?? null;
 }
 
-/** 供 select 字段用：「高级饵（200 金币 · 幸运 500 · 神话/奇异/奥秘 ×1.25）」 */
+/**
+ * 供 select 字段用：「高级饵（200 金币）」。
+ *
+ * ★ 选项文字里**不再带幸运 / 稀有度加成**：加上去之后文案太长，会溢出下拉框
+ *   （触发器是 nowrap 的固定宽度盒子）。那些信息放在字段说明里（见 BAIT_TIERS_NOTE）。
+ */
 export function baitOptions(opts: { includeEmpty?: boolean; emptyLabel?: string } = {}): {
   value: string;
   label: string;
 }[] {
-  const list = BAIT_TIERS.map((b) => {
-    const detail = [
-      b.unitPrice > 0 ? `${b.unitPrice} 金币` : "免费",
-      b.luck > 0 ? `幸运 ${b.luck}` : null,
-      b.rarityBoost,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    return { value: b.id, label: `${b.name}（${detail}）` };
-  });
+  const list = BAIT_TIERS.map((b) => ({
+    value: b.id,
+    label: `${b.name}（${b.unitPrice > 0 ? `${b.unitPrice} 金币` : "免费"}）`,
+  }));
   if (opts.includeEmpty) {
     return [{ value: "", label: opts.emptyLabel ?? "不切换" }, ...list];
   }
   return list;
 }
+
+/** 鱼饵档位一句话说明（自动换饵各字段的 hint 用它，避免塞进选项文字里） */
+export const BAIT_TIERS_NOTE =
+  "档位越高幸运越高：基础饵 免费 · 低级饵 40 · 中级饵 100（幸运 250）· 高级饵 200（幸运 500，神话/奇异/奥秘 ×1.25）· 顶级饵 1000（幸运 1000，×1.5）。";

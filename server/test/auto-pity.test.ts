@@ -3,7 +3,13 @@
 // 这是「看保底快到了就切图、钓到再切回」的核心逻辑，抽成纯函数便于验证。
 // 判错会导致账号被永久留在错误的地图上，所以逐条覆盖。
 import { describe, expect, it } from "vitest";
-import { decidePityAction, didCatch, pityUnavailableReason, readPity } from "../src/modules/auto-pity/decide.ts";
+import {
+  decidePityAction,
+  didCatch,
+  pickPityTarget,
+  pityUnavailableReason,
+  readPity,
+} from "../src/modules/auto-pity/decide.ts";
 
 describe("readPity", () => {
   it("解析奇异 / 奥秘保底进度", () => {
@@ -188,5 +194,39 @@ describe("pityUnavailableReason（读不到保底时到底为什么）", () => {
   it("其它异常值 → 把值原样带出来便于排查", () => {
     expect(pityUnavailableReason({ arcane: { hardPityCasts: 0 } }, "arcane")).toContain("hardPityCasts=0");
     expect(pityUnavailableReason({ arcane: { hardPityCasts: -3 } }, "arcane")).toContain("异常");
+  });
+});
+
+describe("pickPityTarget（多目标：该去守哪一个）", () => {
+  const t = (rarity: "exotic" | "arcane", remaining: number | null, threshold = 30, targetBiome = `b_${rarity}`) => ({
+    rarity,
+    remaining,
+    threshold,
+    targetBiome,
+  });
+
+  it("★ 更接近保底的优先", () => {
+    expect(pickPityTarget([t("arcane", 20), t("exotic", 5)])?.rarity).toBe("exotic");
+    expect(pickPityTarget([t("arcane", 5), t("exotic", 20)])?.rarity).toBe("arcane");
+  });
+
+  it("★ 一样近时奥秘优先", () => {
+    expect(pickPityTarget([t("exotic", 10), t("arcane", 10)])?.rarity).toBe("arcane");
+  });
+
+  it("超出各自阈值的档位不参与", () => {
+    expect(pickPityTarget([t("arcane", 40), t("exotic", 200)])).toBeNull();
+    // 阈值各自生效：奇异阈值 500 → 还差 200 也算到了
+    expect(pickPityTarget([t("arcane", 40), t("exotic", 200, 500)])?.rarity).toBe("exotic");
+  });
+
+  it("读不到进度 / 没配地图的档位不参与", () => {
+    expect(pickPityTarget([t("arcane", null), t("exotic", 15, 30, "")])).toBeNull();
+    expect(pickPityTarget([t("arcane", null), t("exotic", 15)])?.rarity).toBe("exotic");
+  });
+
+  it("空列表 / 都没到阈值 → null", () => {
+    expect(pickPityTarget([])).toBeNull();
+    expect(pickPityTarget([t("arcane", 100), t("exotic", 100)])).toBeNull();
   });
 });

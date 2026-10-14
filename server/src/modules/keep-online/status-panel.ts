@@ -11,7 +11,7 @@
 //   活动 = admin_event / reincarnation_catch_up
 import { bpToMultiplier, weatherMultiplier, weatherName } from "./xp-multiplier.ts";
 import { baitName as baitNameOf } from "../shared/rarity.ts";
-import { withLevelEta, type XpRate, type XpRateView } from "../../game/xp-rate.ts";
+import { type XpRate } from "../../game/xp-rate.ts";
 
 /** 八个分区（万分比） */
 export type XpSections = {
@@ -108,10 +108,12 @@ export type StatusPanel = {
   sync: SyncHealthView | null;
 
   /**
-   * 经验速率：近 30 分钟的「每小时经验」+ 按该速度估算的升级剩余时间。
-   * 样本不足时为 null（界面显示「采样中」）—— 挂机刚启动的前几分钟就属于这种情况。
+   * 经验速率：近 30 分钟的「每小时经验」。
+   *
+   * 不给「还要多久升级」：升级很快、本级经验会归零，那个预估一直在变，参考价值不大。
+   * 样本不足时为 null（界面显示「采样中」）—— 挂机刚启动的前几分钟属于这种情况。
    */
-  xpRate: XpRateView | null;
+  xpRate: XpRate | null;
 
   fleet: {
     boatName: string | null;
@@ -358,10 +360,10 @@ export function buildStatusPanel(inputs: StatusPanelInputs): StatusPanel {
       }
     : null;
 
-  /* ---------- 经验速率（每小时经验 / 升级剩余时间） ---------- */
+  /* ---------- 经验速率（每小时经验） ---------- */
   const experience = numOrNull(me?.player?.experience);
   const experienceToNextLevel = numOrNull(me?.player?.experienceToNextLevel);
-  const xpRate = withLevelEta(inputs.xp ?? null, experience, experienceToNextLevel);
+  const xpRate = inputs.xp ?? null;
 
   return {
     biomeId: run.biomeId ?? null,

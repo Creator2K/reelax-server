@@ -125,6 +125,30 @@ const UPGRADES: Record<string, Upgrade> = {
       return { ...rest, statPlan };
     },
   },
+
+  /**
+   * 保底切图：单目标（rarity + targetBiome + thresholdCasts）→ 多目标（rarities + 各自的图与阈值）。
+   *
+   * 旧配置只盯一档，升级后**只把那一档勾上**、地图与阈值照搬，另一档留默认值 ——
+   * 不能凭空给用户多监控一档（那可能让他被切到没打算去的图）。
+   */
+  "auto-pity": {
+    note: "rarity / targetBiome / thresholdCasts → rarities + 各自的地图与阈值",
+    run: (config) => {
+      if (!("rarity" in config) && !("targetBiome" in config) && !("thresholdCasts" in config)) return null;
+      const { rarity, targetBiome, thresholdCasts, ...rest } = config;
+      const picked = String(rarity) === "exotic" ? "exotic" : "arcane"; // 旧默认是奥秘
+      const biome = String(targetBiome ?? "").trim() || "b_015";
+      const threshold = Math.max(1, Number(thresholdCasts) || 30);
+      return {
+        ...rest,
+        rarities: [picked],
+        ...(picked === "exotic"
+          ? { exoticBiome: biome, exoticThreshold: threshold }
+          : { arcaneBiome: biome, arcaneThreshold: threshold }),
+      };
+    },
+  },
 };
 
 export type UpgradeReport = {

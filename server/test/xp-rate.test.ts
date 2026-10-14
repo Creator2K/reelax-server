@@ -1,21 +1,18 @@
-// 经验速率：每小时多少经验、还差多久升级
+// 经验速率：每小时多少经验
 //
-// ★ 为什么值得单测：这两个数字是用户判断「这样挂下去有没有意义」「刚换的图/饵是不是更划算」
-//   的唯一量化依据。口径错了（比如把升级时的经验归零当成负增长、或样本太密就出结论）
-//   会给出完全错误的预期，比不显示更糟。
+// ★ 为什么值得单测：这是用户判断「这样挂下去有没有意义」「刚换的图/饵是不是更划算」
+//   的唯一量化依据。口径错了（样本太密就出结论、把升级当成负增长）会给出完全错误的预期。
+//
+// ★ v1.10 起数据源改成**终身累计经验**（单调递增）：本级经验每次升级都归零，
+//   用它算速率会一直卡在"采样中"（升级很快），这正是用户报的问题。
 import { describe, expect, it } from "vitest";
-import {
-  computeXpRate,
-  withLevelEta,
-  XP_RATE_MIN_SPAN_MS,
-  type XpSample,
-} from "../src/game/xp-rate.ts";
+import { computeXpRate, XP_RATE_MIN_SPAN_MS, type XpSample } from "../src/game/xp-rate.ts";
 import { buildStatusPanel } from "../src/modules/keep-online/status-panel.ts";
 
 const MIN = 60_000;
 const now = Date.parse("2026-10-14T12:00:00+08:00");
 
-/** 生成一条采样 */
+/** 生成一条采样（终身累计经验 + 当时的等级） */
 const s = (minutesAgo: number, xp: number, level = 10): XpSample => ({
   t: now - minutesAgo * MIN,
   xp,
@@ -36,25 +33,26 @@ describe("computeXpRate", () => {
   it("样本不足 / 跨度太短 → null（界面显示「采样中」，不猜数字）", () => {
     expect(computeXpRate([], now)).toBeNull();
     expect(computeXpRate([s(1, 100)], now)).toBeNull();
-    // 只有 2 分钟跨度（低于 5 分钟门槛）
-    expect(computeXpRate([s(2, 100), s(0, 200)], now)).toBeNull();
-    expect(XP_RATE_MIN_SPAN_MS).toBe(5 * MIN);
+    // 只有 1 分钟跨度（低于 2 分钟门槛）
+    expect(computeXpRate([s(1, 100), s(0, 200)], now)).toBeNull();
+    expect(XP_RATE_MIN_SPAN_MS).toBe(2 * MIN);
+    // 刚好 2 分钟就给结果
+    expect(computeXpRate([s(2, 100), s(0, 300)], now)?.perHour).toBeCloseTo(6_000, 0);
   });
 
-  it("★ 升级（本级经验归零）不会算成负增长：只用升级之后的样本", () => {
+  it("★ 跨升级照样给速率（用终身累计经验，升级不清零）", () => {
     const rate = computeXpRate(
       [
-        s(13, 900, 10),
-        s(12, 990, 10),
-        s(7, 10, 11), // 升级后重来
-        s(1, 310, 11),
+        s(20, 100_000, 10),
+        s(10, 110_000, 11), // 中间升了一级：终身经验继续涨
+        s(0, 120_000, 12),
       ],
       now,
     );
     expect(rate).not.toBeNull();
-    // 6 分钟涨 300 → 每小时 3000
-    expect(rate!.perHour).toBeCloseTo(3_000, 0);
-    expect(rate!.levelGain).toBe(1); // 窗口内升了 1 级
+    // 20 分钟涨 20000 → 每小时 60000
+    expect(rate!.perHour).toBeCloseTo(60_000, 0);
+    expect(rate!.levelGain).toBe(2);
   });
 
   it("经验回退（换号 / 回档）→ null，不给离谱的速率", () => {
@@ -70,38 +68,10 @@ describe("computeXpRate", () => {
   });
 });
 
-describe("withLevelEta", () => {
-  const rate = { windowSec: 600, perHour: 36_000, samples: 3, levelGain: 0 };
-
-  it("★ 剩余经验 ÷ 速率 = 升级预计时间", () => {
-    // 还差 18000（= 半小时）
-    const v = withLevelEta(rate, 2_000, 20_000);
-    expect(v).not.toBeNull();
-    expect(v!.remaining).toBe(18_000);
-    expect(v!.etaSec).toBe(1_800);
-  });
-
-  it("本级经验已满 → 剩余 0、预计时间 0", () => {
-    const v = withLevelEta(rate, 20_000, 20_000);
-    expect(v!.remaining).toBe(0);
-    expect(v!.etaSec).toBe(0);
-  });
-
-  it("拿不到本级经验 / 速率为 0 时不瞎估（etaSec 为 null）", () => {
-    expect(withLevelEta(rate, null, null)!.remaining).toBeNull();
-    expect(withLevelEta(rate, null, null)!.etaSec).toBeNull();
-    expect(withLevelEta({ ...rate, perHour: 0 }, 100, 1_000)!.etaSec).toBeNull();
-  });
-
-  it("没有速率 → null", () => {
-    expect(withLevelEta(null, 100, 1_000)).toBeNull();
-  });
-});
-
 describe("状态面板接线（xpRate）", () => {
-  const rate = { windowSec: 600, perHour: 36_000, samples: 3, levelGain: 0 };
+  const rate = { windowSec: 600, perHour: 36_000, samples: 3, levelGain: 1 };
 
-  it("★ 面板给出每小时经验与升级预计时间", () => {
+  it("★ 面板原样给出「每小时经验」（不再算升级预计时间）", () => {
     const panel = buildStatusPanel({
       state: { run: { biomeId: "b_001" } },
       biomesById: new Map(),
@@ -111,8 +81,9 @@ describe("状态面板接线（xpRate）", () => {
       xp: rate,
     });
     expect(panel.xpRate?.perHour).toBe(36_000);
-    expect(panel.xpRate?.remaining).toBe(18_000);
-    expect(panel.xpRate?.etaSec).toBe(1_800);
+    expect(panel.xpRate?.levelGain).toBe(1);
+    // 面板只暴露 perHour / windowSec / samples / levelGain —— 没有 etaSec / remaining
+    expect(Object.keys(panel.xpRate ?? {})).toEqual(["windowSec", "perHour", "samples", "levelGain"]);
   });
 
   it("没有速率数据时为 null（界面显示「采样中」）", () => {

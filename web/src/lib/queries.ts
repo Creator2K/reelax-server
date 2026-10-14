@@ -64,8 +64,10 @@ export type SyncHealth = {
 };
 
 /**
- * 经验速率（服务端按近 30 分钟的经验增量算好）。
- * `remaining` / `etaSec` 也是服务端算的 —— 前端不重算，免得两处口径不一致。
+ * 经验速率（服务端按近 30 分钟的**终身累计经验**增量算好）。
+ *
+ * 只有「每小时经验」：升级很快、本级经验会归零，所以「还要多久升级」那种预估一直在变，
+ * 参考价值不大（用户明确要求去掉）。
  */
 export type XpRate = {
   /** 实际覆盖的时间跨度（秒） */
@@ -76,10 +78,6 @@ export type XpRate = {
   samples: number;
   /** 窗口内升了几级 */
   levelGain: number;
-  /** 距下一级还差多少经验（拿不到为 null） */
-  remaining: number | null;
-  /** 按当前速率估算的升级秒数（无法估算为 null，已经满了为 0） */
-  etaSec: number | null;
 };
 
 export type StatusPanel = {

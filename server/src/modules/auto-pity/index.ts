@@ -29,31 +29,72 @@ import { type ModuleDefinition } from "../types.ts";
 import { BIOME_OPTIONS } from "../shared/biomes.ts";
 import { holdTravel, releaseTravel } from "../shared/travel-lock.ts";
 import {
+  PITY_LABELS,
+  PITY_RARITIES,
   decidePityAction,
   didCatch,
+  pickPityTarget,
   pityUnavailableReason,
   readPity,
   type PityProgress,
+  type PityRarity,
 } from "./decide.ts";
 
-export { decidePityAction, didCatch, readPity, pityUnavailableReason } from "./decide.ts";
+export {
+  PITY_LABELS,
+  PITY_RARITIES,
+  decidePityAction,
+  didCatch,
+  pickPityTarget,
+  readPity,
+  pityUnavailableReason,
+} from "./decide.ts";
 
 /** 我们要让路的模块（它也会换图，且整个停掉是安全的） */
 const AUTO_TRAVEL_ID = "auto-travel";
 /** 占「换图决策权」时显示给日志的名字 */
 const TRAVEL_LOCK_LABEL = "保底切图（守保底中）";
 
+/**
+ * 每个档位自己的流程状态。
+ *
+ * ★ 两个档位各自独立：各自记住"切过去之前在哪张图"、各自是否已经抢回过一次。
+ *   同一时刻只能待在一张图上，所以另有全局的 `active` 表示"现在守着谁"。
+ */
+type TargetFlow = {
+  /** 上一次的保底进度（用于判定"钓到了"；不跨重启残留） */
+  prev: PityProgress | null;
+  /** 切到保底图之前所在的图（null = 该档位不在流程里） */
+  returnBiome: string | null;
+  /** 本次流程里已经抢回过一次目标图（避免和手动操作拉锯） */
+  reenterUsed: boolean;
+  /** ★ 有一笔"欠切回"还没执行（缓冲期过后仍然有效，见文件头说明） */
+  pendingReturn: boolean;
+  /** 出货后等待切回的截止时间戳 */
+  returnAt: number;
+};
+
+const freshFlow = (): TargetFlow => ({
+  prev: null,
+  returnBiome: null,
+  reenterUsed: false,
+  pendingReturn: false,
+  returnAt: 0,
+});
+
 const definition: ModuleDefinition = {
   id: "auto-pity",
   name: "保底切图",
-  version: "2.0.0",
+  version: "3.0.0",
   description:
-    "监控奇异鱼 / 奥秘鱼的硬保底进度：快触发保底时自动切到你指定的地图，出货后自动切回原来的地图。保底流程期间会临时暂停「自动切图」（出货后恢复），避免它把你从保底地图拽走。",
+    "监控奇异鱼 / 奥秘鱼的硬保底进度（可同时监控两个，各自指定地图与阈值）：快触发保底时自动切到那张图，出货后自动切回原来的地图。两个都快到保底时先守更接近出货的那个（一样近时奥秘优先）。保底流程期间会临时暂停「自动切图」（出货后恢复），避免它把你从保底地图拽走。",
   defaultEnabled: false,
   defaultConfig: {
-    rarity: "arcane",
-    thresholdCasts: 30,
-    targetBiome: "b_015",
+    rarities: ["exotic", "arcane"],
+    exoticBiome: "b_015",
+    exoticThreshold: 30,
+    arcaneBiome: "b_015",
+    arcaneThreshold: 30,
     checkEverySec: 60,
     returnDelaySec: 5,
     pauseAutoTravel: true,
@@ -61,20 +102,31 @@ const definition: ModuleDefinition = {
   },
   configSchema: [
     {
-      key: "rarity",
-      type: "select",
-      label: "监控哪种保底",
-      hint: "奥秘鱼是最稀有的档位，通常优先盯它。",
-      default: "arcane",
+      key: "rarities",
+      type: "multi-select",
+      label: "监控哪些保底",
+      hint:
+        "两个都勾上 = 同时监控，下面的地图与阈值各自生效。\n" +
+        "★ 同一时刻只能待在一张图上：两个都快到保底时先守更接近的那个（一样近时奥秘优先）；" +
+        "守着一个时另一个的进度照常记录，前者出货切回后若后者也到了阈值就接着守它。",
+      default: ["exotic", "arcane"],
       options: [
-        { value: "arcane", label: "奥秘鱼保底（最高档）" },
         { value: "exotic", label: "奇异鱼保底" },
+        { value: "arcane", label: "奥秘鱼保底（最高档）" },
       ],
     },
     {
-      key: "thresholdCasts",
+      key: "exoticBiome",
+      type: "select",
+      label: "奇异鱼：保底地图（切到这里等出货）",
+      hint: "建议选对奇异鱼有加成的地图。还没解锁的地图切过去会失败，日志里会提示。",
+      default: "b_015",
+      options: BIOME_OPTIONS,
+    },
+    {
+      key: "exoticThreshold",
       type: "number",
-      label: "距保底还剩多少杆时切图",
+      label: "奇异鱼：距保底还剩多少杆时切图",
       hint: "越接近保底，出货越确定。设太小可能来不及切；设太大则会在目标图待很久。",
       default: 30,
       min: 1,
@@ -82,12 +134,21 @@ const definition: ModuleDefinition = {
       step: 5,
     },
     {
-      key: "targetBiome",
+      key: "arcaneBiome",
       type: "select",
-      label: "保底地图（切到这里等出货）",
-      hint: "建议选对目标稀有度有加成的地图。还没解锁的地图切过去会失败，日志里会提示。",
+      label: "奥秘鱼：保底地图（切到这里等出货）",
+      hint: "建议选对奥秘鱼有加成的地图。可以和奇异鱼用同一张，也可以各用一张。",
       default: "b_015",
       options: BIOME_OPTIONS,
+    },
+    {
+      key: "arcaneThreshold",
+      type: "number",
+      label: "奥秘鱼：距保底还剩多少杆时切图",
+      default: 30,
+      min: 1,
+      max: 500,
+      step: 5,
     },
     {
       key: "checkEverySec",
@@ -132,17 +193,11 @@ const definition: ModuleDefinition = {
   async onStart(ctx) {
     const S = ctx.state as {
       busy: boolean;
-      /** 上一次的保底进度（用于判定"钓到了"） */
-      prev: PityProgress | null;
-      /** 切到保底图之前所在的图（null = 不在保底流程里） */
-      returnBiome: string | null;
+      /** 每个档位自己的流程状态（两个档位各自记原图 / 各自限一次抢回） */
+      flows: Record<PityRarity, TargetFlow>;
+      /** 当前正守着哪个档位（null = 没在守） */
+      active: PityRarity | null;
       lastIdle: string;
-      /** 出货后等待切回的截止时间戳 */
-      returnAt: number;
-      /** ★ 有一笔"欠切回"还没执行（缓冲期过后仍然有效，见文件头说明） */
-      pendingReturn: boolean;
-      /** 本次保底流程里已经抢回过一次目标图（避免和手动操作拉锯） */
-      reenterUsed: boolean;
       /** 我们临时停掉了「自动切图」，流程结束后要恢复（跨重启保留） */
       pausedAutoTravel: boolean;
       lastTravelAt: number;
@@ -150,15 +205,30 @@ const definition: ModuleDefinition = {
       notified: Set<string>;
     };
     S.busy = false;
-    S.prev = null;
-    S.returnBiome = null;
     S.lastIdle = "";
-    S.returnAt = 0;
-    S.pendingReturn = false;
-    S.reenterUsed = false;
     S.lastTravelAt = 0;
     S.notified = new Set();
     if (typeof S.pausedAutoTravel !== "boolean") S.pausedAutoTravel = false;
+
+    // 每个档位的流程状态：保留 returnBiome 等（跨重启继续守），但 prev 必须清掉 ——
+    // 重启后第一次读到进度不该被当成"刚出货"
+    const prevFlows = (S.flows ?? {}) as Partial<Record<PityRarity, TargetFlow>>;
+    S.flows = { exotic: freshFlow(), arcane: freshFlow() };
+    for (const r of PITY_RARITIES) {
+      const old = prevFlows[r];
+      if (old && typeof old === "object") {
+        S.flows[r] = {
+          prev: null,
+          returnBiome: typeof old.returnBiome === "string" ? old.returnBiome : null,
+          reenterUsed: old.reenterUsed === true,
+          pendingReturn: old.pendingReturn === true,
+          returnAt: Number(old.returnAt) || 0,
+        };
+      }
+    }
+    S.active = S.active === "exotic" || S.active === "arcane" ? S.active : null;
+    // 状态不一致（记着在守，但没有原图）→ 当作没在守，避免凭空"切回"
+    if (S.active && !S.flows[S.active].returnBiome) S.active = null;
 
     const idle = (msg: string) => {
       if (S.lastIdle === msg) return;
@@ -241,18 +311,32 @@ const definition: ModuleDefinition = {
     // 上次流程没走完就被中断（改配置 / 容器重启）：把「自动切图」恢复回来，别让它一直关着
     if (S.pausedAutoTravel) await resumeAutoTravel("上次保底流程被中断");
 
-    const rarity = ctx.config.rarity === "exotic" ? "exotic" : "arcane";
-    const threshold = Math.max(1, Number(ctx.config.thresholdCasts) || 30);
-    const targetBiome = String(ctx.config.targetBiome ?? "").trim();
+    /* ---------- 配置：每个档位各自的地图与阈值 ---------- */
+    const rarityCfg: Record<PityRarity, { biome: string; threshold: number }> = {
+      exotic: {
+        biome: String(ctx.config.exoticBiome ?? "").trim(),
+        threshold: Math.max(1, Number(ctx.config.exoticThreshold) || 30),
+      },
+      arcane: {
+        biome: String(ctx.config.arcaneBiome ?? "").trim(),
+        threshold: Math.max(1, Number(ctx.config.arcaneThreshold) || 30),
+      },
+    };
+    const monitoredRaw = Array.isArray(ctx.config.rarities) ? ctx.config.rarities.map((x) => String(x)) : PITY_RARITIES;
+    const targets = PITY_RARITIES.filter((r) => monitoredRaw.includes(r)).map((rarity) => ({
+      rarity,
+      ...rarityCfg[rarity],
+    }));
     const returnDelayMs = Math.max(0, Number(ctx.config.returnDelaySec) || 0) * 1000;
-    const rarityLabel = rarity === "arcane" ? "奥秘鱼" : "奇异鱼";
 
-    /** 结束保底流程（回到原图 / 放弃）：清干净并恢复「自动切图」和进图权 */
-    const endFlow = async (why: string) => {
-      S.returnBiome = null;
-      S.pendingReturn = false;
-      S.reenterUsed = false;
-      S.returnAt = 0;
+    /** 结束某个档位的保底流程（回到原图 / 放弃）：清干净并恢复「自动切图」和进图权 */
+    const endFlow = async (rarity: PityRarity, why: string) => {
+      const flow = S.flows[rarity];
+      flow.returnBiome = null;
+      flow.pendingReturn = false;
+      flow.reenterUsed = false;
+      flow.returnAt = 0;
+      if (S.active === rarity) S.active = null;
       releaseTravelLock();
       await resumeAutoTravel(why);
     };
@@ -261,56 +345,115 @@ const definition: ModuleDefinition = {
       if (S.busy) return;
       S.busy = true;
       try {
-        /* ---------- 读当前地图 + 保底进度 ---------- */
+        if (!targets.length) {
+          idleOnce("no-target", `${trigger}：没有勾选任何要监控的保底（奇异鱼 / 奥秘鱼），本功能不做任何事`);
+          return;
+        }
+
+        /* ---------- 读当前地图 + 所有档位的保底进度 ---------- */
         const [biomesData, stats] = await Promise.all([ctx.api.biomes(), ctx.api.statistics()]);
         const biomes: any[] = biomesData?.biomes ?? [];
         const currentBiomeId: string | null = biomes.find((b) => b.isCurrent)?.id ?? null;
         const currentName = biomes.find((b) => b.id === currentBiomeId)?.name ?? currentBiomeId ?? "未知";
 
-        const cur = readPity(stats?.pity, rarity);
-        if (!cur) {
-          // 说清楚是"当前条件无保底"还是"接口变了"（两种都见过，别混在一句话里）
-          idleOnce(`no-pity:${rarity}`, `${trigger}：${pityUnavailableReason(stats?.pity, rarity)}`);
-          S.prev = null;
+        const progress = new Map<PityRarity, PityProgress | null>();
+        const caughtNow = new Set<PityRarity>();
+
+        for (const t of targets) {
+          const flow = S.flows[t.rarity];
+          const cur = readPity(stats?.pity, t.rarity);
+          if (!cur) {
+            // 说清楚是"当前条件无保底"还是"接口变了"（两种都见过，别混在一句话里）
+            idleOnce(`no-pity:${t.rarity}`, `${trigger}：${pityUnavailableReason(stats?.pity, t.rarity)}`);
+            flow.prev = null;
+            progress.set(t.rarity, null);
+            continue;
+          }
+
+          const caught = didCatch(flow.prev, cur);
+          flow.prev = cur;
+          progress.set(t.rarity, cur);
+          if (!caught) continue;
+          caughtNow.add(t.rarity);
+
+          /* ---------- 出货：记一笔"欠切回" ---------- */
+          if (flow.returnBiome) {
+            flow.pendingReturn = true;
+            flow.returnAt = Date.now() + returnDelayMs;
+            ctx.log.info(
+              "保底切图",
+              `🎉 ${PITY_LABELS[t.rarity]}保底出货了（连空 ${cur.dryCasts} 杆后重置）` +
+                (returnDelayMs > 0 ? `，${Math.round(returnDelayMs / 1000)} 秒后切回` : "，立即切回原地图"),
+            );
+          }
+        }
+
+        /** 日志里把两个档位的进度都摊开（排查时不用来回翻） */
+        const describeAll = () =>
+          targets
+            .map((t) => {
+              const p = progress.get(t.rarity) ?? null;
+              const label = PITY_LABELS[t.rarity];
+              return p
+                ? `${label} 已连空 ${p.dryCasts}/${p.totalCasts}（还差 ${p.remaining}，阈值 ${t.threshold}）`
+                : `${label}：读不到进度`;
+            })
+            .join("｜");
+
+        /* ---------- 选出这一轮要处理的档位 ---------- */
+        // 优先处理"正守着的"；否则挑一个到了阈值、且更接近出货的（一样近时奥秘优先）
+        let handle: { rarity: PityRarity; biome: string; threshold: number } | null = null;
+        if (S.active) {
+          handle = targets.find((t) => t.rarity === S.active) ?? null;
+          if (!handle) await endFlow(S.active, "该档位已不再监控"); // 勾选被取消
+        }
+        if (!handle) {
+          const picked = pickPityTarget(
+            targets.map((t) => ({
+              rarity: t.rarity,
+              remaining: progress.get(t.rarity)?.remaining ?? null,
+              threshold: t.threshold,
+              targetBiome: t.biome,
+            })),
+          );
+          if (picked) handle = { rarity: picked.rarity, biome: picked.targetBiome, threshold: rarityCfg[picked.rarity].threshold };
+        }
+
+        if (!handle) {
+          idleOnce("waiting", `${trigger}：${describeAll()}`);
           return;
         }
 
-        const caught = didCatch(S.prev, cur);
-        S.prev = cur;
-
-        /* ---------- 出货：记一笔"欠切回" ---------- */
-        if (S.returnBiome && caught) {
-          S.pendingReturn = true;
-          S.returnAt = Date.now() + returnDelayMs;
-          ctx.log.info(
-            "保底切图",
-            `🎉 ${rarityLabel}保底出货了（连空 ${cur.dryCasts} 杆后重置）` +
-              (returnDelayMs > 0 ? `，${Math.round(returnDelayMs / 1000)} 秒后切回` : "，立即切回原地图"),
-          );
+        const rarity = handle.rarity;
+        const rarityLabel = PITY_LABELS[rarity];
+        const flow = S.flows[rarity];
+        const cur = progress.get(rarity) ?? null;
+        if (!cur) {
+          idle(`${trigger}：${rarityLabel} 的保底数据读不到，本轮不动作`);
+          return;
         }
-        if (S.returnAt && Date.now() < S.returnAt) {
-          return; // 缓冲期
-        }
+        // 刚出货、正在缓冲期：先别动（马上要切回原图）
+        if (S.active === rarity && flow.returnAt && Date.now() < flow.returnAt) return;
 
         /* ---------- 决策 ---------- */
         // ★ 缓冲期过后，这笔"欠切回"依然算数：不能只看本轮的 caught ——
         //   出货后 dry 计数已经从 0 涨回去了，下一轮 caught 必然是 false，
         //   旧版正是因此永远走不到"切回原图"。
-        const caughtOrPending = caught || S.pendingReturn;
+        const caughtOrPending = caughtNow.has(rarity) || flow.pendingReturn;
         const decision = decidePityAction({
           remaining: cur.remaining,
-          threshold,
+          threshold: handle.threshold,
           currentBiome: currentBiomeId,
-          targetBiome,
-          returnBiome: S.returnBiome,
+          targetBiome: handle.biome,
+          returnBiome: flow.returnBiome,
           caught: caughtOrPending,
         });
 
         if (decision.action === "stay") {
-          const camping = Boolean(S.returnBiome);
-          if (camping && caughtOrPending && currentBiomeId === S.returnBiome) {
+          const camping = Boolean(flow.returnBiome);
+          if (camping && caughtOrPending && currentBiomeId === flow.returnBiome) {
             // 已经回到原图（手动切的 / 抢回时被抢先）→ 流程结束
-            await endFlow("已回到原地图");
+            await endFlow(rarity, "已回到原地图");
           } else if (camping) {
             idleOnce(
               `camping:${rarity}`,
@@ -318,10 +461,7 @@ const definition: ModuleDefinition = {
                 `｜已在保底地图等待出货`,
             );
           } else {
-            idle(
-              `${trigger}：${rarityLabel} 已连空 ${cur.dryCasts}/${cur.totalCasts} 杆（还差 ${cur.remaining} 杆）` +
-                (decision.reason ? ` ｜ ${decision.reason}` : ""),
-            );
+            idle(`${trigger}：${describeAll()}${decision.reason ? ` ｜ ${decision.reason}` : ""}`);
           }
           return;
         }
@@ -330,14 +470,14 @@ const definition: ModuleDefinition = {
 
         /* ---------- 抢回保底图（被别的模块 / 手动挪走） ---------- */
         if (decision.action === "reenter") {
-          if (S.reenterUsed) {
+          if (flow.reenterUsed) {
             idleOnce(
-              "reenter-used",
-              `${trigger}：已不在保底地图（${currentName}），本次流程已经抢回过一次，不再抢（可能你在手动操作；出货后会自动切回原图）`,
+              `reenter-used:${rarity}`,
+              `${trigger}：已不在${rarityLabel}的保底地图（${currentName}），本次流程已经抢回过一次，不再抢（可能你在手动操作；出货后会自动切回原图）`,
             );
             return;
           }
-          S.reenterUsed = true;
+          flow.reenterUsed = true;
           try {
             await ctx.api.biomeTravel(decision.biomeId);
             S.lastTravelAt = Date.now();
@@ -345,7 +485,7 @@ const definition: ModuleDefinition = {
             ctx.log.info(
               "保底切图",
               `⛵ ${currentName} → ${toName}（${decision.reason}；` +
-                `已连空 ${cur.dryCasts}/${cur.totalCasts} 杆，还差 ${cur.remaining} 杆）`,
+                `${rarityLabel} 已连空 ${cur.dryCasts}/${cur.totalCasts} 杆，还差 ${cur.remaining} 杆）`,
             );
           } catch (err) {
             ctx.log.warn("保底切图", `切回 ${toName} 失败：${err instanceof Error ? err.message : String(err)}`);
@@ -356,21 +496,22 @@ const definition: ModuleDefinition = {
         /* ---------- 进保底图 / 切回原图 ---------- */
         const fromLabel = currentName;
         if (decision.action === "enter") {
-          // 记住原地图，出货后切回
-          S.returnBiome = currentBiomeId;
+          // 记住原地图（按档位各记一份），出货后切回
+          flow.returnBiome = currentBiomeId;
+          S.active = rarity;
         }
 
         try {
           await ctx.api.biomeTravel(decision.biomeId);
           S.lastTravelAt = Date.now();
-          S.returnAt = 0;
+          flow.returnAt = 0;
           S.lastIdle = "";
 
           if (decision.action === "enter") {
             ctx.log.info(
               "保底切图",
               `⛵ ${fromLabel} → ${toName}（${decision.reason}；` +
-                `已连空 ${cur.dryCasts}/${cur.totalCasts} 杆，还差 ${cur.remaining} 杆）`,
+                `${rarityLabel} 已连空 ${cur.dryCasts}/${cur.totalCasts} 杆，还差 ${cur.remaining} 杆）`,
             );
             // 已经在保底图里了 → 让其它模块让路：
             //   · 「自动切图」整个停掉（它本来就没开则什么都不做）
@@ -379,15 +520,16 @@ const definition: ModuleDefinition = {
             await pauseAutoTravel();
           } else {
             ctx.log.info("保底切图", `⛵ ${fromLabel} → ${toName}（${decision.reason}）`);
-            await endFlow("已切回原地图");
+            await endFlow(rarity, "已切回原地图");
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           ctx.log.warn("保底切图", `切到 ${toName} 失败：${msg}`);
           // 切失败就别记着"要切回"，否则下次会莫名其妙往回切
           if (decision.action === "enter") {
-            S.returnBiome = null;
-            S.pendingReturn = false;
+            flow.returnBiome = null;
+            flow.pendingReturn = false;
+            if (S.active === rarity) S.active = null;
           }
         }
       } catch (err) {
@@ -411,7 +553,14 @@ const definition: ModuleDefinition = {
 
     ctx.schedule(20_000, () => run("启动检查"));
 
-    ctx.log.info("保底切图", `已启动：监控 ${rarityLabel}，阈值 ${threshold} 杆，目标地图 ${targetBiome || "（未配置）"}`);
+    ctx.log.info(
+      "保底切图",
+      targets.length
+        ? `已启动：监控 ${targets
+            .map((t) => `${PITY_LABELS[t.rarity]}（阈值 ${t.threshold} 杆 → ${t.biome || "未配置地图"}）`)
+            .join("、")}`
+        : "已启动：未勾选任何要监控的保底（奇异鱼 / 奥秘鱼），本功能不会做任何事",
+    );
   },
 
   /**

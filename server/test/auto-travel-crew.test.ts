@@ -169,7 +169,7 @@ describe("自动切图 · 带队换图", () => {
     state.lastTravelAt = 0;
     await run();
     expect(calls).toEqual([`PARTY ${STORM}`]);
-    expect(log.debug.some((m) => m.includes("暂缓中"))).toBe(true);
+    expect(log.info.some((m) => m.includes("暂缓中"))).toBe(true);
   });
 
   it("★ 连续失败 3 次 → 长时间不再尝试（目标变化后才恢复）", async () => {

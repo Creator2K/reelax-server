@@ -152,6 +152,32 @@ describe("配置升级：自动加点（字符串 → 顺序 + 数值）", () =>
   });
 });
 
+describe("配置升级：保底切图（单目标 → 多目标）", () => {
+  it("★ 原来盯奥秘 → 只勾奥秘，地图与阈值照搬（不凭空多监控一档）", () => {
+    write("auto-pity", { rarity: "arcane", thresholdCasts: 45, targetBiome: "b_012", checkEverySec: 60 });
+    upgradeModuleConfigs(repos);
+
+    const cfg = read("auto-pity");
+    expect(cfg.rarities).toEqual(["arcane"]);
+    expect(cfg.arcaneBiome).toBe("b_012");
+    expect(cfg.arcaneThreshold).toBe(45);
+    expect(cfg.exoticBiome).toBeUndefined(); // 没勾奇异，就不给它写地图
+    for (const legacy of ["rarity", "thresholdCasts", "targetBiome"]) expect(legacy in cfg).toBe(false);
+    expect(cfg.checkEverySec).toBe(60); // 其它配置原样保留
+  });
+
+  it("原来盯奇异 → 勾奇异并照搬它的地图与阈值", () => {
+    write("auto-pity", { rarity: "exotic", thresholdCasts: 10, targetBiome: "b_009" });
+    upgradeModuleConfigs(repos);
+
+    const cfg = read("auto-pity");
+    expect(cfg.rarities).toEqual(["exotic"]);
+    expect(cfg.exoticBiome).toBe("b_009");
+    expect(cfg.exoticThreshold).toBe(10);
+    expect(cfg.arcaneBiome).toBeUndefined();
+  });
+});
+
 describe("配置升级：整体行为", () => {
   it("多个模块 / 多个账号一起处理，返回处理明细", () => {
     write("auto-travel", { fleetMode: "follow" });

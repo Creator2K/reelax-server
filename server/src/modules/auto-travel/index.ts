@@ -470,10 +470,13 @@ const definition: ModuleDefinition = {
       crewSailedTimes: number;
       /** 上次带队结果（同一条结果不重复写日志） */
       crewLastSummary: string;
+      /** 上次「本轮没动作」日志的时间（心跳用） */
+      lastIdleAt: number;
     };
     S.busy = false;
     S.lastTravelAt = 0;
     S.lastIdle = "";
+    S.lastIdleAt = 0;
     S.crewWaitUntil = S.crewWaitUntil && typeof S.crewWaitUntil === "object" ? S.crewWaitUntil : {};
     S.crewFailStreak = S.crewFailStreak && typeof S.crewFailStreak === "object" ? S.crewFailStreak : {};
     S.crewSailedTo = typeof S.crewSailedTo === "string" ? S.crewSailedTo : "";
@@ -491,13 +494,25 @@ const definition: ModuleDefinition = {
     /** 船员拉不动的暂缓时长：失败 3 次后长时间不再试，避免反复召集 */
     const CREW_BACKOFF_MS = 10 * 60_000;
     const CREW_GIVE_UP_MS = 6 * 3600_000;
+    /** 「本轮没动作」的心跳间隔（说明没变化时也每隔这么久记一条，便于确认模块还活着） */
+    const IDLE_HEARTBEAT_MS = 30 * 60_000;
 
-    const idle = (msg: string) => {
-      if (S.lastIdle === msg) return;
+    const idle = (msg: string, trigger?: string) => {
+      // ★ 用 info 记（debug 默认不落库，用户根本看不到「为什么没换图」）。
+      //   但不能每轮都写：一个号一天几百条会把每用户 2 万条的日志额度吃掉大半。
+      //   所以规则是「说明变了就记一条，长时间没变每 30 分钟补一条心跳」。
+      //   注意：去重只看 msg，触发来源（定时检查 / 钓鱼同步）只进日志文本，不参与比较。
+      const line = trigger ? `${trigger}：${msg}` : msg;
+      const now = Date.now();
+      if (S.lastIdle === msg) {
+        if (now - (S.lastIdleAt || 0) < IDLE_HEARTBEAT_MS) return;
+        S.lastIdleAt = now;
+        ctx.log.info("自动切图", `🧭 仍然：${line}`);
+        return;
+      }
       S.lastIdle = msg;
-      // 「本轮没动作」的说明：降到 debug。信息级日志会落库并占用每用户 2 万条的额度，
-      // 这类每轮都变（带数量）的说明会把额度几小时就冲掉，让真正的事件无处留存。
-      ctx.log.debug("自动切图", msg);
+      S.lastIdleAt = now;
+      ctx.log.info("自动切图", `🧭 ${line}`);
     };
 
     /**
@@ -597,9 +612,8 @@ const definition: ModuleDefinition = {
 
       const waitUntil = Number(S.crewWaitUntil[biomeId]) || 0;
       if (waitUntil > now) {
-        idle(
-          `带队前往 ${name} 暂缓中（${Math.max(1, Math.ceil((waitUntil - now) / 60_000))} 分钟后重试），不重复召集船员`,
-        );
+        // 不带「还有几分钟」：那个数字每分钟都在变，会让上面按文字去重的日志刷屏
+        idle(`带队前往 ${name} 暂缓中（冷却期内不重复召集船员）`);
         return true;
       }
 
@@ -722,13 +736,14 @@ const definition: ModuleDefinition = {
       });
 
       /* ---------- 「跟船队走」：这一项命中就不自己换图 ---------- */
+      // 说明里不含触发来源（「定时检查 / 钓鱼同步」）：那会让同一件事被当成不同说明反复记
       if (decision.action === "follow") {
-        idle(`${trigger}：${decision.why}`);
+        idle(decision.why, trigger);
         return;
       }
 
       if (decision.action === "stay") {
-        idle(`${trigger}：${decision.why}`);
+        idle(decision.why, trigger);
         return;
       }
 

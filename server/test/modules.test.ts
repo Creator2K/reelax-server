@@ -5,7 +5,13 @@
 // （加错点、卖错装备、把号从比赛图拽走），所以必须有测试。
 import { describe, expect, it } from "vitest";
 import { MODULES, assertRegistryValid } from "../src/modules/registry.ts";
-import { investedOf, planStatAllocation, readStatPlan } from "../src/modules/auto-stats/index.ts";
+import {
+  investedOf,
+  planFromScratch,
+  planStatAllocation,
+  readStatPlan,
+  sameAllocation,
+} from "../src/modules/auto-stats/index.ts";
 import { bucketOf } from "../src/modules/auto-sell-gear/index.ts";
 import { sacrificedRarities } from "../src/modules/auto-mastery/index.ts";
 import {
@@ -247,6 +253,34 @@ describe("planStatAllocation（target：按目标值补齐）", () => {
       minPoints: 1,
     });
     expect("skip" in r && r.skip).toContain("自动洗点搬运");
+  });
+});
+
+describe("planFromScratch / sameAllocation（判断切换方案要不要洗点）", () => {
+  const plan = plan4(["luck", "intelligence", "endurance", "strength"], [3, 2, 0, 0]);
+
+  it("按配比：把全部点数从零按权重分一次", () => {
+    expect(planFromScratch({ mode: "ratio", plan, totalPoints: 1000 })).toEqual([0, 400, 600, 0]);
+  });
+
+  it("全部给第一项：全给运气", () => {
+    expect(planFromScratch({ mode: "priority", plan, totalPoints: 1000 })).toEqual([0, 0, 1000, 0]);
+  });
+
+  it("到目标值：按顺序补，补不满就停（剩余留空）", () => {
+    const target = plan4(["intelligence", "endurance", "strength", "luck"], [2000, 100, 0, 0]);
+    expect(planFromScratch({ mode: "target", plan: target, totalPoints: 500 })).toEqual([0, 500, 0, 0]);
+    expect(planFromScratch({ mode: "target", plan: target, totalPoints: 5000 })).toEqual([0, 2000, 0, 100]);
+  });
+
+  it("方案无效（比如配比全 0）→ null（调用方据此不洗点）", () => {
+    expect(planFromScratch({ mode: "ratio", plan: plan4(["luck"], [0]), totalPoints: 100 })).toBeNull();
+  });
+
+  it("sameAllocation：逐项比较，长度不同也算不同", () => {
+    expect(sameAllocation([1, 2, 3, 4], [1, 2, 3, 4])).toBe(true);
+    expect(sameAllocation([1, 2, 3, 4], [1, 2, 3, 5])).toBe(false);
+    expect(sameAllocation([1, 2], [1, 2, 0, 0])).toBe(false);
   });
 });
 
