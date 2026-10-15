@@ -3,7 +3,7 @@
 // 关键点：**前端不硬编码任何模块字段**。
 // 后端加一个配置项，这里自动出现对应控件；后端改类型，这里跟着变。
 import { useEffect, useMemo, useState } from "react";
-import { IconRotateClockwise } from "@tabler/icons-react";
+import { IconChevronDown, IconRotateClockwise } from "@tabler/icons-react";
 import type { ConfigField, ModuleRuntimeState } from "@/lib/queries.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
@@ -370,17 +370,32 @@ export function ModuleHeader({
   onToggle,
   toggling,
   disabled,
+  /** 移动端折叠：给了 expanded/onToggleExpanded 就在名字后面显示箭头并可点 */
+  expanded,
+  onToggleExpanded,
 }: {
   state: ModuleRuntimeState;
   onToggle: (enabled: boolean) => void;
   toggling?: boolean;
   /** 前置条件未满足时禁用开关 */
   disabled?: boolean;
+  expanded?: boolean;
+  onToggleExpanded?: () => void;
 }) {
+  const collapsible = onToggleExpanded !== undefined;
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0 space-y-0.5">
-        <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onToggleExpanded}
+          aria-expanded={collapsible ? Boolean(expanded) : undefined}
+          disabled={!collapsible}
+          className={cn(
+            "flex items-center gap-2 text-left",
+            collapsible && "min-w-0 lg:pointer-events-none",
+          )}
+        >
           <span className="text-sm font-medium">{state.name}</span>
           {disabled ? (
             <Badge variant="idle">不可用</Badge>
@@ -394,7 +409,15 @@ export function ModuleHeader({
           ) : (
             <Badge variant="idle">已关闭</Badge>
           )}
-        </div>
+          {collapsible ? (
+            <IconChevronDown
+              className={cn(
+                "text-muted-foreground size-3.5 shrink-0 transition-transform lg:hidden",
+                !expanded && "-rotate-90",
+              )}
+            />
+          ) : null}
+        </button>
         {/* 这里原本显示 state.id（keep-online 这类内部标识）—— 用户不需要看它 */}
       </div>
       <Switch

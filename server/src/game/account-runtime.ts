@@ -378,12 +378,12 @@ export class AccountRuntime {
     return off;
   };
 
-  every = (ms: number, fn: () => unknown | Promise<unknown>): NodeJS.Timeout => {
-    return this.timers.every(ms, fn);
+  every = (ms: number, fn: () => unknown | Promise<unknown>, owner?: string): NodeJS.Timeout => {
+    return this.timers.every(ms, fn, owner);
   };
 
-  schedule = (ms: number, fn: () => unknown | Promise<unknown>): NodeJS.Timeout => {
-    return this.timers.schedule(ms, fn);
+  schedule = (ms: number, fn: () => unknown | Promise<unknown>, owner?: string): NodeJS.Timeout => {
+    return this.timers.schedule(ms, fn, owner);
   };
 
   /** 模块抛出的结构化事件（如日报 digest） */
@@ -716,8 +716,9 @@ export class AccountRuntime {
         else this.moduleUnsubs.set(def.id, [off]);
         return off;
       },
-      every: this.every,
-      schedule: this.schedule,
+      // ★ 定时器带上模块身份：模块停止时按 owner 精确清理（见 releaseModuleResources）
+      every: (ms, fn) => this.every(ms, fn, def.id),
+      schedule: (ms, fn) => this.schedule(ms, fn, def.id),
       persistState: () => {
         try {
           this.repos.modules.setState(this.accountId, def.id, state);
@@ -749,8 +750,8 @@ export class AccountRuntime {
       return { ok: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // onStart 可能已经注册了订阅才抛错，这里也要释放，否则留下收不到 onStop 的幽灵订阅
-      this.releaseModuleUnsubs(def.id);
+      // onStart 可能已经注册了订阅/定时器才抛错，这里也要释放，否则留下幽灵订阅与孤儿定时器
+      this.releaseModuleResources(def.id);
       this.startErrors.set(def.id, msg);
       this.log.error("模块", `启动 ${def.id} 失败：${msg}`);
       return { ok: false, error: msg };
@@ -766,23 +767,32 @@ export class AccountRuntime {
         this.log.warn("模块", `停止 ${id} 时报错：${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    // 无论有没有实例都要释放（onStart 失败的模块可能只留下订阅）
-    this.releaseModuleUnsubs(id);
+    // 无论有没有实例都要释放（onStart 失败的模块可能只留下订阅/定时器）
+    this.releaseModuleResources(id);
     this.instances.delete(id);
   }
 
-  /** 释放某模块注册的事件订阅（模块停止 / 启动失败 / 实例废弃时调用） */
-  private releaseModuleUnsubs(id: string): void {
+  /**
+   * 释放某模块占用的运行时资源：事件订阅 + **它注册的定时器**
+   * （模块停止 / 启动失败 / 实例废弃时调用）。
+   *
+   * ★ 定时器一定要在这里清：它们挂在账号级 TimerPool 上，只有账号停止才会整体清空。
+   *   漏掉这一步的后果是「关了模块它还在干活」—— 例如关掉自动切图后它仍按天气换图，
+   *   关掉自动换饵后它仍在买饵，直到账号被停止或重启才消停。
+   */
+  private releaseModuleResources(id: string): void {
     const list = this.moduleUnsubs.get(id);
-    if (!list) return;
-    this.moduleUnsubs.delete(id);
-    for (const off of list) {
-      try {
-        off();
-      } catch {
-        /* 取消失败不影响停止流程 */
+    if (list) {
+      this.moduleUnsubs.delete(id);
+      for (const off of list) {
+        try {
+          off();
+        } catch {
+          /* 取消失败不影响停止流程 */
+        }
       }
     }
+    this.timers.clearOwner(id);
   }
 
   /**
@@ -1151,7 +1161,7 @@ export class AccountRuntime {
   async dispose(): Promise<void> {
     this.abortRequested = true;
     // 兜底：正常路径上 stop() 已经释放过了，这里防止「实例被丢弃但订阅还在」
-    for (const id of [...this.moduleUnsubs.keys()]) this.releaseModuleUnsubs(id);
+    for (const id of [...this.moduleUnsubs.keys()]) this.releaseModuleResources(id);
     this.timers.clear();
     await this.proxyHolder.close().catch(() => {});
   }

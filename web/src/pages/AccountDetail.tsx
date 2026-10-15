@@ -8,6 +8,7 @@ import {
   IconPlayerPlay,
   IconPlayerStop,
   IconSettings,
+  IconUserCircle,
 } from "@tabler/icons-react";
 import { PageContainer, EmptyState } from "@/components/layout/PageContainer.tsx";
 import { StatusPanelCard } from "@/components/domain/StatusPanel.tsx";
@@ -24,6 +25,7 @@ import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { useAccounts, useModuleDefinitions, type Account, type ModuleRuntimeState } from "@/lib/queries.ts";
 import { useResetModule, useStartAccount, useStopAccount, useUpdateModule } from "@/lib/mutations.ts";
 import { fmtNum } from "@/lib/utils.ts";
+import { cn } from "@/lib/utils.ts";
 
 export default function AccountDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -149,6 +151,7 @@ function AccountMetaCard({ account }: { account: Account }) {
   return (
     <CollapsibleCard
       title="账号信息"
+      icon={<IconUserCircle className="size-4 shrink-0" />}
       summary={account.player?.nickname ? `${account.player.nickname}${account.player.level ? ` · Lv ${fmtNum(account.player.level)}` : ""}` : null}
       headerRight={<StatusBadge status={account.status} />}
       contentClassName="space-y-2 text-xs"
@@ -203,6 +206,8 @@ function ModuleCard({
   unavailable: string | null;
 }) {
   const [open, setOpen] = useState(false);
+  // 移动端把整张卡片折起来：默认只留「名称 + 状态 + 开关」，一屏能看十几个功能
+  const [bodyOpen, setBodyOpen] = useState(false);
   const update = useUpdateModule(accountId);
   const reset = useResetModule(accountId);
   const blocked = Boolean(unavailable);
@@ -219,9 +224,11 @@ function ModuleCard({
             update.mutate({ moduleId: state.id, patch: { enabled } });
           }}
           disabled={blocked}
+          expanded={bodyOpen}
+          onToggleExpanded={() => setBodyOpen((v) => !v)}
         />
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className={cn("space-y-3", !bodyOpen && "hidden lg:block")}>
         <p className="text-muted-foreground text-xs leading-relaxed">{description}</p>
 
         {/* 前置条件未满足：说清楚缺什么、去哪补 */}

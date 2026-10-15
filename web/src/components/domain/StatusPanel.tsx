@@ -6,6 +6,7 @@
 //  · 经验分区标签**不能截断** —— 用整行的「标签  数值」两栏，放不下就换行
 //  · 顶部徽章已经写了地图/天气/鱼饵，面板里不再重复一遍鱼饵卡
 import {
+  IconActivity,
   IconBolt,
   IconChevronDown,
   IconCoins,
@@ -43,7 +44,7 @@ const SECTION_LABELS: Record<string, string> = {
 export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
   if (!panel) {
     return (
-      <CollapsibleCard title="实时状态" defaultOpen>
+      <CollapsibleCard title="实时状态" icon={<IconActivity className="size-4 shrink-0" />} defaultOpen>
         <p className="text-muted-foreground text-sm">
           还没有状态数据。启动引擎后，这里会显示当前地图、天气、等级经验、转生进度与保底进度。
         </p>
@@ -62,6 +63,7 @@ export function StatusPanelCard({ panel }: { panel: StatusPanel | null }) {
   return (
     <CollapsibleCard
       title="实时状态"
+      icon={<IconActivity className="size-4 shrink-0" />}
       summary={[panel.biomeName, panel.weatherName].filter(Boolean).join(" · ") || null}
       headerRight={
         panel.at ? <span className="text-muted-foreground text-[11px] font-normal">{fmtRelative(panel.at)}</span> : null
