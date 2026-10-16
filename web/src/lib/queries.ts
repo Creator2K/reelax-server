@@ -314,13 +314,14 @@ export type SwapTargetView = {
   name: string;
   rarity: string;
   rarityLabel: string;
+  biomeId: string | null;
   biomeCode: string | null;
   biomeName: string | null;
   /** 专精还差几条 */
   remaining: number;
   /** 背包里现在有几条 */
   available: number;
-  /** 这个目标当前有几条可行链 */
+  /** 当前筛选下这个目标有几条可行链 */
   pathCount: number;
 };
 
@@ -359,8 +360,24 @@ export type SwapState = {
       truncated: boolean;
       scannedAt: number;
     };
+    /** 下拉候选项（稀有度全列；地图跟着已选稀有度收窄） */
+    options: {
+      rarities: { value: string; label: string }[];
+      biomes: { value: string; label: string }[];
+    };
+    /** 当前筛选下真有链的目标（服务端已经过滤好） */
     targets: SwapTargetView[];
+    /** 当前筛选下的可行链（跳数少的在前） */
     paths: SwapPathView[];
+    counts: {
+      totalPaths: number;
+      matchedPaths: number;
+      totalTargets: number;
+      chainTargets: number;
+      matchedTargets: number;
+      hopless: number;
+      filteredTargets: number;
+    };
   } | null;
   run: SwapRunView;
   /** 面板下方的日志（最近的在前） */
@@ -374,16 +391,37 @@ export type SwapExecuteResult = {
   error?: string;
 };
 
+/** 交换助手的筛选条件（都可选，空 = 不限） */
+export type SwapFilterInput = {
+  rarity?: string | null;
+  biomeId?: string | null;
+  targetFishId?: string | null;
+  /** true = 去掉「高等级地图换低等级地图」的链 */
+  onlyUpgrade?: boolean;
+};
+
 /**
  * 交换助手的扫描 / 执行状态。
  *
- * 扫描与「换 N 条」都在后台跑，所以这两件事进行中时自动轮询；
- * 都停下来就停止请求，不白刷接口。
+ * 筛选条件作为查询参数发给服务端 —— 列表、下拉候选、计数都由服务端按同一份数据算好，
+ * 面板不再自己过滤（否则「数字说 9 条、列表列了一堆」这种不一致迟早出现）。
+ * 扫描与「换 N 条」进行中时自动轮询，都停下来就停止请求。
  */
-export function useSwapState(accountId: string | undefined, enabled = true) {
+export function useSwapState(accountId: string | undefined, filter: SwapFilterInput = {}, enabled = true) {
+  const rarity = filter.rarity ?? "";
+  const biomeId = filter.biomeId ?? "";
+  const targetFishId = filter.targetFishId ?? "";
+  const onlyUpgrade = filter.onlyUpgrade === true;
+
   return useQuery({
-    queryKey: ["account-swap", accountId],
-    queryFn: () => api.get<SwapState>(`/api/accounts/${accountId}/swap`),
+    queryKey: ["account-swap", accountId, rarity, biomeId, targetFishId, onlyUpgrade],
+    queryFn: () =>
+      api.get<SwapState>(`/api/accounts/${accountId}/swap`, {
+        ...(rarity ? { rarity } : {}),
+        ...(biomeId ? { biomeId } : {}),
+        ...(targetFishId ? { targetFishId } : {}),
+        ...(onlyUpgrade ? { onlyUpgrade: "true" } : {}),
+      }),
     enabled: Boolean(accountId) && enabled,
     staleTime: 0,
     retry: false,

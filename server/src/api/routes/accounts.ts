@@ -8,7 +8,7 @@ import type { AccountService } from "../../services/account-service.ts";
 import type { SwapService } from "../../services/swap-service.ts";
 import type { RunnerRegistry } from "../../game/runner-registry.ts";
 import { currentUserId, requireApproved } from "../../auth/middleware.ts";
-import { body } from "../middleware/validate.ts";
+import { body, query } from "../middleware/validate.ts";
 import { clientIp } from "../../auth/ratelimit.ts";
 import { AUDIT_ACTIONS, type AuditRepo } from "../../db/repositories/audit.ts";
 
@@ -58,6 +58,14 @@ const partyMemberSchema = z.object({
   action: z.enum(["remove", "role", "captain"]),
   /** action = role 时必填 */
   role: z.enum(["helmsman", "crew"]).optional(),
+});
+
+const swapListSchema = z.object({
+  /** 筛选：稀有度 / 目标地图 / 具体目标鱼 / 是否只要不降级（都不填 = 全部） */
+  rarity: z.string().max(20).optional(),
+  biomeId: z.string().max(80).optional(),
+  targetFishId: z.string().max(120).optional(),
+  onlyUpgrade: z.enum(["true", "false"]).optional(),
 });
 
 const swapExecuteSchema = z.object({
@@ -259,9 +267,17 @@ export function createAccountsRouter(deps: {
 
   /* ---------- 交换助手（专精换鱼） ---------- */
 
-  /** 当前扫描状态：进度 / 上次扫描的结果（没扫过就是 idle） */
-  router.get("/:id/swap", (req, res) => {
-    res.json(deps.swap.state(currentUserId(req), req.params.id as string));
+  /** 当前扫描状态 + 按筛选收好的结果（列表 / 下拉候选 / 计数同源） */
+  router.get("/:id/swap", query(swapListSchema), (req, res) => {
+    const q = res.locals.query as z.infer<typeof swapListSchema>;
+    res.json(
+      deps.swap.state(currentUserId(req), req.params.id as string, {
+        rarity: q.rarity ?? null,
+        biomeId: q.biomeId ?? null,
+        targetFishId: q.targetFishId ?? null,
+        onlyUpgrade: q.onlyUpgrade === "true",
+      }),
+    );
   });
 
   /** 开始一次扫描（立刻返回，进度由上面的接口轮询） */

@@ -115,6 +115,7 @@ type State = {
   log: { t: number; level: "info" | "warn" | "error"; text: string }[];
   result: {
     stats: { orders: number; edges: number; targets: number; paths: number; pages: number; truncated: boolean };
+    options: { rarities: { value: string; label: string }[]; biomes: { value: string; label: string }[] };
     targets: { fishId: string; remaining: number; pathCount: number; biomeCode: string | null }[];
     paths: {
       key: string;
@@ -131,6 +132,15 @@ type State = {
         get: { fishId: string; name: string; biomeCode: string | null; rarityLabel: string };
       }[];
     }[];
+    counts: {
+      totalPaths: number;
+      matchedPaths: number;
+      totalTargets: number;
+      chainTargets: number;
+      matchedTargets: number;
+      hopless: number;
+      filteredTargets: number;
+    };
   } | null;
 };
 
@@ -477,6 +487,69 @@ describe("交换助手", () => {
     expect(after.run.doneCount).toBe(1);
     expect(fills.map((f) => f.orderId)).toEqual(["up"]);
     expect(after.log.some((l) => l.text.includes("只要不降级的地图"))).toBe(true);
+  });
+
+  it("★ 面板的筛选走查询参数：列表 / 下拉候选 / 计数同一份数据", async () => {
+    const mastery = {
+      biomes: [
+        {
+          biomeId: "b_005",
+          isUnlocked: true,
+          rarities: [
+            { fish: { id: F.b5.fishId, name: F.b5.name }, rarity: "mythic", remainingQuantity: 1, availableQuantity: 0 },
+          ],
+        },
+        {
+          biomeId: "b_002",
+          isUnlocked: true,
+          rarities: [
+            { fish: { id: F.b2.fishId, name: F.b2.name }, rarity: "mythic", remainingQuantity: 1, availableQuantity: 0 },
+          ],
+        },
+      ],
+    };
+    const { accountId, jar } = seedAccountWithGame({
+      // 升：B2 → B5；降：B3 → B2
+      pages: [[order("up", F.b2, F.b5, 1), order("down", F.b3, F.b2, 1)]],
+      inventory: [
+        { fishId: F.b2.fishId, quantity: 1 },
+        { fishId: F.b3.fishId, quantity: 1 },
+      ],
+      mastery,
+    });
+    await scanAndWait(accountId, jar);
+
+    // 不带筛选：三条链都在
+    const all = await app.get<State>(`/api/accounts/${accountId}/swap`, jar);
+    expect(all.body.result!.counts).toMatchObject({
+      totalPaths: 3,
+      matchedPaths: 3,
+      totalTargets: 2,
+      chainTargets: 2,
+      matchedTargets: 2,
+      hopless: 0,
+      filteredTargets: 0,
+    });
+    expect(all.body.result!.options.rarities.map((r) => r.value)).toEqual(["mythic"]);
+
+    // 打开「过滤高换低」：降级那条被服务端挡掉，计数同步
+    const up = await app.get<State>(`/api/accounts/${accountId}/swap?onlyUpgrade=true`, jar);
+    expect(up.body.result!.counts).toMatchObject({ totalPaths: 3, matchedPaths: 2, matchedTargets: 1, filteredTargets: 1 });
+    expect(up.body.result!.paths.every((p) => p.upgrade)).toBe(true);
+    expect(up.body.result!.paths.some((p) => p.target.biomeCode === "B2")).toBe(false);
+    expect(up.body.result!.targets.map((t) => t.fishId)).toEqual([F.b5.fishId]);
+    // 稀有度候选不受筛选影响（否则切不回来）
+    expect(up.body.result!.options.rarities).toHaveLength(1);
+
+    // 按目标地图筛
+    const byBiome = await app.get<State>(`/api/accounts/${accountId}/swap?biomeId=b_002`, jar);
+    expect(byBiome.body.result!.paths.every((p) => p.target.biomeCode === "B2")).toBe(true);
+    expect(byBiome.body.result!.counts.matchedPaths).toBe(1);
+
+    // 没有专精目标时给空列表 + 明确计数
+    const none = await app.get<State>(`/api/accounts/${accountId}/swap?targetFishId=nope`, jar);
+    expect(none.body.result!.paths).toEqual([]);
+    expect(none.body.result!.counts.matchedTargets).toBe(0);
   });
 
   it("★ 被抢单时换下一条链继续（不是整轮结束）", async () => {

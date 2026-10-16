@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.21.0";
+export const VERSION = "1.22.0";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,21 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.22.0",
+    date: "2026-10-17",
+    title: "交换助手：筛选结果统一由服务端计算；扫描按钮对齐",
+    changes: [
+      {
+        kind: "fix",
+        text: "修复「交换助手」筛选后列表与计数不一致（切稀有度 / 地图、打开「过滤高换低」后仍列出该被挡掉的链）：稀有度、地图、目标鱼、过滤高换低这四个筛选条件改由服务端按同一份数据统一计算，链列表、目标下拉与顶部计数不再各算一遍",
+      },
+      {
+        kind: "improve",
+        text: "「开始扫描」按钮与账号下拉在桌面端底部对齐（此前按钮被下方的说明文字顶起来，看起来没对齐）",
+      },
+    ],
+  },
   {
     version: "1.21.0",
     date: "2026-10-17",

@@ -93,27 +93,24 @@ export type SwapPathView = {
   hops: SwapHopView[];
 };
 
+/** 目标下拉里的一项：名称 + 地图 + 还差几条 + 当前筛选下有几条链 */
 export type SwapTargetView = {
   fishId: string;
   name: string;
   rarity: string;
   rarityLabel: string;
+  biomeId: string | null;
   biomeCode: string | null;
   biomeName: string | null;
   /** 专精还差几条 */
   remaining: number;
   /** 背包里现在有几条 */
   available: number;
-  /** 这个目标当前有几条可行链 */
+  /** 当前筛选下这个目标有几条可行链 */
   pathCount: number;
 };
 
-export type SwapLogEntry = {
-  t: number;
-  level: "info" | "warn" | "error";
-  text: string;
-};
-
+/** 扫描结果（已按请求里的筛选条件收好：下拉候选、目标、链、计数都来自同一份数据） */
 export type SwapScanResult = {
   stats: {
     orders: number;
@@ -125,8 +122,37 @@ export type SwapScanResult = {
     truncated: boolean;
     scannedAt: number;
   };
+  /** 下拉候选项（稀有度全列；地图跟着已选稀有度收窄） */
+  options: {
+    rarities: { value: string; label: string }[];
+    biomes: { value: string; label: string }[];
+  };
+  /** 当前筛选下**真有链**的目标（没链的不列出来） */
   targets: SwapTargetView[];
+  /** 当前筛选下的可行链（跳数少的在前） */
   paths: SwapPathView[];
+  counts: {
+    /** 本次扫描一共找到多少条链 */
+    totalPaths: number;
+    /** 当前筛选命中多少条链 */
+    matchedPaths: number;
+    /** 一共多少个专精目标 */
+    totalTargets: number;
+    /** 其中「有可行链」的目标数（不受稀有度/地图/升降级筛选影响） */
+    chainTargets: number;
+    /** 当前筛选命中的目标数 */
+    matchedTargets: number;
+    /** 完全没有可行链的目标数 */
+    hopless: number;
+    /** 有链、但被当前筛选挡住的目标数 */
+    filteredTargets: number;
+  };
+};
+
+export type SwapLogEntry = {
+  t: number;
+  level: "info" | "warn" | "error";
+  text: string;
 };
 
 /** 批量「换 N 条」的进度 */
@@ -223,12 +249,22 @@ const targetView = (target: SwapTarget, pathCount: number): SwapTargetView => ({
   name: target.name,
   rarity: target.rarity,
   rarityLabel: target.rarity ? rarityLabel(target.rarity) : "",
+  biomeId: target.biomeId,
   biomeCode: target.biomeId ? biomeCode(target.biomeId) : null,
   biomeName: target.biomeId ? biomeName(target.biomeId) : null,
   remaining: target.remaining,
   available: target.available,
   pathCount,
 });
+
+/** 链里出现过的目标（按鱼种去重） */
+function uniqueTargets(paths: SwapPath[]): SwapTarget[] {
+  const map = new Map<string, SwapTarget>();
+  for (const path of paths) {
+    if (!map.has(path.target.fishId)) map.set(path.target.fishId, path.target);
+  }
+  return [...map.values()];
+}
 
 const idleRun = (): SwapRunView => ({  status: "idle",
   targetCount: 0,
@@ -277,10 +313,13 @@ export class SwapService {
     this.deps = deps;
   }
 
-  /** 当前状态（账号没扫过就是一个 idle） */
-  state(userId: string, accountId: string): SwapStateView {
+  /** 当前状态（账号没扫过就是一个 idle）；筛选条件在这里应用，列表 / 下拉 / 计数同源 */
+  state(userId: string, accountId: string, filter: SwapFilter = {}): SwapStateView {
     this.requireOwnAccount(userId, accountId);
-    return this.entry(accountId).state;
+    const entry = this.entry(accountId);
+    const base = entry.state.result;
+    if (!base) return entry.state;
+    return { ...entry.state, result: this.buildResult(entry, filter, base.stats) };
   }
 
   /** 开始一次扫描；已经在扫就直接返回当前状态（不重复起任务） */
@@ -426,11 +465,18 @@ export class SwapService {
       const targets = readSwapTargets(mastery, inventory);
       const graph = buildSwapGraph(orders);
       const paths = searchSwapPaths({ graph, inventory, targets });
-      const byTarget = new Map<string, number>();
-      for (const path of paths) byTarget.set(path.target.fishId, (byTarget.get(path.target.fishId) ?? 0) + 1);
       entry.rawPaths = paths;
       entry.rawTargets = targets;
 
+      const stats = {
+        orders: orders.length,
+        edges: graph.edges,
+        targets: targets.length,
+        paths: paths.length,
+        pages,
+        truncated,
+        scannedAt: Date.now(),
+      };
       entry.state = {
         ...entry.state,
         status: "ready",
@@ -438,19 +484,8 @@ export class SwapService {
         error: null,
         finishedAt: Date.now(),
         stale: false,
-        result: {
-          stats: {
-            orders: orders.length,
-            edges: graph.edges,
-            targets: targets.length,
-            paths: paths.length,
-            pages,
-            truncated,
-            scannedAt: Date.now(),
-          },
-          targets: targets.map((t) => targetView(t, byTarget.get(t.fishId) ?? 0)),
-          paths: paths.map(pathView),
-        },
+        // 先放一份「不带筛选」的结果（面板下一次拉取会按自己的筛选重算）
+        result: this.buildResult(entry, {}, stats),
       };
       this.log(
         entry,
@@ -615,6 +650,52 @@ export class SwapService {
     const hit = new Set(this.filterPaths(entry, filter).map((p) => p.target.fishId));
     const sum = entry.rawTargets.filter((t) => hit.has(t.fishId)).reduce((acc, t) => acc + Math.max(1, t.remaining), 0);
     return sum || 1;
+  }
+
+  /**
+   * 按筛选条件组装结果视图。
+   *
+   * ★ 列表、下拉候选、计数全部从**这一份**数据算出来 —— 面板不再自己过滤，
+   *   否则「数字说 9 条、列表却列了一堆」这种不一致迟早会出现（已经踩过一次）。
+   */
+  private buildResult(entry: Entry, filter: SwapFilter, stats: SwapScanResult["stats"]): SwapScanResult {
+    const all = entry.rawPaths;
+    const matched = this.filterPaths(entry, filter);
+
+    // 有链的目标（不看筛选）：稀有度候选项用它；地图候选项跟着已选稀有度收窄
+    const chainTargets = uniqueTargets(all);
+    const rarityMap = new Map<string, string>();
+    for (const t of chainTargets) rarityMap.set(t.rarity, t.rarity ? rarityLabel(t.rarity) : t.rarity);
+    const biomeMap = new Map<string, string>();
+    for (const t of chainTargets) {
+      if (filter.rarity && t.rarity !== filter.rarity) continue;
+      if (!t.biomeId) continue;
+      biomeMap.set(t.biomeId, `${biomeCode(t.biomeId) ?? ""} ${biomeName(t.biomeId) ?? ""}`.trim() || t.biomeId);
+    }
+
+    // 当前筛选命中的目标（下拉框只列这些，并带上条数）
+    const count = new Map<string, number>();
+    for (const path of matched) count.set(path.target.fishId, (count.get(path.target.fishId) ?? 0) + 1);
+    const targets = uniqueTargets(matched).map((t) => targetView(t, count.get(t.fishId) ?? 0));
+
+    return {
+      stats,
+      options: {
+        rarities: [...rarityMap.entries()].map(([value, label]) => ({ value, label })),
+        biomes: [...biomeMap.entries()].map(([value, label]) => ({ value, label })),
+      },
+      targets,
+      paths: matched.map(pathView),
+      counts: {
+        totalPaths: all.length,
+        matchedPaths: matched.length,
+        totalTargets: entry.rawTargets.length,
+        chainTargets: chainTargets.length,
+        matchedTargets: targets.length,
+        hopless: entry.rawTargets.length - chainTargets.length,
+        filteredTargets: chainTargets.length - targets.length,
+      },
+    };
   }
 
   /** 一条链的人话：B2 雾语灯笼鱼 → B3 镜潮银鲷 → B5 星根盲鳗（2 跳） */
