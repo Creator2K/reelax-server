@@ -1,22 +1,24 @@
 // 交换助手（专精换鱼）
 //
 // 移植自浏览器脚本《专精交换助手 v1.2.0》：扫全市场的交换单，找出「用我手上的鱼、
-// 经几手以物易物换到专精目标」的所有可行链，然后由**我手动点执行**。
+// 经几手以物易物换到专精目标」的可行链，然后由**我手动点执行**。
 //
-// 与脚本一致的三件事：目标自动取专精进度（还差多少）、扫的是全部在售单（不是只扫我能响应的）、
-// 执行前重新确认鱼还在背包里。区别：账号由页面顶部选择（脚本跑在游戏页面上，只能用当前登录的号）。
+// 页面刻意做得短：一屏只有「账号 + 扫描 + 筛选 + 条数 + 数量 + 按钮 + 日志」，
+// 目标清单与链明细都收进下拉框和「展开」里 —— 想知道细节再点开，平时只看数字。
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   IconAlertTriangle,
   IconArrowsExchange,
+  IconChevronDown,
   IconChevronRight,
   IconCircleCheck,
   IconFish,
   IconInfoCircle,
   IconLoader2,
+  IconPlayerStop,
   IconRefresh,
-  IconTarget,
+  IconTerminal2,
 } from "@tabler/icons-react";
 import { PageContainer, EmptyState } from "@/components/layout/PageContainer.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -24,23 +26,25 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.t
 import { Badge } from "@/components/ui/badge.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { useAccounts, useSwapState, type SwapPathView } from "@/lib/queries.ts";
-import { useExecuteSwapPath, useStartSwapScan } from "@/lib/mutations.ts";
+import { useExecuteSwapPath, useRunSwap, useStartSwapScan, useStopSwap } from "@/lib/mutations.ts";
 import { fmtRelative } from "@/lib/utils.ts";
 
-/** 「B2 雾语湿地」这种地图说法（只有编号时退回编号） */
-const place = (code: string | null, name: string | null) => (code ? `${code}${name ? ` ${name}` : ""}` : "未知地图");
+/** 「B2 雾语湿地」这种地图说法（只有编号时退回编号，都没有就说未知） */
+const place = (code: string | null, name: string | null) =>
+  code ? `${code}${name ? ` ${name}` : ""}` : (name ?? "未知地图");
+
+const ALL = "";
+
+/** 一次最多换几条（与服务端上限一致） */
+const QUANTITY_CHOICES = [1, 2, 3, 5, 10];
+
+/** 数量下拉的可选项：常用档位 + 「刚好换满目标差额」那一档（4 条这种也要能选） */
+function quantityOptions(remaining: number): number[] {
+  const cap = Math.max(1, remaining);
+  return [...new Set([...QUANTITY_CHOICES, cap])].filter((n) => n <= cap).sort((a, b) => a - b);
+}
 
 export default function SwapPage() {
   const { data: accounts, isPending } = useAccounts();
@@ -60,7 +64,7 @@ export default function SwapPage() {
 
   usePageHeader(
     "交换助手",
-    "扫全市场交换单，找出能换到专精目标的链，手动执行",
+    "扫全市场交换单，按筛选换到专精目标",
     list.length ? (
       <label className="flex items-center gap-2 text-xs">
         <span className="text-muted-foreground">账号</span>
@@ -110,55 +114,123 @@ export default function SwapPage() {
   }
 
   return (
-    <PageContainer wide>
-      {accountId ? <SwapPanel key={accountId} accountId={accountId} /> : null}
-    </PageContainer>
+    <PageContainer wide>{accountId ? <SwapPanel key={accountId} accountId={accountId} /> : null}</PageContainer>
   );
 }
 
 function SwapPanel({ accountId }: { accountId: string }) {
   const { data: state, isPending, error } = useSwapState(accountId);
   const scan = useStartSwapScan(accountId);
-  const exec = useExecuteSwapPath(accountId);
-  const [confirming, setConfirming] = useState<SwapPathView | null>(null);
+  const run = useRunSwap(accountId);
+  const stop = useStopSwap(accountId);
+  const single = useExecuteSwapPath(accountId);
+
+  const [rarity, setRarity] = useState(ALL);
+  const [biomeId, setBiomeId] = useState(ALL);
+  const [targetFishId, setTargetFishId] = useState(ALL);
+  const [quantity, setQuantity] = useState(1);
+  const [showChains, setShowChains] = useState(false);
 
   const scanning = state?.status === "scanning";
+  const running = state?.run?.status === "running";
   const result = state?.result ?? null;
+
+  /** 有链的目标（下拉框只列这些；没链的只在下面提一句） */
+  const targetable = useMemo(() => (result?.targets ?? []).filter((t) => t.pathCount > 0), [result]);
+  const hopless = (result?.targets.length ?? 0) - targetable.length;
+
+  /** 稀有度 / 地图候选项：只列「有链的目标」里出现过的 */
+  const rarities = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of targetable) map.set(t.rarity, t.rarityLabel || t.rarity);
+    return [...map.entries()].map(([value, label]) => ({ value, label }));
+  }, [targetable]);
+
+  const biomes = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of targetable) {
+      if (rarity && t.rarity !== rarity) continue;
+      map.set(t.biomeCode ?? t.fishId, `${place(t.biomeCode, t.biomeName)}`);
+    }
+    return [...map.entries()].map(([value, label]) => ({ value, label }));
+  }, [targetable, rarity]);
+
+  const targets = useMemo(
+    () => targetable.filter((t) => (!rarity || t.rarity === rarity) && (!biomeId || (t.biomeCode ?? t.fishId) === biomeId)),
+    [targetable, rarity, biomeId],
+  );
+
+  /** 当前筛选命中的链（明细展开时用；数量与统计也从这里来） */
+  const chains = useMemo(() => {
+    if (!result) return [];
+    return result.paths.filter((p) => {
+      const t = result.targets.find((x) => x.fishId === p.targetFishId);
+      if (!t) return false;
+      if (targetFishId && p.targetFishId !== targetFishId) return false;
+      if (rarity && t.rarity !== rarity) return false;
+      if (biomeId && (t.biomeCode ?? t.fishId) !== biomeId) return false;
+      return true;
+    });
+  }, [result, rarity, biomeId, targetFishId]);
+
+  const filterHint = useMemo(() => {
+    const parts: string[] = [];
+    if (rarity) parts.push(rarities.find((r) => r.value === rarity)?.label ?? rarity);
+    if (biomeId) parts.push(biomes.find((b) => b.value === biomeId)?.label ?? biomeId);
+    if (targetFishId) parts.push(targets.find((t) => t.fishId === targetFishId)?.name ?? targetFishId);
+    return parts.join(" · ");
+  }, [rarity, biomeId, targetFishId, rarities, biomes, targets]);
+
+  /** 选中的目标还差几条（数量上限提示用） */
+  const remainingTotal = useMemo(
+    () => targets.filter((t) => !targetFishId || t.fishId === targetFishId).reduce((acc, t) => acc + Math.max(1, t.remaining), 0),
+    [targets, targetFishId],
+  );
+
+  const quantityValue = Math.max(1, Math.min(quantity, Math.max(1, remainingTotal)));
+
+  const send = () =>
+    run.mutate({
+      quantity,
+      rarity: rarity || null,
+      biomeId: biomeId || null,
+      targetFishId: targetFishId || null,
+    });
 
   return (
     <div className="space-y-4">
-      {/* 操作条：扫描 / 进度 */}
+      {/* 扫描 + 上次结果 */}
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" className="gap-1.5" disabled={scanning || scan.isPending} onClick={() => scan.mutate()}>
           {scanning ? <IconLoader2 className="size-3.5 animate-spin" /> : <IconRefresh className="size-3.5" />}
-          {state?.result ? "重新扫描" : "开始扫描"}
+          {result ? "重新扫描" : "开始扫描"}
         </Button>
         {scanning ? (
           <span className="text-muted-foreground text-xs">
-            {state.progress.phase}
-            {state.progress.pages ? ` · 第 ${state.progress.pages} 页 · 已收 ${state.progress.orders} 张单` : ""}
+            {state?.progress.phase}
+            {state?.progress.pages ? ` · 第 ${state.progress.pages} 页 · 已收 ${state.progress.orders} 张单` : ""}
           </span>
         ) : null}
         {!scanning && result ? (
-          <span className="text-muted-foreground text-xs" title={new Date(result.stats.scannedAt).toLocaleString("zh-CN")}>
-            上次扫描：{fmtRelative(result.stats.scannedAt)} · {result.stats.orders} 张单 / {result.stats.edges} 条边 /{" "}
-            {result.stats.paths} 条可行链
-            {result.stats.truncated ? "（达到翻页上限，可能还有没扫到的单）" : ""}
+          <span
+            className="text-muted-foreground text-xs"
+            title={new Date(result.stats.scannedAt).toLocaleString("zh-CN")}
+          >
+            {fmtRelative(result.stats.scannedAt)}扫描 · {result.stats.orders} 张单 ·{" "}
+            <span className="text-foreground font-medium">{result.stats.paths} 条链</span> ·{" "}
+            {result.stats.targets} 个专精目标
+            {result.stats.truncated ? "（达到翻页上限）" : ""}
           </span>
         ) : null}
-        {exec.isPending ? (
-          <span className="text-muted-foreground flex items-center gap-1 text-xs">
-            <IconLoader2 className="size-3.5 animate-spin" />
-            正在执行…
-          </span>
+        {state?.stale && !running ? (
+          <span className="text-[var(--status-warn)] text-xs">数据已过期，建议重新扫描</span>
         ) : null}
       </div>
 
-      {/* 状态提示 */}
       {error ? (
         <Alert variant="destructive">
           <IconAlertTriangle />
-          <AlertDescription>读取扫描状态失败：{(error as Error).message}</AlertDescription>
+          <AlertDescription>读取状态失败：{(error as Error).message}</AlertDescription>
         </Alert>
       ) : null}
 
@@ -166,13 +238,6 @@ function SwapPanel({ accountId }: { accountId: string }) {
         <Alert variant="destructive">
           <IconAlertTriangle />
           <AlertDescription>扫描失败：{state.error ?? "未知原因"}</AlertDescription>
-        </Alert>
-      ) : null}
-
-      {state?.stale && !scanning ? (
-        <Alert variant="warn">
-          <IconInfoCircle />
-          <AlertDescription>执行过交换之后数据已经旧了（单子剩余量与背包都变了），建议重新扫描一次。</AlertDescription>
         </Alert>
       ) : null}
 
@@ -187,116 +252,220 @@ function SwapPanel({ accountId }: { accountId: string }) {
       ) : null}
 
       {result ? (
-        <>
-          {/* 专精目标概览 */}
-          <Card className="gap-3">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-sm">
-                <IconTarget className="size-4" />
-                专精目标 {result.targets.length} 个
-                <span className="text-muted-foreground text-xs font-normal">
-                  共 {result.stats.paths} 条可行链
+        <Card className="gap-3">
+          <CardContent className="space-y-3 pt-4">
+            {/* 筛选：稀有度 → 地图 → 目标鱼（下拉框里直接写有几条链） */}
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="space-y-1">
+                <span className="text-muted-foreground block text-[11px]">稀有度</span>
+                <select
+                  className="border-input bg-background h-8 min-w-24 rounded-md border px-2 text-xs"
+                  value={rarity}
+                  disabled={running}
+                  onChange={(e) => {
+                    setRarity(e.target.value);
+                    setBiomeId(ALL);
+                    setTargetFishId(ALL);
+                  }}
+                >
+                  <option value={ALL}>全部</option>
+                  {rarities.map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-muted-foreground block text-[11px]">地图</span>
+                <select
+                  className="border-input bg-background h-8 min-w-32 rounded-md border px-2 text-xs"
+                  value={biomeId}
+                  disabled={running}
+                  onChange={(e) => {
+                    setBiomeId(e.target.value);
+                    setTargetFishId(ALL);
+                  }}
+                >
+                  <option value={ALL}>全部</option>
+                  {biomes.map((b) => (
+                    <option key={b.value} value={b.value}>
+                      {b.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="min-w-0 flex-1 space-y-1">
+                <span className="text-muted-foreground block text-[11px]">专精目标鱼（只列有可行链的）</span>
+                <select
+                  className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
+                  value={targetFishId}
+                  disabled={running}
+                  onChange={(e) => setTargetFishId(e.target.value)}
+                >
+                  <option value={ALL}>全部（任意目标都算）</option>
+                  {targets.map((t) => (
+                    <option key={t.fishId} value={t.fishId}>
+                      {t.name}（{place(t.biomeCode, t.biomeName)}）· 还差 {t.remaining} · {t.pathCount} 条链
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            {hopless > 0 ? (
+              <p className="text-muted-foreground text-[11px]">
+                另有 {hopless} 个专精目标暂没有可行链（市场上没人挂出能接上的单），没有列进上面的下拉框。
+              </p>
+            ) : null}
+
+            {/* 条数 + 数量 + 执行 */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-3">
+              <span className="text-sm">
+                当前筛选：<span className="font-medium">{chains.length}</span> 条链 ·{" "}
+                <span className="font-medium">{targets.filter((t) => !targetFishId || t.fishId === targetFishId).length}</span>{" "}
+                个目标
+                {filterHint ? <span className="text-muted-foreground text-xs">（{filterHint}）</span> : null}
+              </span>
+
+              <label className="flex items-center gap-2 text-xs">
+                <span className="text-muted-foreground">换</span>
+                <select
+                  className="border-input bg-background h-8 w-16 rounded-md border px-2 text-xs"
+                  value={String(quantityValue)}
+                  disabled={running}
+                  onChange={(e) => setQuantity(Number(e.target.value))}
+                >
+                  {quantityOptions(remainingTotal).map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-muted-foreground">
+                  条{remainingTotal < quantity ? `（目标只差 ${remainingTotal} 条，按 ${quantityValue} 算）` : ""}
                 </span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1.5">
-              {result.targets.length === 0 ? (
-                <p className="text-muted-foreground text-xs">
-                  现在没有需要换的专精目标（可能都已备齐，或专精目标还没轮到）。
-                </p>
-              ) : (
-                result.targets.map((t) => (
-                  <div key={t.fishId} className="bg-muted/30 flex flex-wrap items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs">
-                    <Badge variant="outline" className="shrink-0">
-                      {t.rarityLabel || t.rarity}
-                    </Badge>
-                    <span className="font-medium">{t.name}</span>
-                    <span className="text-muted-foreground text-[11px]">{place(t.biomeCode, t.biomeName)}</span>
-                    <span className="text-muted-foreground ml-auto text-[11px]">
-                      还差 {t.remaining} 条 · 现有 {t.available} 条 ·{" "}
-                      {t.pathCount ? (
-                        <span className="text-foreground">{t.pathCount} 条链可换</span>
-                      ) : (
-                        "暂无可换的链"
-                      )}
-                    </span>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
+              </label>
 
-          {/* 可行链 */}
-          <Card className="gap-3">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-sm">
-                <IconArrowsExchange className="size-4" />
-                可行交换链
-                <span className="text-muted-foreground text-xs font-normal">按跳数从少到多</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {result.paths.length === 0 ? (
-                <p className="text-muted-foreground text-xs">
-                  当前市场上没有能换到这些专精目标的链（只接别人挂出的现成单；中间某一手没人挂单就会走不通）。
-                </p>
+              {running ? (
+                <>
+                  <Button size="sm" variant="outline" className="gap-1.5" disabled={stop.isPending} onClick={() => stop.mutate()}>
+                    <IconPlayerStop className="size-3.5" />
+                    停止
+                  </Button>
+                  <span className="text-muted-foreground flex items-center gap-1 text-xs">
+                    <IconLoader2 className="size-3.5 animate-spin" />
+                    {state?.run.doneCount ?? 0}/{state?.run.targetCount ?? 0} 条
+                    {state?.run.current ? ` · ${state.run.current}` : ""}
+                  </span>
+                </>
               ) : (
-                result.paths.map((p) => (
-                  <PathCard
-                    key={p.key}
-                    path={p}
-                    targetName={result.targets.find((t) => t.fishId === p.targetFishId)?.name ?? p.targetFishId}
-                    busy={exec.isPending}
-                    onExecute={() => setConfirming(p)}
-                  />
-                ))
+                <Button size="sm" className="gap-1.5" disabled={!chains.length || run.isPending} onClick={send}>
+                  <IconArrowsExchange className="size-3.5" />
+                  开始换
+                </Button>
               )}
-            </CardContent>
-          </Card>
 
-          <p className="text-muted-foreground flex items-start gap-1 text-xs">
-            <IconInfoCircle className="mt-0.5 size-3 shrink-0" />
-            链由「别人挂出的现成交换单」串起来：执行时会逐跳响应，中途被抢单 / 缺鱼会停在那一步并说明，
-            已经换到的鱼留在背包里。交换来的鱼不计入图鉴，但命中专精目标且开着自动锁定时仍受专精锁保护。
-          </p>
-        </>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto h-8 gap-1 text-xs"
+                onClick={() => setShowChains((v) => !v)}
+              >
+                <IconChevronDown className={showChains ? "size-3.5 rotate-180 transition-transform" : "size-3.5"} />
+                {showChains ? "收起明细" : `展开看会走哪几手（${chains.length}）`}
+              </Button>
+            </div>
+
+            {state?.run.status !== "idle" && state?.run.note && !running ? (
+              <p className="text-muted-foreground text-xs">
+                上次执行：{state.run.note}（换到 {state.run.doneCount}/{state.run.targetCount} 条）
+              </p>
+            ) : null}
+
+            {/* 明细：默认收起，展开后每条可以单独执行 */}
+            {showChains ? (
+              <div className="space-y-1.5 border-t pt-3">
+                {chains.length === 0 ? (
+                  <p className="text-muted-foreground text-xs">当前筛选下没有可走的链。</p>
+                ) : (
+                  chains.slice(0, 50).map((p) => (
+                    <ChainRow
+                      key={p.key}
+                      path={p}
+                      targetName={result.targets.find((t) => t.fishId === p.targetFishId)?.name ?? p.targetFishId}
+                      busy={running || single.isPending}
+                      onExecute={() =>
+                        single.mutate(
+                          p.hops.map((h) => ({
+                            orderId: h.orderId,
+                            requestFishId: h.give.fishId,
+                            offerFishId: h.get.fishId,
+                          })),
+                        )
+                      }
+                    />
+                  ))
+                )}
+                {chains.length > 50 ? (
+                  <p className="text-muted-foreground text-[11px]">只列出前 50 条（共 {chains.length} 条），执行时会自动挑最优的。</p>
+                ) : null}
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
       ) : null}
 
-      <AlertDialog open={Boolean(confirming)} onOpenChange={(o) => !o && setConfirming(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>执行这条交换链？</AlertDialogTitle>
-            <AlertDialogDescription>
-              会真的把鱼换出去（{confirming?.hops.length ?? 0} 跳）：交出 {confirming?.hops[0]?.give.name}
-              {confirming && confirming.hops.length > 1 ? ` 等 ${confirming.hops.length} 条` : ""}，最终换到{" "}
-              {confirming?.hops[confirming.hops.length - 1]?.get.name}。中途失败会停在那一步，已换到的鱼留在背包里。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (!confirming) return;
-                exec.mutate(
-                  confirming.hops.map((h) => ({
-                    orderId: h.orderId,
-                    requestFishId: h.give.fishId,
-                    offerFishId: h.get.fishId,
-                  })),
-                );
-                setConfirming(null);
-              }}
-            >
-              确认执行
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* 日志：最新的在最上面 */}
+      <Card className="gap-2">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <IconTerminal2 className="size-4" />
+            日志
+            <span className="text-muted-foreground text-xs font-normal">
+              {state?.log.length ? `最近 ${state.log.length} 条` : "扫描与交换的每一步"}
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {state?.log.length ? (
+            <div className="bg-muted/30 max-h-72 space-y-0.5 overflow-y-auto rounded-lg px-3 py-2 font-mono text-[11px] leading-relaxed">
+              {state.log.map((entry, i) => (
+                <div
+                  key={`${String(entry.t)}-${String(i)}`}
+                  className={
+                    entry.level === "error"
+                      ? "text-destructive"
+                      : entry.level === "warn"
+                        ? "text-[var(--status-warn)]"
+                        : "text-foreground"
+                  }
+                >
+                  [{new Date(entry.t).toLocaleTimeString("zh-CN", { hour12: false })}] {entry.text}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-muted-foreground text-xs">
+              还没有日志。扫描一次、或点「开始换」，这里会逐条写下每一步（哪条链、第几跳、成功还是被抢单）。
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <p className="text-muted-foreground flex items-start gap-1 text-xs">
+        <IconInfoCircle className="mt-0.5 size-3 shrink-0" />
+        链由「别人挂出的现成交换单」串起来：每一跳前都会重新确认鱼还在背包里，中途被抢单 / 缺鱼会换下一条链，
+        换到的鱼留在背包里。交换来的鱼不计入图鉴，但命中专精目标且开着自动锁定时仍受专精锁保护。
+      </p>
     </div>
   );
 }
 
-function PathCard({
+/** 明细里的一条链：一行摘要 + 展开后的每一手 + 「只执行这一条」 */
+function ChainRow({
   path,
   targetName,
   busy,
@@ -307,39 +476,52 @@ function PathCard({
   busy: boolean;
   onExecute: () => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const start = path.hops[0];
+
   return (
-    <div className="bg-muted/30 space-y-1.5 rounded-xl px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
+    <div className="bg-muted/30 space-y-1 rounded-lg px-2.5 py-1.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <Badge variant="secondary" className="shrink-0">
           {path.length} 跳
         </Badge>
-        <span className="text-muted-foreground text-[11px]">
-          目标 · {targetName}
-        </span>
-        <Button size="sm" variant="outline" className="ml-auto h-7 gap-1 text-[11px]" disabled={busy} onClick={onExecute}>
-          <IconArrowsExchange className="size-3" />
-          执行这条链
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-1 text-left"
+          onClick={() => setOpen((v) => !v)}
+        >
+          <IconChevronRight className={open ? "size-3 shrink-0 rotate-90 transition-transform" : "size-3 shrink-0 transition-transform"} />
+          <span className="min-w-0 truncate">
+            <span className="font-medium">
+              {place(start?.give.biomeCode ?? null, null)} {start?.give.name}
+            </span>
+            <span className="text-muted-foreground"> → {targetName}</span>
+          </span>
+        </button>
+        <Button size="sm" variant="outline" className="h-6 shrink-0 px-2 text-[11px]" disabled={busy} onClick={onExecute}>
+          只执行这一条
         </Button>
       </div>
 
-      {/* 每一手：交出什么 → 获得什么（单主 + 还能成交几次） */}
-      <div className="space-y-1">
-        {path.hops.map((hop, i) => (
-          <div key={`${hop.orderId}-${String(i)}`} className="flex flex-wrap items-center gap-1 text-[11px]">
-            <span className="font-medium">
-              {place(hop.give.biomeCode, null)} {hop.give.name}
-            </span>
-            <IconChevronRight className="text-muted-foreground size-3" />
-            <span className="font-medium">
-              {place(hop.get.biomeCode, null)} {hop.get.name}
-            </span>
-            <span className="text-muted-foreground">
-              （单主 {hop.owner ?? "未知"}，剩 {hop.capacity} 次）
-            </span>
-            {i === path.hops.length - 1 ? <IconCircleCheck className="text-[var(--status-online)] size-3" /> : null}
-          </div>
-        ))}
-      </div>
+      {open ? (
+        <div className="space-y-0.5 pl-4 text-[11px]">
+          {path.hops.map((hop, i) => (
+            <div key={`${hop.orderId}-${String(i)}`} className="flex flex-wrap items-center gap-1">
+              <span className="font-medium">
+                {place(hop.give.biomeCode, null)} {hop.give.name}
+              </span>
+              <IconChevronRight className="text-muted-foreground size-3" />
+              <span className="font-medium">
+                {place(hop.get.biomeCode, null)} {hop.get.name}
+              </span>
+              <span className="text-muted-foreground">
+                （单主 {hop.owner ?? "未知"}，剩 {hop.capacity} 次）
+              </span>
+              {i === path.hops.length - 1 ? <IconCircleCheck className="text-[var(--status-online)] size-3" /> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

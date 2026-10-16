@@ -159,6 +159,12 @@ export function describeAudit(row: AuditLike, r: AuditResolvers = {}): string {
       return `用账号${accountText(target ?? "", r)}扫描全市场交换单（找可换到专精目标的链）`;
     case "account.swap.execute": {
       const d = detailObject(row);
+      if (d.mode === "batch") {
+        const plan = typeof d.plan === "number" ? d.plan : null;
+        const want = typeof d.want === "number" ? d.want : null;
+        const tail = plan && want && plan !== want ? `（填了 ${want} 条，按目标差额实际换 ${plan} 条）` : "";
+        return `用账号${accountText(target ?? "", r)}批量换鱼${plan ? `，计划 ${plan} 条` : ""}${tail}`;
+      }
       const hops = typeof d.hops === "number" ? d.hops : null;
       const ok = d.ok === true ? "成功" : `只走到第 ${typeof d.done === "number" ? d.done : 0} 跳`;
       return `用账号${accountText(target ?? "", r)}执行一条交换链${hops ? `（${hops} 跳，${ok}）` : ""}`;

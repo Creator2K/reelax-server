@@ -1,13 +1,14 @@
-// 交换助手：扫描全市场交换单 → 找出能换到专精目标的链 → 按用户手动执行
+// 交换助手：扫描全市场交换单 → 找出能换到专精目标的链 → 手动执行
 //
 // 移植自浏览器脚本《专精交换助手 v1.2.0》，但把三件事换成了服务端现成的能力：
 //  · 认证/签名 → 账号运行时里的签名客户端（还自带每账号代理、自动重登）；
 //  · 面板 UI   → 「交换助手」页（左侧菜单）；
-//  · 浏览器内存 → 每个账号一份扫描状态（内存，可反复扫描覆盖）。
+//  · 浏览器内存 → 每个账号一份状态（内存：扫描结果 + 执行进度 + 日志）。
 //
-// 为什么扫描要异步：一张单 50 条、最多翻 40 页，串行走代理可能要几十秒 ——
-// 挂在一个 HTTP 请求里既容易超时也不好显示进度。所以 start 立刻返回，
-// 状态（进度 / 结果）由页面轮询读取。
+// 两种动手方式，都是用户主动点的：
+//  · 单条：页面展开明细后「只执行这一条」（一次把这条链走完）；
+//  · 批量：「换 N 条」= 按筛选反复挑能走通的链，直到换到 N 条或走不动为止。
+//    批量放后台跑（一串链最多几十次请求，挂在页面请求里会超时），进度与日志由页面轮询。
 import type { Repos } from "../db/repositories/index.ts";
 import type { RunnerRegistry } from "../game/runner-registry.ts";
 import type { Logger } from "../lib/logger.ts";
@@ -18,6 +19,7 @@ import { barterErrorMessage, barterNextCursor, normalizeBarterOrders, type Barte
 import {
   SWAP_MAX_LENGTH,
   buildSwapGraph,
+  isSwapPathFeasible,
   readSwapInventory,
   readSwapTargets,
   searchSwapPaths,
@@ -30,11 +32,21 @@ import {
 const SWAP_PAGE_LIMIT = 50;
 /** 最多翻几页（40 × 50 = 最多 2000 张单） */
 const SWAP_MAX_PAGES = 40;
-
 /** 一次执行最多几跳（与搜索上限一致） */
 export const SWAP_EXECUTE_MAX_HOPS = SWAP_MAX_LENGTH;
+/** 一次「换 N 条」最多换几条（防止一次点掉太多鱼） */
+export const SWAP_MAX_QUANTITY = 10;
+/** 面板日志保留条数 */
+const SWAP_LOG_LIMIT = 200;
 
 export type SwapHopInput = { orderId: string; requestFishId: string; offerFishId: string };
+
+/** 筛选条件：稀有度 / 地图 / 具体目标鱼（都是可选，空 = 不限） */
+export type SwapFilter = {
+  rarity?: string | null;
+  biomeId?: string | null;
+  targetFishId?: string | null;
+};
 
 export type SwapFishView = {
   fishId: string;
@@ -55,7 +67,7 @@ export type SwapHopView = {
 };
 
 export type SwapPathView = {
-  /** 稳定 key：目标 + 跳数 + 每一跳的单 id（前端列表用） */
+  /** 稳定 key：目标 + 跳数 + 每一跳的单 id */
   key: string;
   targetFishId: string;
   length: number;
@@ -77,6 +89,12 @@ export type SwapTargetView = {
   pathCount: number;
 };
 
+export type SwapLogEntry = {
+  t: number;
+  level: "info" | "warn" | "error";
+  text: string;
+};
+
 export type SwapScanResult = {
   stats: {
     orders: number;
@@ -92,15 +110,33 @@ export type SwapScanResult = {
   paths: SwapPathView[];
 };
 
+/** 批量「换 N 条」的进度 */
+export type SwapRunView = {
+  status: "idle" | "running" | "done" | "stopped";
+  /** 本次打算换到几条 */
+  targetCount: number;
+  /** 已经换到几条 */
+  doneCount: number;
+  /** 当前正在走什么（人类可读；没在跑就是 null） */
+  current: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  /** 结束时的说明（换够 / 没得换了 / 被叫停） */
+  note: string | null;
+};
+
 export type SwapStateView = {
   status: "idle" | "scanning" | "ready" | "error";
   progress: { phase: string; pages: number; orders: number };
   error: string | null;
   startedAt: number | null;
   finishedAt: number | null;
-  /** 执行过之后数据就旧了（剩余量变了）：面板提示重新扫描 */
+  /** 执行过之后数据就旧了（单子剩余量与背包都变了）：面板提示重新扫描 */
   stale: boolean;
   result: SwapScanResult | null;
+  run: SwapRunView;
+  /** 面板下方的日志（最近的在前，最多 200 条） */
+  log: SwapLogEntry[];
 };
 
 export type SwapExecuteResult = {
@@ -147,7 +183,15 @@ const targetView = (target: SwapTarget, pathCount: number): SwapTargetView => ({
   pathCount,
 });
 
-type Entry = { state: SwapStateView; running: boolean };
+const idleRun = (): SwapRunView => ({
+  status: "idle",
+  targetCount: 0,
+  doneCount: 0,
+  current: null,
+  startedAt: null,
+  finishedAt: null,
+  note: null,
+});
 
 const idleState = (): SwapStateView => ({
   status: "idle",
@@ -157,11 +201,30 @@ const idleState = (): SwapStateView => ({
   finishedAt: null,
   stale: false,
   result: null,
+  run: idleRun(),
+  log: [],
 });
+
+type Entry = {
+  accountId: string;
+  /** 近期调用方的用户 id（日志要带上，用户才能在「运行日志」里看到自己的操作） */
+  userId: string | null;
+  state: SwapStateView;
+  /** 扫描得到的原始链与目标（执行时要按它们判可行性；state 里存的是给页面看的视图） */
+  rawPaths: SwapPath[];
+  rawTargets: SwapTarget[];
+  /** 扫描 / 批量执行是否正在跑（避免重复启动） */
+  scanning: boolean;
+  running: boolean;
+  /** 用户点了「停止」：批量循环下一轮就退出 */
+  stopRun: boolean;
+  /** 本次批量执行里已经失败过的单（被抢走 / 过期），不再拿它组链 */
+  deadOrders: Set<string>;
+};
 
 export class SwapService {
   private readonly deps: { repos: Repos; registry: RunnerRegistry; logger: Logger };
-  /** 每个账号一份扫描状态（内存即可：结果随时可用新扫描覆盖） */
+  /** 每个账号一份状态（内存即可：结果随时可用新扫描覆盖） */
   private readonly entries = new Map<string, Entry>();
 
   constructor(deps: { repos: Repos; registry: RunnerRegistry; logger: Logger }) {
@@ -178,23 +241,24 @@ export class SwapService {
   start(userId: string, accountId: string): SwapStateView {
     this.requireOwnAccount(userId, accountId);
     const entry = this.entry(accountId);
-    if (entry.running) return entry.state;
+    if (entry.scanning) return entry.state;
 
     entry.state = {
-      ...idleState(),
+      ...entry.state,
       status: "scanning",
       progress: { phase: "准备中", pages: 0, orders: 0 },
+      error: null,
       startedAt: Date.now(),
-      // 旧结果先留着：扫的时候面板还能看上一轮的数据
-      result: entry.state.result,
+      finishedAt: null,
     };
-    entry.running = true;
+    entry.scanning = true;
+    this.log(entry, "info", "开始扫描全市场交换单…");
     void this.scan(accountId, entry);
     return entry.state;
   }
 
   /**
-   * 执行一条链（用户手动点的）。
+   * 执行一条链（页面展开明细后「只执行这一条」）。
    *
    * 每一步都先确认「要交出的鱼还在背包里」，失败就停在那一步并如实报出来 ——
    * 半路停下时前面几跳已经成交，不能假装整体失败。
@@ -208,60 +272,76 @@ export class SwapService {
       throw new HttpError(400, "SWAP_TOO_MANY_HOPS", `一次最多走 ${SWAP_EXECUTE_MAX_HOPS} 跳`);
     }
 
+    const entry = this.entry(accountId);
     const rt = this.deps.registry.require(accountId);
-    const log = this.deps.logger.child({ userId, accountId });
-    const inventory = readSwapInventory(await rt.client.inventoryFish());
-    const steps: SwapExecuteResult["steps"] = [];
+    const result = await this.walkChain(rt, entry, hops);
+    return result.view;
+  }
 
-    for (const [i, hop] of hops.entries()) {
-      const have = inventory.get(hop.requestFishId) ?? 0;
-      const fail = (text: string): SwapExecuteResult => {
-        steps.push({ index: i + 1, orderId: hop.orderId, ok: false, error: text });
-        this.markStale(accountId);
-        log.warn("交换助手", `执行中断（第 ${i + 1}/${hops.length} 跳）：${text}`);
-        return { ok: false, done: i, steps, error: `第 ${i + 1} 步：${text}` };
-      };
+  /**
+   * 批量「换 N 条」：按筛选反复挑能走通的链，直到换到 N 条或走不动为止。
+   *
+   * 立刻返回进度对象，真正的循环在后台跑（页面轮询状态里的 run 与 log）。
+   */
+  run(
+    userId: string,
+    accountId: string,
+    opts: { quantity?: number } & SwapFilter,
+  ): SwapStateView {
+    this.requireOwnAccount(userId, accountId);
+    const entry = this.entry(accountId);
+    if (entry.running) return entry.state;
 
-      if (have < 1) return fail("这条鱼已经不在背包里了（可能被别的功能卖掉或用掉了）");
-
-      try {
-        await rt.client.barterFill(hop.orderId, {
-          requestFishId: hop.requestFishId,
-          offerFishId: hop.offerFishId,
-        });
-      } catch (err) {
-        return fail(`${barterErrorMessage(err)}（这张单可能已被撤销、完成或被别人抢先）`);
-      }
-
-      inventory.set(hop.requestFishId, have - 1);
-      inventory.set(hop.offerFishId, (inventory.get(hop.offerFishId) ?? 0) + 1);
-      steps.push({ index: i + 1, orderId: hop.orderId, ok: true });
+    const paths = this.filterPaths(entry, opts);
+    if (!paths.length) {
+      throw new HttpError(400, "SWAP_NO_PATH", "当前筛选下没有可走的交换链（换个筛选，或重新扫描）");
     }
 
-    this.markStale(accountId);
-    log.info("交换助手", `✅ 手动走完一条 ${hops.length} 跳的交换链（共交出 ${hops.length} 条鱼）`);
-    return { ok: true, done: hops.length, steps };
+    // 目标还差多少就换多少：免得换多了浪费（筛选里指定了目标时只算那一个）
+    const wanted = Math.floor(Number(opts.quantity) || 1);
+    const remainingTotal = this.remainingOf(entry, opts);
+    const targetCount = Math.max(1, Math.min(wanted, remainingTotal, SWAP_MAX_QUANTITY));
+
+    entry.stopRun = false;
+    entry.deadOrders.clear();
+    entry.state = {
+      ...entry.state,
+      run: {
+        status: "running",
+        targetCount,
+        doneCount: 0,
+        current: null,
+        startedAt: Date.now(),
+        finishedAt: null,
+        note: null,
+      },
+    };
+    entry.running = true;
+    const filterText = this.filterText(opts);
+    this.log(
+      entry,
+      "info",
+      `开始换 ${targetCount} 条${filterText ? `（${filterText}）` : ""}${targetCount < wanted ? `：目标只差这么多，已按 ${targetCount} 条算` : ""}`,
+    );
+    void this.runBatch(accountId, entry, opts, targetCount);
+    return entry.state;
   }
 
-  /* ---------------- 内部 ---------------- */
-
-  private entry(accountId: string): Entry {
-    const hit = this.entries.get(accountId);
-    if (hit) return hit;
-    const created: Entry = { state: idleState(), running: false };
-    this.entries.set(accountId, created);
-    return created;
+  /** 停止批量执行（循环会在下一跳之前退出） */
+  stop(userId: string, accountId: string): SwapStateView {
+    this.requireOwnAccount(userId, accountId);
+    const entry = this.entry(accountId);
+    if (entry.running) {
+      entry.stopRun = true;
+      this.log(entry, "warn", "已请求停止：当前这一跳走完就停");
+    }
+    return entry.state;
   }
 
-  /** 执行过之后把结果标成过期（面板据此提示"建议重新扫描"） */
-  private markStale(accountId: string): void {
-    const entry = this.entries.get(accountId);
-    if (entry?.state.result) entry.state.stale = true;
-  }
+  /* ---------------- 内部：扫描 ---------------- */
 
   private async scan(accountId: string, entry: Entry): Promise<void> {
     const rt = this.deps.registry.require(accountId);
-    const log = this.deps.logger.child({ accountId });
     try {
       // 1) 拉全部交换单（不是只拉"我能响应的"：长链要靠中间环节的单串起来）
       const orders: BarterOrder[] = [];
@@ -282,14 +362,14 @@ export class SwapService {
           seen.add(order.id);
           orders.push(order);
         }
-        entry.state.progress = { phase: "拉取交换单", pages, orders: orders.length };
+        entry.state = { ...entry.state, progress: { phase: "拉取交换单", pages, orders: orders.length } };
         cursor = barterNextCursor(resp);
         if (!cursor) break;
         truncated = i === SWAP_MAX_PAGES - 1;
       }
 
       // 2) 专精目标 + 背包
-      entry.state.progress = { phase: "读取专精进度与背包", pages, orders: orders.length };
+      entry.state = { ...entry.state, progress: { phase: "读取专精进度与背包", pages, orders: orders.length } };
       const [mastery, inv] = await Promise.all([
         rt.client.mastery().catch(() => null),
         rt.client.inventoryFish().catch(() => null),
@@ -302,6 +382,8 @@ export class SwapService {
       const paths = searchSwapPaths({ graph, inventory, targets });
       const byTarget = new Map<string, number>();
       for (const path of paths) byTarget.set(path.target.fishId, (byTarget.get(path.target.fishId) ?? 0) + 1);
+      entry.rawPaths = paths;
+      entry.rawTargets = targets;
 
       entry.state = {
         ...entry.state,
@@ -324,18 +406,207 @@ export class SwapService {
           paths: paths.map(pathView),
         },
       };
-      log.info(
-        "交换助手",
+      this.log(
+        entry,
+        "info",
         `扫描完成：${orders.length} 张单 / ${graph.edges} 条边 / ${targets.length} 个专精目标 / ${paths.length} 条可行链` +
           (truncated ? `（已翻满 ${SWAP_MAX_PAGES} 页，可能还有没扫到的单）` : ""),
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       entry.state = { ...entry.state, status: "error", error: msg, finishedAt: Date.now() };
-      log.warn("交换助手", `扫描失败：${msg}`);
+      this.log(entry, "error", `扫描失败：${msg}`);
+    } finally {
+      entry.scanning = false;
+    }
+  }
+
+  /* ---------------- 内部：执行 ---------------- */
+
+  /** 走完一条链：每一跳前确认鱼还在背包里，失败即停 */
+  private async walkChain(
+    rt: { client: { inventoryFish(): Promise<unknown>; barterFill(orderId: string, body: { requestFishId: string; offerFishId: string }): Promise<unknown> } },
+    entry: Entry,
+    hops: SwapHopInput[],
+  ): Promise<{ view: SwapExecuteResult; failedOrderId: string | null }> {
+    const inventory = readSwapInventory(await rt.client.inventoryFish());
+    const steps: SwapExecuteResult["steps"] = [];
+
+    for (const [i, hop] of hops.entries()) {
+      const have = inventory.get(hop.requestFishId) ?? 0;
+      const fail = (text: string): { view: SwapExecuteResult; failedOrderId: string | null } => {
+        steps.push({ index: i + 1, orderId: hop.orderId, ok: false, error: text });
+        this.markStale(entry);
+        return { view: { ok: false, done: i, steps, error: `第 ${i + 1} 步：${text}` }, failedOrderId: hop.orderId };
+      };
+
+      if (have < 1) return fail("这条鱼已经不在背包里了（可能被别的功能卖掉或用掉了）");
+
+      try {
+        await rt.client.barterFill(hop.orderId, {
+          requestFishId: hop.requestFishId,
+          offerFishId: hop.offerFishId,
+        });
+      } catch (err) {
+        return fail(`${barterErrorMessage(err)}（这张单可能已被撤销、完成或被别人抢先）`);
+      }
+
+      inventory.set(hop.requestFishId, have - 1);
+      inventory.set(hop.offerFishId, (inventory.get(hop.offerFishId) ?? 0) + 1);
+      steps.push({ index: i + 1, orderId: hop.orderId, ok: true });
+    }
+
+    this.markStale(entry);
+    this.log(entry, "info", `✅ 走完一条 ${hops.length} 跳的交换链`);
+    return { view: { ok: true, done: hops.length, steps }, failedOrderId: null };
+  }
+
+  /** 批量循环：反复挑链、走链，直到换够 / 没得换 / 被停止 */
+  private async runBatch(accountId: string, entry: Entry, opts: { quantity?: number } & SwapFilter, targetCount: number): Promise<void> {
+    const rt = this.deps.registry.require(accountId);
+    let done = 0;
+    let note: string | null = null;
+
+    try {
+      while (done < targetCount) {
+        if (entry.stopRun) {
+          note = `已停止（换到 ${done}/${targetCount} 条）`;
+          break;
+        }
+
+        const inventory = readSwapInventory(await rt.client.inventoryFish());
+        const candidates = this.filterPaths(entry, opts).filter(
+          (path) => !path.hops.some((h) => entry.deadOrders.has(h.orderId)) && isSwapPathFeasible(path.hops, inventory),
+        );
+        if (!candidates.length) {
+          note = `没有可走的链了（换到 ${done}/${targetCount} 条）`;
+          break;
+        }
+
+        const chain = candidates[0]!;
+        const text = this.chainText(chain);
+        entry.state = {
+          ...entry.state,
+          run: { ...entry.state.run, current: `第 ${done + 1}/${targetCount} 条：${text}` },
+        };
+
+        const hops: SwapHopInput[] = chain.hops.map((h) => ({
+          orderId: h.orderId,
+          requestFishId: h.give.fishId,
+          offerFishId: h.get.fishId,
+        }));
+        const r = await this.walkChain(rt, entry, hops);
+        if (!r.view.ok) {
+          // 这一跳失败了：把那张单拉黑，换下一条候选链继续（不是整轮结束）
+          if (r.failedOrderId) entry.deadOrders.add(r.failedOrderId);
+          this.log(entry, "warn", `${text} 失败：${r.view.error ?? "未知原因"}（已换 ${r.view.done} 跳，换下一条链）`);
+          entry.state = { ...entry.state, run: { ...entry.state.run, doneCount: done } };
+          // 全部候选都被拉黑时上面那段 candidates 为空会自然收尾，这里防止死循环
+          if (this.filterPaths(entry, opts).every((p) => p.hops.some((h) => entry.deadOrders.has(h.orderId)))) {
+            note = `能走的链都被抢走了（换到 ${done}/${targetCount} 条）`;
+            break;
+          }
+          continue;
+        }
+
+        done += 1;
+        entry.state = {
+          ...entry.state,
+          run: { ...entry.state.run, doneCount: done, current: null },
+        };
+        this.log(entry, "info", `${text} ✅ 换到第 ${done}/${targetCount} 条`);
+      }
+
+      entry.state = {
+        ...entry.state,
+        run: {
+          ...entry.state.run,
+          status: entry.stopRun ? "stopped" : done >= targetCount ? "done" : "stopped",
+          doneCount: done,
+          current: null,
+          finishedAt: Date.now(),
+          note: note ?? (done >= targetCount ? `换够 ${targetCount} 条` : null),
+        },
+      };
+      if (note) this.log(entry, "warn", note);
+      else this.log(entry, "info", `批量执行结束：换到 ${done}/${targetCount} 条`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      entry.state = {
+        ...entry.state,
+        run: { ...entry.state.run, status: "stopped", doneCount: done, current: null, finishedAt: Date.now(), note: msg },
+      };
+      this.log(entry, "error", `批量执行中断：${msg}`);
     } finally {
       entry.running = false;
     }
+  }
+
+  /* ---------------- 内部：筛选 / 文案 ---------------- */
+
+  /** 按筛选条件挑出可行链（扫描时已经按「跳数 → 目标稀有度」排好序） */
+  private filterPaths(entry: Entry, filter: SwapFilter): SwapPath[] {
+    return entry.rawPaths.filter((p) => {
+      if (filter.targetFishId && p.target.fishId !== filter.targetFishId) return false;
+      if (filter.rarity && p.target.rarity !== filter.rarity) return false;
+      if (filter.biomeId && p.target.biomeId !== filter.biomeId) return false;
+      return true;
+    });
+  }
+
+  /** 筛选命中的目标「还差几条」之和（决定批量最多换几条） */
+  private remainingOf(entry: Entry, filter: SwapFilter): number {
+    const hit = new Set(this.filterPaths(entry, filter).map((p) => p.target.fishId));
+    const sum = entry.rawTargets.filter((t) => hit.has(t.fishId)).reduce((acc, t) => acc + Math.max(1, t.remaining), 0);
+    return sum || 1;
+  }
+
+  private filterText(filter: SwapFilter): string {
+    const parts: string[] = [];
+    if (filter.rarity) parts.push(`${rarityLabel(filter.rarity)}`);
+    if (filter.biomeId) parts.push(`目标图 ${biomeCode(filter.biomeId) ?? filter.biomeId}`);
+    if (filter.targetFishId) parts.push(`目标鱼 ${filter.targetFishId}`);
+    return parts.join(" / ");
+  }
+
+  /** 一条链的人话：B2 雾语灯笼鱼 → B3 镜潮银鲷 → B5 星根盲鳗（2 跳） */
+  private chainText(path: SwapPath): string {
+    const text = (fish: BarterFish) => `${fish.biomeId ? (biomeCode(fish.biomeId) ?? "") : ""} ${fish.name}`.trim();
+    const names = [text(path.hops[0]!.give), ...path.hops.map((h) => text(h.get))];
+    return `${names.join(" → ")}（${path.length} 跳）`;
+  }
+
+  /** 写一条日志：面板下方那份 + 账号运行日志（带上 userId，用户自己能看到） */
+  private log(entry: Entry, level: SwapLogEntry["level"], text: string): void {
+    const list = [{ t: Date.now(), level, text }, ...entry.state.log];
+    entry.state = { ...entry.state, log: list.slice(0, SWAP_LOG_LIMIT) };
+    const child = this.deps.logger.child({ userId: entry.userId, accountId: entry.accountId });
+    if (level === "error") child.error("交换助手", text);
+    else if (level === "warn") child.warn("交换助手", text);
+    else child.info("交换助手", text);
+  }
+
+  private entry(accountId: string): Entry {
+    const hit = this.entries.get(accountId);
+    if (hit) return hit;
+    const created: Entry = {
+      accountId,
+      userId: null,
+      state: idleState(),
+      rawPaths: [],
+      rawTargets: [],
+      scanning: false,
+      running: false,
+      stopRun: false,
+      deadOrders: new Set(),
+    };
+    this.entries.set(accountId, created);
+    return created;
+  }
+
+  /** 执行过之后把结果标成过期（面板据此提示"建议重新扫描"） */
+  private markStale(entry: Entry): void {
+    if (entry.state.result) entry.state = { ...entry.state, stale: true };
   }
 
   private requireOwnAccount(userId: string, accountId: string): void {
@@ -343,5 +614,6 @@ export class SwapService {
     if (!row || row.user_id !== userId) {
       throw new HttpError(404, "ACCOUNT_NOT_FOUND", "账号不存在或不属于你");
     }
+    this.entry(accountId).userId = userId;
   }
 }

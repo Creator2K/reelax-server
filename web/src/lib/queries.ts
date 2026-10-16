@@ -305,6 +305,23 @@ export type SwapTargetView = {
   pathCount: number;
 };
 
+/** 批量「换 N 条」的进度 */
+export type SwapRunView = {
+  status: "idle" | "running" | "done" | "stopped";
+  /** 本次打算换到几条 */
+  targetCount: number;
+  /** 已经换到几条 */
+  doneCount: number;
+  /** 当前正在走什么（没在跑就是 null） */
+  current: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  /** 结束说明：换够了 / 没得换了 / 被叫停 */
+  note: string | null;
+};
+
+export type SwapLogEntry = { t: number; level: "info" | "warn" | "error"; text: string };
+
 export type SwapState = {
   status: "idle" | "scanning" | "ready" | "error";
   progress: { phase: string; pages: number; orders: number };
@@ -326,6 +343,9 @@ export type SwapState = {
     targets: SwapTargetView[];
     paths: SwapPathView[];
   } | null;
+  run: SwapRunView;
+  /** 面板下方的日志（最近的在前） */
+  log: SwapLogEntry[];
 };
 
 export type SwapExecuteResult = {
@@ -336,10 +356,10 @@ export type SwapExecuteResult = {
 };
 
 /**
- * 交换助手的扫描状态。
+ * 交换助手的扫描 / 执行状态。
  *
- * 扫描是后台跑的（最多几十次翻页请求），所以「扫描中」时自动轮询；
- * 一旦 ready / error 就停下来，不白刷接口。
+ * 扫描与「换 N 条」都在后台跑，所以这两件事进行中时自动轮询；
+ * 都停下来就停止请求，不白刷接口。
  */
 export function useSwapState(accountId: string | undefined, enabled = true) {
   return useQuery({
@@ -348,7 +368,10 @@ export function useSwapState(accountId: string | undefined, enabled = true) {
     enabled: Boolean(accountId) && enabled,
     staleTime: 0,
     retry: false,
-    refetchInterval: (query) => (query.state.data?.status === "scanning" ? 1500 : false),
+    refetchInterval: (query) => {
+      const s = query.state.data;
+      return s?.status === "scanning" || s?.run?.status === "running" ? 1500 : false;
+    },
   });
 }
 

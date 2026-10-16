@@ -79,6 +79,15 @@ const swapExecuteSchema = z.object({
     .max(8),
 });
 
+const swapRunSchema = z.object({
+  /** 想换到几条（服务端还会按「目标还差几条」与上限再收一次） */
+  quantity: z.number().int().min(1).max(10).optional(),
+  /** 筛选：稀有度 / 目标地图 / 具体目标鱼（都不填 = 全部） */
+  rarity: z.string().max(20).nullish(),
+  biomeId: z.string().max(80).nullish(),
+  targetFishId: z.string().max(120).nullish(),
+});
+
 export function createAccountsRouter(deps: {
   accounts: AccountService;
   registry: RunnerRegistry;
@@ -287,6 +296,38 @@ export function createAccountsRouter(deps: {
       ip: clientIp(req),
     });
     res.json(result);
+  });
+
+  /** 批量「换 N 条」：按筛选反复走能走通的链（后台跑，进度看上面的状态接口） */
+  router.post("/:id/swap/run", body(swapRunSchema), (req, res) => {
+    const userId = currentUserId(req);
+    const id = req.params.id as string;
+    const state = deps.swap.run(userId, id, {
+      quantity: req.body.quantity ?? 1,
+      rarity: req.body.rarity ?? null,
+      biomeId: req.body.biomeId ?? null,
+      targetFishId: req.body.targetFishId ?? null,
+    });
+    deps.audit.record({
+      userId,
+      action: AUDIT_ACTIONS.ACCOUNT_SWAP_EXECUTE,
+      target: id,
+      detail: {
+        mode: "batch",
+        want: req.body.quantity ?? 1,
+        plan: state.run.targetCount,
+        rarity: req.body.rarity ?? null,
+        biomeId: req.body.biomeId ?? null,
+        targetFishId: req.body.targetFishId ?? null,
+      },
+      ip: clientIp(req),
+    });
+    res.json(state);
+  });
+
+  /** 停止批量执行（当前这一跳走完就停） */
+  router.post("/:id/swap/stop", (req, res) => {
+    res.json(deps.swap.stop(currentUserId(req), req.params.id as string));
   });
 
   /* ---------- 模块（内置功能） ---------- */

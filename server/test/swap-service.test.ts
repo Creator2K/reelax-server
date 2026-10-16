@@ -42,6 +42,8 @@ type Opts = {
   pages?: unknown[][];
   /** 这些单响应时抛错（模拟被抢走） */
   failOrders?: string[];
+  /** 每次响应前等这么久（用来测「停止」） */
+  fillDelayMs?: number;
 };
 
 let seq = 0;
@@ -85,6 +87,7 @@ function seedAccountWithGame(opts: Opts = {}) {
     fish: [...inventory.entries()].map(([fishId, quantity]) => ({ fishId, quantity })),
   });
   client.barterFill = async (orderId: string, body: { requestFishId: string; offerFishId: string }) => {
+    if (opts.fillDelayMs) await new Promise((r) => setTimeout(r, opts.fillDelayMs));
     if ((opts.failOrders ?? []).includes(orderId)) throw new Error("BARTER_ORDER_UNAVAILABLE");
     const have = inventory.get(body.requestFishId) ?? 0;
     if (have < 1) throw new Error("INVENTORY_QUANTITY_INSUFFICIENT");
@@ -102,6 +105,14 @@ type State = {
   error: string | null;
   stale: boolean;
   progress: { phase: string; pages: number; orders: number };
+  run: {
+    status: "idle" | "running" | "done" | "stopped";
+    targetCount: number;
+    doneCount: number;
+    current: string | null;
+    note: string | null;
+  };
+  log: { t: number; level: "info" | "warn" | "error"; text: string }[];
   result: {
     stats: { orders: number; edges: number; targets: number; paths: number; pages: number; truncated: boolean };
     targets: { fishId: string; remaining: number; pathCount: number; biomeCode: string | null }[];
@@ -132,6 +143,19 @@ async function scanAndWait(accountId: string, jar: ReturnType<FullApp["seedAppro
     await new Promise((r) => setTimeout(r, 15));
   }
   throw new Error(`扫描没有在预期时间内结束：${JSON.stringify(last)}`);
+}
+
+/** 等批量执行停下来（done / stopped） */
+async function waitRun(accountId: string, jar: ReturnType<FullApp["seedApprovedUser"]>["jar"]): Promise<State> {
+  const deadline = Date.now() + 5000;
+  let last: State | null = null;
+  while (Date.now() < deadline) {
+    const r = await app.get<State>(`/api/accounts/${accountId}/swap`, jar);
+    last = r.body;
+    if (last.run.status !== "running") return last;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`批量执行没有在预期时间内结束：${JSON.stringify(last)}`);
 }
 
 describe("交换助手", () => {
@@ -307,5 +331,156 @@ describe("交换助手", () => {
       offerFishId: F.b5.fishId,
     }));
     expect((await app.post(`/api/accounts/${accountId}/swap/execute`, { hops: tooMany }, jar)).status).toBe(400);
+  });
+
+  it("★ 批量「换 N 条」：反复走能走通的链，直到换够", async () => {
+    const { accountId, jar, fills, inventory } = seedAccountWithGame({
+      // 一条 1 跳的链，起点鱼有 3 条 → 可以连着走 3 次
+      pages: [[order("o1", F.b2, F.b5, 3)]],
+      inventory: [{ fishId: F.b2.fishId, quantity: 3 }],
+    });
+    await scanAndWait(accountId, jar);
+
+    const started = await app.post<State>(`/api/accounts/${accountId}/swap/run`, { quantity: 2 }, jar);
+    expect(started.status).toBe(200);
+    const state = await waitRun(accountId, jar);
+
+    expect(state.run.status).toBe("done");
+    expect(state.run.targetCount).toBe(2);
+    expect(state.run.doneCount).toBe(2);
+    expect(state.run.note).toContain("换够 2 条");
+    expect(fills).toHaveLength(2);
+    expect(inventory.get(F.b5.fishId)).toBe(2);
+    expect(inventory.get(F.b2.fishId)).toBe(1);
+    // 日志：开始 / 每条成功 / 结束，都在面板日志里
+    expect(state.log.some((l) => l.text.includes("开始换 2 条"))).toBe(true);
+    expect(state.log.filter((l) => l.text.includes("✅ 换到第")).length).toBe(2);
+  });
+
+  it("★ 数量按「目标还差几条」收窄（不会多换）", async () => {
+    const { accountId, jar } = seedAccountWithGame({
+      pages: [[order("o1", F.b2, F.b5, 5)]],
+      inventory: [{ fishId: F.b2.fishId, quantity: 5 }],
+      mastery: {
+        biomes: [
+          {
+            biomeId: "b_005",
+            isUnlocked: true,
+            // 还差 2 条
+            rarities: [
+              { fish: { id: F.b5.fishId, name: F.b5.name }, rarity: "mythic", remainingQuantity: 2, availableQuantity: 0 },
+            ],
+          },
+        ],
+      },
+    });
+    await scanAndWait(accountId, jar);
+
+    const started = await app.post<State>(`/api/accounts/${accountId}/swap/run`, { quantity: 10 }, jar);
+    expect(started.body.run.targetCount).toBe(2); // 填 10 但只差 2
+    const state = await waitRun(accountId, jar);
+    expect(state.run.doneCount).toBe(2);
+  });
+
+  it("★ 筛选：稀有度 / 目标地图 / 目标鱼 只走命中的链", async () => {
+    const mastery = {
+      biomes: [
+        {
+          biomeId: "b_005",
+          isUnlocked: true,
+          rarities: [
+            { fish: { id: F.b5.fishId, name: F.b5.name }, rarity: "mythic", remainingQuantity: 2, availableQuantity: 0 },
+          ],
+        },
+        {
+          biomeId: "b_006",
+          isUnlocked: true,
+          rarities: [
+            { fish: { id: F.b6.fishId, name: F.b6.name }, rarity: "mythic", remainingQuantity: 2, availableQuantity: 0 },
+          ],
+        },
+      ],
+    };
+    const { accountId, jar, fills } = seedAccountWithGame({
+      pages: [[order("to-b5", F.b2, F.b5, 2), order("to-b6", F.b3, F.b6, 2)]],
+      inventory: [
+        { fishId: F.b2.fishId, quantity: 2 },
+        { fishId: F.b3.fishId, quantity: 2 },
+      ],
+      mastery,
+    });
+    const state = await scanAndWait(accountId, jar);
+    expect(state.result!.stats.targets).toBe(2);
+    expect(state.result!.stats.paths).toBe(2);
+
+    // 只换 B6（b_006）上的目标
+    const started = await app.post<State>(`/api/accounts/${accountId}/swap/run`, { quantity: 1, biomeId: "b_006" }, jar);
+    expect(started.body.run.targetCount).toBe(1);
+    await waitRun(accountId, jar);
+    expect(fills.map((f) => f.orderId)).toEqual(["to-b6"]);
+
+    // 指定一个不存在的目标鱼 → 没有可走的链
+    const none = await app.post(`/api/accounts/${accountId}/swap/run`, { quantity: 1, targetFishId: "nope" }, jar);
+    expect(none.status).toBe(400);
+    expect(none.body.error.code).toBe("SWAP_NO_PATH");
+  });
+
+  it("★ 被抢单时换下一条链继续（不是整轮结束）", async () => {
+    const { accountId, jar, fills } = seedAccountWithGame({
+      // 两条都能从 B2 走到 B5：第一条的单会被抢，第二条接上
+      pages: [[order("bad", F.b2, F.b5, 1), order("good", F.b2, F.b5, 1)]],
+      inventory: [{ fishId: F.b2.fishId, quantity: 2 }],
+      failOrders: ["bad"],
+    });
+    const state = await scanAndWait(accountId, jar);
+    expect(state.result!.stats.paths).toBe(2);
+
+    await app.post(`/api/accounts/${accountId}/swap/run`, { quantity: 1 }, jar);
+    const after = await waitRun(accountId, jar);
+    expect(after.run.status).toBe("done");
+    expect(after.run.doneCount).toBe(1);
+    expect(fills.map((f) => f.orderId)).toEqual(["good"]);
+    expect(after.log.some((l) => l.level === "warn" && l.text.includes("被别人换走"))).toBe(true);
+  });
+
+  it("★ 停止：当前这一跳走完就停", async () => {
+    const { accountId, jar } = seedAccountWithGame({
+      pages: [[order("o1", F.b2, F.b3, 5)], [order("o2", F.b3, F.b5, 5)]],
+      inventory: [{ fishId: F.b2.fishId, quantity: 5 }],
+      fillDelayMs: 30,
+    });
+    await scanAndWait(accountId, jar);
+
+    await app.post(`/api/accounts/${accountId}/swap/run`, { quantity: 5 }, jar);
+    await app.post(`/api/accounts/${accountId}/swap/stop`, undefined, jar);
+    const state = await waitRun(accountId, jar);
+
+    expect(state.run.status).toBe("stopped");
+    expect(state.run.doneCount).toBeLessThan(5);
+    expect(state.run.note).toContain("已停止");
+  });
+
+  it("还没扫描就点「开始换」→ 明确报错", async () => {
+    const { accountId, jar } = seedAccountWithGame();
+    const r = await app.post(`/api/accounts/${accountId}/swap/run`, { quantity: 1 }, jar);
+    expect(r.status).toBe(400);
+    expect(r.body.error.code).toBe("SWAP_NO_PATH");
+  });
+
+  it("★ 批量执行的审计：标成 batch 并写清计划条数", async () => {
+    const { accountId, jar, rt } = seedAccountWithGame({
+      pages: [[order("o1", F.b2, F.b5, 2)]],
+      inventory: [{ fishId: F.b2.fishId, quantity: 2 }],
+    });
+    await scanAndWait(accountId, jar);
+    await app.post(`/api/accounts/${accountId}/swap/run`, { quantity: 10 }, jar);
+    await waitRun(accountId, jar);
+
+    const rows = app.repos.audit.list({ action: "account.swap.execute", userId: rt.userId });
+    expect(rows).toHaveLength(1);
+    const { describeAudit } = await import("../src/lib/audit-text.ts");
+    const text = describeAudit(rows[0]!, { accountLabel: () => "交换1", userName: () => "tester" });
+    expect(text).toContain("批量换鱼");
+    expect(text).toContain("计划");
   });
 });

@@ -6,6 +6,14 @@ import { toast } from "sonner";
 import { api, ApiError } from "./api.ts";
 import { ACCOUNTS_QUERY_KEY, MODULES_QUERY_KEY, PROXIES_QUERY_KEY } from "./queries.ts";
 import type { SwapExecuteResult, SwapState } from "./queries.ts";
+
+/** 「换 N 条」的入参：数量 + 筛选（都不填 = 全部） */
+export type SwapRunInput = {
+  quantity?: number;
+  rarity?: string | null;
+  biomeId?: string | null;
+  targetFishId?: string | null;
+};
 import { SYSTEM_QUERY_KEY } from "./session.ts";
 
 function errMessage(err: unknown): string {
@@ -266,6 +274,35 @@ export function useExecuteSwapPath(accountId: string) {
       void qc.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY });
       if (r.ok) toast.success(`已走完这条链（${r.done} 跳）`);
       else toast.error(r.error ?? `只走了 ${r.done} 跳就停了`, { duration: 8000 });
+    },
+    onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
+  });
+}
+
+/**
+ * 批量「换 N 条」：按筛选反复走能走通的链，直到换够 / 走不动 / 被停止。
+ *
+ * 服务端后台跑，进度与日志由 useSwapState 轮询。
+ */
+export function useRunSwap(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (opts: SwapRunInput) => api.post<SwapState>(`/api/accounts/${accountId}/swap/run`, opts),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["account-swap", accountId] });
+    },
+    onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
+  });
+}
+
+/** 停止批量执行（当前这一跳走完就停） */
+export function useStopSwap(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<SwapState>(`/api/accounts/${accountId}/swap/stop`),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["account-swap", accountId] });
+      toast.success("已请求停止");
     },
     onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
   });
