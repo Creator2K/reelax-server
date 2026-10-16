@@ -262,6 +262,95 @@ export function useAccountParty(id: string | undefined, enabled = true) {
   });
 }
 
+/* ---------- 以物易物（交换任务面板） ---------- */
+
+export type BarterTaskStatus = "waiting" | "running" | "done" | "blocked" | "cancelled";
+
+export type BarterTask = {
+  id: string;
+  fromFishId: string;
+  fromFishName: string;
+  fromBiomeId: string | null;
+  fromBiomeName: string | null;
+  rarity: string;
+  rarityLabel: string;
+  /** 想换到几条 */
+  quantity: number;
+  /** 已经换到几条 */
+  doneQuantity: number;
+  targetBiomeId: string;
+  targetBiomeName: string | null;
+  targetFishId: string | null;
+  targetFishName: string | null;
+  status: BarterTaskStatus;
+  statusText: string;
+  lastNote: string | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** 可以作为起点交出去的鱼（服务端已经排除专精鱼 / 锁定鱼 / 非最高三档） */
+export type BarterStartCandidate = {
+  fishId: string;
+  name: string;
+  biomeId: string | null;
+  biomeName: string | null;
+  rarity: string;
+  rarityLabel: string;
+  quantity: number;
+};
+
+export type BarterFishOption = {
+  id: string;
+  name: string;
+  biomeId: string;
+  biomeName: string | null;
+  rarity: string;
+};
+
+export type BarterHop = {
+  orderId: string;
+  owner: string | null;
+  giveFishId: string;
+  giveName: string;
+  giveBiomeName: string | null;
+  getFishId: string;
+  getName: string;
+  getBiomeName: string | null;
+  remaining: number;
+};
+
+export type BarterPanel = {
+  /** 功能开关状态：没运行的时侯队列只是「存着」 */
+  module: { enabled: boolean; running: boolean };
+  limits: { maxOpenTasks: number; maxQuantity: number; rarities: string[] };
+  rarityHint: string;
+  tasks: BarterTask[];
+  start: BarterStartCandidate[];
+  fish: BarterFishOption[];
+  /** 队首任务当前能不能走通（打开面板时现算一次） */
+  head: { taskId: string; reachable: boolean; hops: BarterHop[]; reason: string | null } | null;
+};
+
+export type CreateBarterTaskInput = {
+  fromFishId: string;
+  quantity: number;
+  targetBiomeId: string;
+  targetFishId?: string | null;
+};
+
+/** 交换任务面板：每次打开现读（队列与背包都可能刚变过） */
+export function useAccountBarter(id: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ["account-barter", id],
+    queryFn: () => api.get<BarterPanel>(`/api/accounts/${id}/barter`),
+    enabled: Boolean(id) && enabled,
+    staleTime: 10_000,
+    retry: false,
+  });
+}
+
 /* ---------- 内置模块清单 ---------- */
 
 export type ConfigField =

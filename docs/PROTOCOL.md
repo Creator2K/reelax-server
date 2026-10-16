@@ -481,6 +481,45 @@ POST /api/guilds/me/boosts/{biomeId}   body { "units": 2 }   → 开启 / 延长
   本项目的 `auto-guild-boost` 更灵活：可固定地图、可设份数、可设「还剩多少分钟就续」，
   还可以设一个**金库保留下限**（默认 0，建议调高 —— 花的是大家的钱）。
 
+## 4.8 以物易物（`/api/barter/*`）
+
+交易页的第四个市场：单主挂出「我想要其中任意几种鱼」×「我愿意提供其中任意几种鱼」，
+响应者**每次从两边各挑一种、各 1 条**完成一对一交换（不是按总价值撮合）。
+
+```jsonc
+// GET /api/barter/orders?limit=50&canFulfill=true&offersMastery=false&rarity=&targetFishId=&cursor=
+{
+  "orders": [{
+    "id": "…",
+    "rarity": "mythic",                  // 一张单里所有鱼同稀有度
+    "ownerNickname": "…", "status": "active | filled | cancelled | expired",
+    "expiresAt": "…", "completionReason": "requests_fulfilled | …",
+    "requests": [{ "fish": { "fishId", "name", "biomeId", "rarity" },
+                   "initialQuantity": 3, "remainingQuantity": 2 }],   // 单主想要（我要交出的）
+    "offers":   [{ "fish": { … }, "initialQuantity": 3, "remainingQuantity": 2 }]  // 单主提供（我能获得的）
+  }],
+  "nextCursor": "…"
+}
+```
+
+```
+POST /api/barter/orders/{id}/fill    body { "requestFishId": "我交出的", "offerFishId": "我获得的" }
+POST /api/barter/orders             body { "requests": [{ "fishId", "quantity" }], "offers": [ … ] }   // 每边 1~5 种
+DELETE /api/barter/orders/{id}      // 取消挂单，未换出的托管鱼返还
+GET  /api/barter/me/orders?status=active
+GET  /api/barter/me/trades
+```
+
+- **只能响应别人的单**（`BARTER_SELF_TRADE`）；只支持**最高三档稀有度**（神话 / 奇异 / 奥秘，
+  否则 `BARTER_RARITY_NOT_ALLOWED`），且同一单里的鱼必须同稀有度（`BARTER_RARITY_MISMATCH`）。
+- 一条单可被多人继续响应：最多成交次数 = `min(需求总量, 提供总量)`；需求先满足时，
+  剩余的托管鱼会自动返还（`completionReason: "requests_fulfilled"`）。
+- 挂单时**只托管背包里未锁定的鱼**（手动锁 / 专精锁都不行，交鱼同理 → `FISH_LOCKED`）；
+  交换来的鱼不计入图鉴与亲自钓获，但命中专精目标且开启自动锁定时仍受专精锁保护。
+- 本项目的 `auto-barter` 据此把「起点鱼 → 目标鱼」当最短路问题求解：点是鱼种，
+  边 = 某张单的「需求 X × 提供 Y」组合（容量 = 两侧剩余量的较小值），先比跳数、再比容量。
+  因为不能响应自己的单，所以**不提供「自己挂中间产物再接单」这条链**。
+
 ## 5. 实现参考
 
 - 本项目签名客户端：`server/src/game/client.ts`

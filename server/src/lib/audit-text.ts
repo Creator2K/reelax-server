@@ -68,6 +68,16 @@ function detailJsonFlag(row: AuditLike, key: string): string | null {
   }
 }
 
+/** detail_json → 对象（解析失败返回空对象） */
+function detailObject(row: AuditLike): Record<string, unknown> {
+  try {
+    const d = JSON.parse(String(row?.detail_json ?? ""));
+    return d && typeof d === "object" ? (d as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
 /** 审计动作 → 一句中文描述 */
 export function describeAudit(row: AuditLike, r: AuditResolvers = {}): string {
   const action = String(row?.action ?? "");
@@ -143,6 +153,17 @@ export function describeAudit(row: AuditLike, r: AuditResolvers = {}): string {
     }
     case "account.credentials.updated":
       return `更新账号${accountText(target ?? "", r)}的登录凭证`;
+
+    // ---- 以物易物（交换任务） ----
+    case "account.barter.task": {
+      const d = detailObject(row);
+      const from = typeof d.from === "string" && d.from ? d.from : "起点鱼";
+      const to = typeof d.to === "string" && d.to ? d.to : "目标鱼";
+      const quantity = typeof d.quantity === "number" ? d.quantity : null;
+      return d.op === "cancel"
+        ? `取消账号${accountText(target ?? "", r)}的以物易物任务「${from} → ${to}」`
+        : `给账号${accountText(target ?? "", r)}新增以物易物任务「${from} → ${to}」${quantity ? `，目标 ${quantity} 条` : ""}`;
+    }
 
     // ---- 代理 ----
     case "proxy.created":

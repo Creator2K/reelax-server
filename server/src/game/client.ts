@@ -535,6 +535,64 @@ export class GameClient {
   sellFish(items: unknown[]) {
     return this.request("/api/inventory/fish/sell", { method: "POST", body: { items }, idempotent: true });
   }
+  /* ---------- 以物易物（交易 → 交换列表） ---------- */
+
+  /**
+   * 交换单列表。
+   *
+   * 每个参数都要跟游戏端的查询校验对齐（那边是 `.strict()`，多传一个键就 400）：
+   *  · `canFulfill`   默认 true —— 只要「我现在响应得了」的单（手上得有它要的鱼）；
+   *  · `offersMastery` 默认 **false** —— 我们要的是「能换到目标鱼」的全部单子，
+   *    而不是游戏默认的「提供的鱼正好是我专精缺的」；
+   *  · `rarity` / `targetFishId` 可选收窄；`cursor` 翻页。
+   *
+   * 响应形状（防御性解析见 services/barter-plan.ts）：
+   *  `{ orders: [{ id, rarity, ownerNickname, status, expiresAt,
+   *                requests: [{ fish, initialQuantity, remainingQuantity }],
+   *                offers:   [{ fish, initialQuantity, remainingQuantity }] }], nextCursor }`
+   */
+  barterOrders(
+    query: {
+      cursor?: string;
+      limit?: number;
+      canFulfill?: boolean;
+      offersMastery?: boolean;
+      rarity?: string;
+      targetFishId?: string;
+    } = {},
+  ) {
+    const p = new URLSearchParams();
+    p.set("limit", String(Math.min(Math.max(Math.floor(query.limit ?? 50), 1), 100)));
+    p.set("canFulfill", query.canFulfill === false ? "false" : "true");
+    p.set("offersMastery", query.offersMastery === true ? "true" : "false");
+    if (query.cursor) p.set("cursor", query.cursor);
+    if (query.rarity) p.set("rarity", query.rarity);
+    if (query.targetFishId) p.set("targetFishId", query.targetFishId);
+    return this.request(`/api/barter/orders?${p.toString()}`);
+  }
+
+  /**
+   * 响应一张交换单：**一对一**，交出 `requestFishId`（单主要的那条）1 条，
+   * 获得 `offerFishId`（单主提供的那条）1 条。
+   *
+   * ★ 一条单里的需求 / 提供都可以有多个鱼种，每次响应由响应者各挑一种；
+   *   同一张单可以被多个玩家继续响应，直到需求量满足或提供鱼换完。
+   */
+  barterFill(orderId: string, input: { requestFishId: string; offerFishId: string }) {
+    return this.request(`/api/barter/orders/${encodeURIComponent(orderId)}/fill`, {
+      method: "POST",
+      body: input,
+      idempotent: true,
+    });
+  }
+  /** 我发布的交换单（含托管与进度） */
+  barterMyOrders(query: { cursor?: string; limit?: number; status?: string } = {}) {
+    const p = new URLSearchParams();
+    p.set("limit", String(Math.min(Math.max(Math.floor(query.limit ?? 50), 1), 100)));
+    p.set("status", query.status ?? "active");
+    if (query.cursor) p.set("cursor", query.cursor);
+    return this.request(`/api/barter/me/orders?${p.toString()}`);
+  }
   /**
    * 游戏内容表（鱼 / 稀有度 / 鱼饵等静态定义）。
    *

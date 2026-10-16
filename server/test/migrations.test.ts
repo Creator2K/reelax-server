@@ -28,6 +28,7 @@ const FROZEN_CHECKSUMS: Record<string, string> = {
   "0005_user_quota_override": "f6b9aacdc47e5885",
   "0006_module_state": "12e3c1e79a6b9cd6",
   "0007_cdk_codes": "29c4f8ae5b597c48",
+  "0008_barter_tasks": "11d6b1a7131ba805",
 };
 
 function checksum(sql: string): string {
@@ -90,6 +91,8 @@ describe("全新数据库能建出全部表", () => {
         "notify_channels",
         // 可在线修改的运行时设置
         "app_settings",
+        // 以物易物的交换任务队列
+        "barter_tasks",
       ]) {
         expect(tables.has(t), `缺少表 ${t}`).toBe(true);
       }

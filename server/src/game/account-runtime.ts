@@ -29,6 +29,7 @@ export function registerStatusPanelBuilder(fn: (st: any, rt: any) => Record<stri
 
 import type { Repos } from "../db/repositories/index.ts";
 import type { AccountRow } from "../db/repositories/accounts.ts";
+import type { BarterTaskCreate, BarterTaskPatch, BarterTaskRow } from "../db/repositories/barter-tasks.ts";
 import type { CredentialVault } from "../security/vault.ts";
 import type { Logger } from "../lib/logger.ts";
 import type { ChildLogger } from "../lib/logger.ts";
@@ -48,6 +49,7 @@ import {
 import { ProxyDispatcherHolder, type ProxyConfig } from "./proxy.ts";
 import { getModule, MODULES } from "../modules/registry.ts";
 import { resolveModuleConfig, type ModuleContext, type ModuleDefinition } from "../modules/types.ts";
+import { taskTargetText } from "../services/barter-view.ts";
 
 export type AccountStatus = "stopped" | "starting" | "online" | "reconnecting" | "error" | "expired";
 
@@ -142,6 +144,8 @@ const BIOMES_TTL_MS = 5 * 60_000;
 /** 玩家资料 / 终身统计的刷新间隔（经验速率依赖它，所以比地图表短） */
 const DISPLAY_FAST_TTL_MS = 90_000;
 const BAIT_TTL_MS = 90_000;
+/** 游戏内容表（鱼定义等）几乎不变 —— 缓存 6 小时（它很大，不能每次开面板都拉） */
+const CONTENT_TTL_MS = 6 * 3600_000;
 
 type ModuleInstance = {
   def: ModuleDefinition;
@@ -241,6 +245,8 @@ export class AccountRuntime {
   private chestsCache = new TtlCache<any>(BIOMES_TTL_MS);
   /** 灯塔神器保底 */
   private lighthouseCache = new TtlCache<any>(BIOMES_TTL_MS);
+  /** 游戏内容表（鱼 / 稀有度 / 鱼饵定义）—— 交换任务面板与自动以物易物共用 */
+  private contentCache = new TtlCache<any>(CONTENT_TTL_MS);
 
   /**
    * 最近的同步结果（滚动窗口）——状态面板据此显示「近 10 分钟同步成功率 / 超时次数」。
@@ -636,6 +642,20 @@ export class AccountRuntime {
   }
   get lighthouse(): any {
     return this.lighthouseCache.peek();
+  }
+
+  /**
+   * 游戏内容表（`/api/content/bootstrap`）—— 6 小时缓存。
+   *
+   * 失败时返回上一次成功的结果（没有就是 null），调用方按「拿不到鱼定义」降级处理：
+   * 这块数据很大（整张鱼表），面板与模块都不能各自每次拉一份。
+   */
+  async contentBootstrapCached(force = false): Promise<any> {
+    try {
+      return await this.contentCache.get(() => this.client.contentBootstrap(), force);
+    } catch {
+      return this.contentCache.peek();
+    }
   }
 
   /** 刷新地图表 / 鱼饵 / 玩家资料（供状态面板使用；失败不影响钓鱼） */
@@ -1143,6 +1163,53 @@ export class AccountRuntime {
 
   get proxyFingerprint(): string {
     return this.proxyHolder.currentFingerprint;
+  }
+
+  /* ---------------- 交换任务（以物易物队列） ---------------- */
+
+  /**
+   * 队列里的下一个交换任务（等待 / 进行中 / 缺鱼，按创建时间）。
+   *
+   * ★ 为什么要走运行时而不是让模块直接碰库：与其它跨账号数据一样，
+   *   「这个账号的任务」这套归属语义只在这里实现一次；模块只拿到结果。
+   */
+  barterNextTask(): BarterTaskRow | null {
+    return this.repos.barter.nextOpen(this.accountId);
+  }
+
+  /** 更新交换任务（状态 / 进度 / 说明）；返回是否命中 */
+  barterUpdateTask(id: string, patch: BarterTaskPatch): boolean {
+    return this.repos.barter.update(id, this.accountId, patch);
+  }
+
+  /**
+   * 新增交换任务（用户在面板上「加入队列」的动作）。
+   *
+   * 与手动换图 / 船队操作同理：用户主动发起的事都落一条 info 日志，
+   * 才能在运行日志里分清「人加的」和「模块自己在换」。
+   */
+  barterCreateTask(input: BarterTaskCreate): BarterTaskRow {
+    const row = this.repos.barter.create(input);
+    const queued = this.repos.barter.countOpen(this.accountId);
+    this.log.info(
+      "以物易物",
+      `🧾 新增交换任务：${row.from_fish_name || row.from_fish_id} → ${taskTargetText(row)} ×${row.quantity}（队列里共 ${queued} 条）`,
+    );
+    return row;
+  }
+
+  /** 取消交换任务（用户在面板上点的动作）；已经换到的鱼不会退回 */
+  barterCancelTask(id: string): boolean {
+    const row = this.repos.barter.find(id, this.accountId);
+    if (!row) return false;
+    const ok = this.repos.barter.cancel(id, this.accountId);
+    if (ok) {
+      this.log.info(
+        "以物易物",
+        `🗑 已取消交换任务：${row.from_fish_name || row.from_fish_id} → ${taskTargetText(row)}（已完成 ${row.done_quantity}/${row.quantity}，已换到的鱼留在背包里）`,
+      );
+    }
+    return ok;
   }
 
   /** 供测试观察 */

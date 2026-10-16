@@ -19,6 +19,7 @@ import autoTournament from "./auto-tournament/index.ts";
 import autoWorldBoss from "./auto-world-boss/index.ts";
 import autoSellGear from "./auto-sell-gear/index.ts";
 import autoSellFish from "./auto-sell-fish/index.ts";
+import autoBarter from "./auto-barter/index.ts";
 import autoUnlockBiome from "./auto-unlock-biome/index.ts";
 import autoLoadout from "./auto-loadout/index.ts";
 import autoXpBuff from "./auto-xp-buff/index.ts";
@@ -42,6 +43,7 @@ export const MODULES: ModuleDefinition[] = [
   autoWorldBoss,
   autoSellGear,
   autoSellFish,
+  autoBarter,
   autoUnlockBiome,
   autoLoadout,
   autoXpBuff,

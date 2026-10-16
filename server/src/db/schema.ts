@@ -270,6 +270,41 @@ CREATE INDEX idx_cdk_status ON cdk_codes (status, submitted_at DESC);
 CREATE INDEX idx_cdk_submitter ON cdk_codes (submitted_by, submitted_at DESC);
 `,
   },
+
+  // ---------- 以物易物交换任务（多轮交换的队列） ----------
+  // 为什么需要独立一张表，而不是塞进 account_modules.state_json：
+  //  · 任务要在**账号没启动、模块没开**的时候也能在面板里增删查看（state_json 只在
+  //    「用户配置过该模块」时才写得进去）；
+  //  · 队列是有生命周期与状态的事物（等待 / 进行中 / 完成 / 缺鱼 / 取消），
+  //    和「模块私有进度」不是一类东西，混在一起会让两边都难读。
+  // 状态取值：waiting（等路径）| running（正在换）| done（已换够）| blocked（起点鱼不够）
+  //          | cancelled（用户取消）
+  {
+    id: "0008_barter_tasks",
+    sql: `
+CREATE TABLE barter_tasks (
+  id               TEXT PRIMARY KEY,
+  account_id       TEXT NOT NULL REFERENCES game_accounts(id) ON DELETE CASCADE,
+  user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  from_fish_id     TEXT NOT NULL,                    -- 拿出去的鱼（起点）
+  from_fish_name   TEXT NOT NULL DEFAULT '',         -- 展示用快照：鱼名不会变
+  from_biome_id    TEXT,                             -- 起点鱼所属地图
+  rarity           TEXT NOT NULL DEFAULT '',         -- 起点鱼的稀有度（整条链都必须是它）
+  quantity         INTEGER NOT NULL DEFAULT 1,       -- 想换到几条目标鱼
+  done_quantity    INTEGER NOT NULL DEFAULT 0,       -- 已经换到几条
+  target_biome_id  TEXT NOT NULL,                    -- 目标地图
+  target_fish_id   TEXT,                             -- NULL = 该地图上任意同稀有度鱼
+  target_fish_name TEXT NOT NULL DEFAULT '',          -- 展示用快照（为空 = 该地图任意鱼）
+  status           TEXT NOT NULL DEFAULT 'waiting',
+  last_note        TEXT,                             -- 最近一次进度的中文说明（面板直接展示）
+  last_error       TEXT,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL
+);
+CREATE INDEX idx_barter_tasks_account ON barter_tasks (account_id, created_at);
+CREATE INDEX idx_barter_tasks_open ON barter_tasks (account_id, status);
+`,
+  },
 ];
 
 /** 供 migrate.ts 记录已应用版本 */

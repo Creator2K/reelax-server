@@ -59,6 +59,17 @@ const partyMemberSchema = z.object({
   role: z.enum(["helmsman", "crew"]).optional(),
 });
 
+const barterTaskSchema = z.object({
+  /** 起点鱼（必须是我背包里现有、未被锁定、且不是专精目标鱼的最高三档稀有度鱼） */
+  fromFishId: z.string().min(1).max(120),
+  /** 想换到几条 */
+  quantity: z.number().int().min(1).max(99),
+  /** 目标地图 */
+  targetBiomeId: z.string().min(1).max(80),
+  /** 目标鱼种；不填 = 该地图上任意同稀有度鱼 */
+  targetFishId: z.string().min(1).max(120).nullish(),
+});
+
 export function createAccountsRouter(deps: {
   accounts: AccountService;
   registry: RunnerRegistry;
@@ -221,6 +232,55 @@ export function createAccountsRouter(deps: {
       action: AUDIT_ACTIONS.ACCOUNT_PARTY_MEMBER,
       target: id,
       detail: { action: result.action, member: publicId },
+      ip: clientIp(req),
+    });
+    res.json(result);
+  });
+
+  /* ---------- 以物易物（交换任务） ---------- */
+
+  /** 交换任务面板：队列 + 可作为起点的鱼 + 目标鱼候选 + 队首任务的路径预览 */
+  router.get("/:id/barter", async (req, res) => {
+    res.json(await deps.accounts.barter(req.params.id as string, currentUserId(req)));
+  });
+
+  /** 新增一条交换任务（定好「拿什么换什么」并排队） */
+  router.post("/:id/barter/tasks", body(barterTaskSchema), async (req, res) => {
+    const userId = currentUserId(req);
+    const id = req.params.id as string;
+    const task = await deps.accounts.createBarterTask(id, userId, {
+      fromFishId: req.body.fromFishId,
+      quantity: req.body.quantity,
+      targetBiomeId: req.body.targetBiomeId,
+      targetFishId: req.body.targetFishId ?? null,
+    });
+    deps.audit.record({
+      userId,
+      action: AUDIT_ACTIONS.ACCOUNT_BARTER_TASK,
+      target: id,
+      detail: {
+        op: "create",
+        taskId: task.id,
+        from: task.fromFishName,
+        to: task.targetFishName ?? task.targetBiomeName,
+        quantity: task.quantity,
+      },
+      ip: clientIp(req),
+    });
+    res.status(201).json(task);
+  });
+
+  /** 取消一条交换任务（已经换到的鱼留在背包里） */
+  router.delete("/:id/barter/tasks/:taskId", async (req, res) => {
+    const userId = currentUserId(req);
+    const id = req.params.id as string;
+    const taskId = req.params.taskId as string;
+    const result = await deps.accounts.cancelBarterTask(id, userId, taskId);
+    deps.audit.record({
+      userId,
+      action: AUDIT_ACTIONS.ACCOUNT_BARTER_TASK,
+      target: id,
+      detail: { op: "cancel", taskId, from: result.from, to: result.to },
       ip: clientIp(req),
     });
     res.json(result);

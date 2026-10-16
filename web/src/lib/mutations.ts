@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError } from "./api.ts";
 import { ACCOUNTS_QUERY_KEY, MODULES_QUERY_KEY, PROXIES_QUERY_KEY } from "./queries.ts";
+import type { BarterTask, CreateBarterTaskInput } from "./queries.ts";
 import { SYSTEM_QUERY_KEY } from "./session.ts";
 
 function errMessage(err: unknown): string {
@@ -231,6 +232,39 @@ export function useManagePartyMember(accountId: string) {
               ? "已任命舵手"
               : "已撤销舵手";
       toast.success(text);
+    },
+    onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
+  });
+}
+
+/* ---------------- 以物易物（交换任务） ---------------- */
+
+/**
+ * 新增一条交换任务（定好「拿什么换什么」并排队）。
+ *
+ * 校验在服务端做（起点鱼必须真的在手、稀有度必须是最高三档、目标地图上必须真有同稀有度的鱼），
+ * 失败原因直接 toast 出来 —— 用户不需要猜为什么加不进去。
+ */
+export function useCreateBarterTask(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateBarterTaskInput) =>
+      api.post<BarterTask>(`/api/accounts/${accountId}/barter/tasks`, input),
+    onSuccess: (task) => {
+      void qc.invalidateQueries({ queryKey: ["account-barter", accountId] });
+      toast.success(`已加入队列：${task.fromFishName} → ${task.targetFishName ?? task.targetBiomeName ?? "目标鱼"} ×${task.quantity}`);
+    },
+    onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
+  });
+}
+
+export function useCancelBarterTask(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => api.del(`/api/accounts/${accountId}/barter/tasks/${taskId}`),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["account-barter", accountId] });
+      toast.success("已取消该交换任务（已经换到的鱼留在背包里）");
     },
     onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
   });
