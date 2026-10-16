@@ -29,6 +29,7 @@ const FROZEN_CHECKSUMS: Record<string, string> = {
   "0006_module_state": "12e3c1e79a6b9cd6",
   "0007_cdk_codes": "29c4f8ae5b597c48",
   "0008_barter_tasks": "11d6b1a7131ba805",
+  "0009_barter_task_specs": "fef9c07e60f8df7b",
 };
 
 function checksum(sql: string): string {

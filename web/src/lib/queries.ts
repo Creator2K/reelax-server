@@ -266,47 +266,53 @@ export function useAccountParty(id: string | undefined, enabled = true) {
 
 export type BarterTaskStatus = "waiting" | "running" | "done" | "blocked" | "cancelled";
 
-export type BarterTask = {
-  id: string;
-  fromFishId: string;
-  fromFishName: string;
-  fromBiomeId: string | null;
-  fromBiomeName: string | null;
+/** 一侧规格（任务里的「起点 / 目标」项）：某张地图上的任意同稀有度鱼 */
+export type BarterSpecView = {
+  biomeId: string | null;
+  /** `B2` 这种简称（玩家交流用的就是它） */
+  biomeCode: string | null;
+  biomeName: string | null;
   rarity: string;
   rarityLabel: string;
-  /** 想换到几条 */
+  /** 有值 = 指名鱼种（1.17.0 的老任务） */
+  fishId: string | null;
+  fishName: string | null;
+  text: string;
+};
+
+export type BarterTask = {
+  id: string;
   quantity: number;
-  /** 已经换到几条 */
   doneQuantity: number;
-  targetBiomeId: string;
-  targetBiomeName: string | null;
-  targetFishId: string | null;
-  targetFishName: string | null;
   status: BarterTaskStatus;
   statusText: string;
   lastNote: string | null;
   lastError: string | null;
+  fromSpecs: BarterSpecView[];
+  targetSpecs: BarterSpecView[];
+  fromText: string;
+  targetText: string;
   createdAt: number;
   updatedAt: number;
 };
 
-/** 可以作为起点交出去的鱼（服务端已经排除专精鱼 / 锁定鱼 / 非最高三档） */
-export type BarterStartCandidate = {
-  fishId: string;
-  name: string;
-  biomeId: string | null;
+/** 起点候选：某张地图 × 某一档现在能拿出几条 */
+export type BarterStartMapOption = {
+  biomeId: string;
+  biomeCode: string | null;
   biomeName: string | null;
   rarity: string;
   rarityLabel: string;
   quantity: number;
 };
 
-export type BarterFishOption = {
-  id: string;
-  name: string;
+/** 目标候选：某张地图 × 某一档上有鱼可换 */
+export type BarterTargetMapOption = {
   biomeId: string;
+  biomeCode: string | null;
   biomeName: string | null;
   rarity: string;
+  rarityLabel: string;
 };
 
 export type BarterHop = {
@@ -314,30 +320,52 @@ export type BarterHop = {
   owner: string | null;
   giveFishId: string;
   giveName: string;
+  giveBiomeCode: string | null;
   giveBiomeName: string | null;
   getFishId: string;
   getName: string;
+  getBiomeCode: string | null;
   getBiomeName: string | null;
   remaining: number;
+};
+
+export type BarterHead = {
+  taskId: string;
+  /** 这一轮实际会动用的起点鱼（多起点里挑出来的那条） */
+  startFishId: string | null;
+  startFishName: string | null;
+  startBiomeCode: string | null;
+  startBiomeName: string | null;
+  reachable: boolean;
+  hops: BarterHop[];
+  reason: string | null;
 };
 
 export type BarterPanel = {
   /** 功能开关状态：没运行的时侯队列只是「存着」 */
   module: { enabled: boolean; running: boolean };
-  limits: { maxOpenTasks: number; maxQuantity: number; rarities: string[] };
+  limits: {
+    maxOpenTasks: number;
+    maxQuantity: number;
+    maxSpecs: number;
+    /** 可用的稀有度档位（带中文名，面板的筛选下拉直接用） */
+    rarities: { value: string; label: string }[];
+  };
   rarityHint: string;
   tasks: BarterTask[];
-  start: BarterStartCandidate[];
-  fish: BarterFishOption[];
+  startOptions: BarterStartMapOption[];
+  targetOptions: BarterTargetMapOption[];
   /** 队首任务当前能不能走通（打开面板时现算一次） */
-  head: { taskId: string; reachable: boolean; hops: BarterHop[]; reason: string | null } | null;
+  head: BarterHead | null;
 };
 
+/** 一侧规格的提交形态 */
+export type BarterSpecInput = { biomeId: string; rarity: string };
+
 export type CreateBarterTaskInput = {
-  fromFishId: string;
+  fromSpecs: BarterSpecInput[];
+  targetSpecs: BarterSpecInput[];
   quantity: number;
-  targetBiomeId: string;
-  targetFishId?: string | null;
 };
 
 /** 交换任务面板：每次打开现读（队列与背包都可能刚变过） */

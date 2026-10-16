@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.17.0";
+export const VERSION = "1.18.0";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,33 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.18.0",
+    date: "2026-10-16",
+    title: "交换任务支持多起点 × 多目标；地图标 B 编号；先按稀有度筛选",
+    changes: [
+      {
+        kind: "improve",
+        text: "「交换任务」改成与官方挂单一致的两侧列表：起点侧与目标侧都可以加多张地图（每侧最多 5 项），例如「B2 / B3 / B4 上的任意同档鱼都能拿去换，换到 B1 / B5 / B6 上的任意同档鱼都算达成」——起点侧任意一种鱼都可以拿去换，换到目标侧任意一个就算达成",
+      },
+      {
+        kind: "improve",
+        text: "多起点时自动挑一条来换：能立刻走通（有现成交换单）优先，其次跳数最少，再其次单子剩余量最多；某张图上的鱼换不出去时自动改走起点侧的另一张图",
+      },
+      {
+        kind: "improve",
+        text: "新建交换任务先选稀有度（神话 / 奇异 / 奥秘），起点与目标的地图下拉只列这一档，不用再在整张鱼表里翻；一条任务里可以混不同档位，助手会各自走各自的链（游戏限制：同一条交换链不能跨档）",
+      },
+      {
+        kind: "improve",
+        text: "所有地图都标上编号（雾语湿地 B2、星根洞窟 B5）：任务行、路径预览与运行日志一致，和游戏里说的「B 几」对得上",
+      },
+      {
+        kind: "improve",
+        text: "目标数量不再受「起点侧现有几条」限制：手上只有 3 条也能写 20 条，钓到鱼之后会继续换；任务的说明里会写清起点侧还剩多少条可换、离目标还差多少条",
+      },
+    ],
+  },
   {
     version: "1.17.0",
     date: "2026-10-16",

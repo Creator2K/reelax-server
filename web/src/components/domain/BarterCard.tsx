@@ -3,8 +3,10 @@
 // 为什么放在助手侧：以物易物的多轮交换要靠**别人挂的现成单**，人盯着市场很累
 // （B2 换 B5 往往要 B2 → B3 → B6 → B5 好几手，中间任何一手被别人抢走就要重新找路）。
 //
-// 面板只做三件事：建任务、看队列推进到哪一步、取消不要的。
-// 所有校验都在服务端（起点鱼必须在手、稀有度必须是最高三档、目标地图上必须真有同稀有度的鱼）。
+// 任务的写法与官方挂单一致：两侧都是**地图列表** ——
+//   「B2 / B3 / B4 上的任意同稀有度鱼都能拿去换，换到 B1 / B5 / B6 上的任意同稀有度鱼都算达成」。
+// 面板先选稀有度再选地图（不然下拉框太长）；一行里的稀有度在加入时确定，之后只改地图。
+// 所有校验都在服务端（地图存在、稀有度是最高三档、目标图上真有这一档的鱼、起点侧还有鱼可换）。
 import { useMemo, useState } from "react";
 import {
   IconAlertTriangle,
@@ -30,18 +32,25 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog.tsx";
-import { useAccountBarter, type BarterPanel, type BarterTask } from "@/lib/queries.ts";
+import { useAccountBarter, type BarterPanel, type BarterSpecInput, type BarterTask } from "@/lib/queries.ts";
 import { useCancelBarterTask, useCreateBarterTask } from "@/lib/mutations.ts";
 
-/** 不填目标鱼种时的占位值（空值 = 该地图任意同稀有度鱼） */
-const ANY_FISH = "";
+/** 一行规格（还没选地图时 biomeId 为空） */
+type SpecRow = { biomeId: string; rarity: string };
 
 const isOpen = (t: BarterTask) => t.status !== "done" && t.status !== "cancelled";
+
+/** 「雾语湿地 B2」 */
+const mapLabel = (name: string | null, code: string | null, id: string) => `${name ?? id}${code ? ` ${code}` : ""}`;
 
 export function BarterCard({ accountId }: { accountId: string }) {
   const { data, isPending, error } = useAccountBarter(accountId);
 
-  const summary = data ? (data.tasks.some(isOpen) ? `${data.tasks.filter(isOpen).length} 条待执行` : "还没有交换任务") : null;
+  const summary = data
+    ? data.tasks.some(isOpen)
+      ? `${data.tasks.filter(isOpen).length} 条待执行`
+      : "还没有交换任务"
+    : null;
 
   return (
     <CollapsibleCard
@@ -68,50 +77,60 @@ function BarterBody({ accountId, data }: { accountId: string; data: BarterPanel 
   const create = useCreateBarterTask(accountId);
   const cancel = useCancelBarterTask(accountId);
 
-  const [fromFishId, setFromFishId] = useState("");
+  /** 稀有度筛选：只影响「往下面加一行时列出哪些地图」 */
+  const [rarity, setRarity] = useState(() => data.limits.rarities[0]?.value ?? "mythic");
+  const [fromRows, setFromRows] = useState<SpecRow[]>([]);
+  const [targetRows, setTargetRows] = useState<SpecRow[]>([]);
   const [quantity, setQuantity] = useState("1");
-  const [targetBiomeId, setTargetBiomeId] = useState("");
-  const [targetFishId, setTargetFishId] = useState(ANY_FISH);
 
-  const start = data.start.find((s) => s.fishId === fromFishId) ?? null;
-  const rarity = start?.rarity ?? null;
+  /** 稀有度 id → 中文名（档位来自服务端，面板不自己维护映射） */
+  const rarityLabels = useMemo(
+    () => new Map(data.limits.rarities.map((r) => [r.value, r.label])),
+    [data.limits.rarities],
+  );
+  const labelOf = (r: string) => rarityLabels.get(r) ?? r;
 
-  /** 目标地图候选：只列「有该稀有度鱼」的地图（换不到的图不给选） */
-  const maps = useMemo(() => {
-    if (!rarity) return [];
-    const byBiome = new Map<string, { id: string; name: string; count: number }>();
-    for (const f of data.fish) {
-      if (f.rarity !== rarity) continue;
-      const hit = byBiome.get(f.biomeId);
-      if (hit) hit.count += 1;
-      else byBiome.set(f.biomeId, { id: f.biomeId, name: f.biomeName ?? f.biomeId, count: 1 });
-    }
-    return [...byBiome.values()];
-  }, [data.fish, rarity]);
-
-  const fishInMap = useMemo(
-    () => (rarity && targetBiomeId ? data.fish.filter((f) => f.biomeId === targetBiomeId && f.rarity === rarity) : []),
-    [data.fish, rarity, targetBiomeId],
+  const startMaps = useMemo(
+    () => data.startOptions.filter((o) => o.rarity === rarity),
+    [data.startOptions, rarity],
+  );
+  const targetMaps = useMemo(
+    () => data.targetOptions.filter((o) => o.rarity === rarity),
+    [data.targetOptions, rarity],
   );
 
   const openCount = data.tasks.filter(isOpen).length;
-  const maxQuantity = start?.quantity ?? 1;
-  const quantityValue = Math.max(1, Math.min(Math.floor(Number(quantity) || 1), maxQuantity));
   const busy = create.isPending || cancel.isPending;
   const full = openCount >= data.limits.maxOpenTasks;
+  /** 起点与目标完全重合（同一张图同一档）等于原地不动，服务端也会拒 —— 这里先拦一下 */
+  const overlapping = fromRows.some((f) =>
+    targetRows.some((t) => Boolean(f.biomeId) && f.biomeId === t.biomeId && f.rarity === t.rarity),
+  );
+  const canSubmit =
+    !busy &&
+    !full &&
+    !overlapping &&
+    fromRows.length > 0 &&
+    targetRows.length > 0 &&
+    fromRows.every((r) => r.biomeId) &&
+    targetRows.every((r) => r.biomeId);
 
   const head = data.head ? (data.tasks.find((t) => t.id === data.head!.taskId) ?? null) : null;
 
+  /** 该地图这一档现在能拿出几条（起点行右侧提示用） */
+  const availableOf = (row: SpecRow) =>
+    data.startOptions.find((o) => o.biomeId === row.biomeId && o.rarity === row.rarity)?.quantity ?? 0;
+
   const submit = () => {
-    if (!start || !targetBiomeId) return;
+    const fromSpecs: BarterSpecInput[] = fromRows.map((r) => ({ biomeId: r.biomeId, rarity: r.rarity }));
+    const targetSpecs: BarterSpecInput[] = targetRows.map((r) => ({ biomeId: r.biomeId, rarity: r.rarity }));
     create.mutate(
-      { fromFishId: start.fishId, quantity: quantityValue, targetBiomeId, targetFishId: targetFishId || null },
+      { fromSpecs, targetSpecs, quantity: Math.max(1, Math.min(Math.floor(Number(quantity) || 1), data.limits.maxQuantity)) },
       {
         onSuccess: () => {
-          setFromFishId("");
+          setFromRows([]);
+          setTargetRows([]);
           setQuantity("1");
-          setTargetBiomeId("");
-          setTargetFishId(ANY_FISH);
         },
       },
     );
@@ -137,7 +156,7 @@ function BarterBody({ accountId, data }: { accountId: string; data: BarterPanel 
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="text-muted-foreground">队首</span>
             <span className="font-medium">
-              {head.fromFishName} → {head.targetFishName ?? `${head.targetBiomeName ?? head.targetBiomeId}任意同稀有度鱼`}
+              {head.fromText} → {head.targetText}
             </span>
             <Badge variant="secondary">{head.statusText}</Badge>
             <span className="text-muted-foreground">
@@ -147,11 +166,17 @@ function BarterBody({ accountId, data }: { accountId: string; data: BarterPanel 
           {data.head?.reachable ? (
             <div className="flex flex-wrap items-center gap-1 text-[11px]">
               <span className="text-muted-foreground">现在可以这样走：</span>
-              <span className="font-medium">{head.fromFishName}</span>
+              <span className="font-medium">
+                {data.head.startBiomeCode ? `${data.head.startBiomeCode} ` : ""}
+                {data.head.startFishName}
+              </span>
               {data.head.hops.map((h) => (
                 <span key={h.orderId} className="flex items-center gap-1">
                   <IconChevronRight className="text-muted-foreground size-3" />
-                  <span className="font-medium">{h.getName}</span>
+                  <span className="font-medium">
+                    {h.getBiomeCode ? `${h.getBiomeCode} ` : ""}
+                    {h.getName}
+                  </span>
                   <span className="text-muted-foreground">
                     （{h.owner ?? "未知玩家"}，剩 {h.remaining} 次）
                   </span>
@@ -171,95 +196,91 @@ function BarterBody({ accountId, data }: { accountId: string; data: BarterPanel 
           新建交换任务
         </div>
 
-        {data.start.length === 0 ? (
-          <p className="text-muted-foreground text-[11px]">
-            背包里暂时没有可以拿去交换的鱼：需要神话 / 奇异 / 奥秘的鱼，且未锁定、不是当前专精目标鱼。
+        <label className="flex items-center gap-2">
+          <span className="text-muted-foreground shrink-0 text-[11px]">稀有度筛选</span>
+          <select
+            className="border-input bg-background h-8 flex-1 rounded-md border px-2 text-xs"
+            value={rarity}
+            disabled={busy}
+            onChange={(e) => setRarity(e.target.value)}
+          >
+            {data.limits.rarities.map((r) => (
+              <option key={r.value} value={r.value}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="text-muted-foreground text-[11px]">
+          先选档位，下面的起点 / 目标只列这一档的地图（一行加进去之后仍可改地图）。
+        </p>
+
+        <SpecRows
+          title="起点侧：这些地图上的任意同档鱼都能拿去换"
+          hint={startMaps.length ? `本档可选 ${startMaps.length} 张图` : "这一档暂时没有可换的鱼"}
+          rows={fromRows}
+          disabled={busy}
+          maxRows={data.limits.maxSpecs}
+          newRarity={rarity}
+          labelOf={labelOf}
+          onChange={setFromRows}
+          optionsFor={(r) =>
+            data.startOptions
+              .filter((o) => o.rarity === r)
+              .map((m) => ({
+                value: m.biomeId,
+                label: `${mapLabel(m.biomeName, m.biomeCode, m.biomeId)}（现有 ${m.quantity} 条）`,
+              }))
+          }
+          rowSuffix={(row) => `现有 ${availableOf(row)} 条`}
+          emptyLabel="选择地图"
+          addLabel="增加起点地图"
+        />
+
+        <SpecRows
+          title="目标侧：换到其中任意一种都算达成"
+          hint={targetMaps.length ? `本档可选 ${targetMaps.length} 张图` : "这一档没有可换的目标"}
+          rows={targetRows}
+          disabled={busy}
+          maxRows={data.limits.maxSpecs}
+          newRarity={rarity}
+          labelOf={labelOf}
+          onChange={setTargetRows}
+          optionsFor={(r) =>
+            data.targetOptions
+              .filter((o) => o.rarity === r)
+              .map((m) => ({ value: m.biomeId, label: mapLabel(m.biomeName, m.biomeCode, m.biomeId) }))
+          }
+          emptyLabel="选择地图"
+          addLabel="增加目标地图"
+        />
+
+        <div className="flex items-end gap-2">
+          <label className="w-24 space-y-1">
+            <span className="text-muted-foreground text-[11px]">换到几条</span>
+            <Input
+              type="number"
+              min={1}
+              max={data.limits.maxQuantity}
+              value={quantity}
+              disabled={busy}
+              onChange={(e) => setQuantity(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </label>
+          <span className="text-muted-foreground pb-2 text-[11px]">换够这个数量才算完成；可以填得比手上多，钓到鱼之后会继续换</span>
+        </div>
+
+        {overlapping ? (
+          <p className="text-destructive text-[11px]">
+            目标里有和起点完全相同的一项（同一张图、同一档），换了等于没换，请删掉其中一个。
           </p>
-        ) : (
-          <div className="space-y-2">
-            <label className="block space-y-1">
-              <span className="text-muted-foreground text-[11px]">拿出去换（起点鱼）</span>
-              <select
-                className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
-                value={fromFishId}
-                disabled={busy}
-                onChange={(e) => {
-                  setFromFishId(e.target.value);
-                  setQuantity("1");
-                  setTargetBiomeId("");
-                  setTargetFishId(ANY_FISH);
-                }}
-              >
-                <option value="">选择起点鱼</option>
-                {data.start.map((s) => (
-                  <option key={s.fishId} value={s.fishId}>
-                    {s.name}（{s.biomeName ?? s.biomeId ?? "未知地图"} · {s.rarityLabel}）现有 {s.quantity} 条
-                  </option>
-                ))}
-              </select>
-            </label>
+        ) : null}
 
-            <div className="flex items-end gap-2">
-              <label className="w-24 space-y-1">
-                <span className="text-muted-foreground text-[11px]">数量</span>
-                <Input
-                  type="number"
-                  min={1}
-                  max={maxQuantity}
-                  value={quantity}
-                  disabled={busy || !start}
-                  onChange={(e) => setQuantity(e.target.value)}
-                  className="h-8 text-xs"
-                />
-              </label>
-              <span className="text-muted-foreground pb-2 text-[11px]">
-                {start ? `最多 ${maxQuantity} 条，必须换够才算完成` : "先选起点鱼"}
-              </span>
-            </div>
-
-            <label className="block space-y-1">
-              <span className="text-muted-foreground text-[11px]">换成哪张图的鱼</span>
-              <select
-                className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
-                value={targetBiomeId}
-                disabled={busy || !start}
-                onChange={(e) => {
-                  setTargetBiomeId(e.target.value);
-                  setTargetFishId(ANY_FISH);
-                }}
-              >
-                <option value="">{start ? "选择目标地图" : "先选起点鱼（稀有度决定可选地图）"}</option>
-                {maps.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}（{m.count} 种同稀有度鱼）
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="block space-y-1">
-              <span className="text-muted-foreground text-[11px]">具体鱼种</span>
-              <select
-                className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
-                value={targetFishId}
-                disabled={busy || !targetBiomeId}
-                onChange={(e) => setTargetFishId(e.target.value)}
-              >
-                <option value={ANY_FISH}>该地图任意同稀有度鱼（推荐：更好换到）</option>
-                {fishInMap.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <Button size="sm" className="gap-1.5" disabled={busy || full || !start || !targetBiomeId} onClick={submit}>
-              <IconArrowsExchange className="size-3.5" />
-              {full ? `队列已满（${data.limits.maxOpenTasks} 条）` : "加入队列"}
-            </Button>
-          </div>
-        )}
+        <Button size="sm" className="gap-1.5" disabled={!canSubmit} onClick={submit}>
+          <IconArrowsExchange className="size-3.5" />
+          {full ? `队列已满（${data.limits.maxOpenTasks} 条）` : "加入队列"}
+        </Button>
 
         <p className="text-muted-foreground text-[11px]">{data.rarityHint}</p>
         <p className="text-muted-foreground flex items-start gap-1 text-[11px]">
@@ -283,6 +304,95 @@ function BarterBody({ accountId, data }: { accountId: string; data: BarterPanel 
   );
 }
 
+/** 稀有度中文名不再需要反查：档位与中文名都由服务端下发 */
+
+/** 一侧的规格行列表（地图选择 + 增删行） */
+function SpecRows({
+  title,
+  hint,
+  rows,
+  optionsFor,
+  disabled,
+  maxRows,
+  newRarity,
+  labelOf,
+  emptyLabel,
+  addLabel,
+  rowSuffix,
+  onChange,
+}: {
+  title: string;
+  hint: string;
+  rows: SpecRow[];
+  /** 按**这一行自己的稀有度**给出可选地图（切筛选档位不会把已加的行弄空） */
+  optionsFor: (rarity: string) => { value: string; label: string }[];
+  disabled: boolean;
+  maxRows: number;
+  /** 新增的行用哪个稀有度（= 面板当前的筛选档位） */
+  newRarity: string;
+  labelOf: (rarity: string) => string;
+  emptyLabel: string;
+  addLabel: string;
+  rowSuffix?: (row: SpecRow) => string;
+  onChange: (rows: SpecRow[]) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="text-muted-foreground text-[11px]">
+        {title}
+        <span className="ml-1 opacity-70">· {hint}</span>
+      </div>
+      {rows.map((row, index) => {
+        const options = optionsFor(row.rarity);
+        return (
+          <div key={`${row.rarity}-${String(index)}`} className="flex items-center gap-1.5">
+            <Badge variant="outline" className="shrink-0">
+              {labelOf(row.rarity)}
+            </Badge>
+            <select
+              className="border-input bg-background h-8 min-w-0 flex-1 rounded-md border px-2 text-xs"
+              value={row.biomeId}
+              disabled={disabled}
+              onChange={(e) => onChange(rows.map((r, i) => (i === index ? { ...r, biomeId: e.target.value } : r)))}
+            >
+              <option value="">{options.length ? emptyLabel : "这一档没有可选地图"}</option>
+              {options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            {rowSuffix && row.biomeId ? (
+              <span className="text-muted-foreground shrink-0 text-[11px]">{rowSuffix(row)}</span>
+            ) : null}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 shrink-0 px-1.5"
+              disabled={disabled}
+              aria-label="移除这一行"
+              onClick={() => onChange(rows.filter((_r, i) => i !== index))}
+            >
+              <IconTrash className="size-3.5" />
+            </Button>
+          </div>
+        );
+      })}
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-7 gap-1 text-[11px]"
+        disabled={disabled || rows.length >= maxRows || !optionsFor(newRarity).length}
+        onClick={() => onChange([...rows, { biomeId: "", rarity: newRarity }])}
+      >
+        <IconPlus className="size-3" />
+        {addLabel}
+        {rows.length >= maxRows ? `（最多 ${maxRows} 项）` : ""}
+      </Button>
+    </div>
+  );
+}
+
 function TaskRow({ task, busy, onCancel }: { task: BarterTask; busy: boolean; onCancel: () => void }) {
   const [confirm, setConfirm] = useState(false);
   const finished = !isOpen(task);
@@ -290,13 +400,10 @@ function TaskRow({ task, busy, onCancel }: { task: BarterTask; busy: boolean; on
   return (
     <div className="bg-muted/30 space-y-1 rounded-lg px-2.5 py-2">
       <div className="flex min-w-0 items-center gap-1.5 text-xs">
-        <span className="min-w-0 flex-1 truncate">
-          <span className="font-medium">{task.fromFishName}</span>
-          <span className="text-muted-foreground">（{task.fromBiomeName ?? task.fromBiomeId ?? "未知地图"}）</span>
+        <span className="min-w-0 flex-1 truncate" title={`${task.fromText} → ${task.targetText}`}>
+          <span className="font-medium">{task.fromText}</span>
           <span className="text-muted-foreground"> → </span>
-          <span className="font-medium">
-            {task.targetFishName ?? `${task.targetBiomeName ?? task.targetBiomeId}任意同稀有度鱼`}
-          </span>
+          <span className="font-medium">{task.targetText}</span>
           <span className="text-muted-foreground"> ×{task.quantity}</span>
         </span>
         <Badge variant={task.status === "done" ? "online" : "secondary"} className="shrink-0">
@@ -305,7 +412,7 @@ function TaskRow({ task, busy, onCancel }: { task: BarterTask; busy: boolean; on
       </div>
 
       <div className="text-muted-foreground truncate text-[11px]" title={task.lastNote ?? undefined}>
-        {task.rarityLabel} · 进度 {task.doneQuantity}/{task.quantity}
+        进度 {task.doneQuantity}/{task.quantity}
         {task.lastNote ? ` · ${task.lastNote}` : ""}
       </div>
 
@@ -329,7 +436,7 @@ function TaskRow({ task, busy, onCancel }: { task: BarterTask; busy: boolean; on
           <AlertDialogHeader>
             <AlertDialogTitle>取消这条交换任务？</AlertDialogTitle>
             <AlertDialogDescription>
-              取消后不再自动继续换「{task.fromFishName} → {task.targetFishName ?? task.targetBiomeName}」。
+              取消后不再自动继续换「{task.fromText} → {task.targetText}」。
               已经换到的鱼留在背包里（进度 {task.doneQuantity}/{task.quantity}），不会退回。
             </AlertDialogDescription>
           </AlertDialogHeader>

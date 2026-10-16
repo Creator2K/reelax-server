@@ -21,16 +21,19 @@
 //  · 每次成交后都核对背包实际变化，对不上就停下本轮（不盲目继续下一跳）；
 //  · 中途停下时换到的鱼留在背包里（不会被吞掉），可以把它当新的起点鱼再建一条任务。
 import { type ModuleDefinition } from "../types.ts";
-import { biomeName } from "../shared/biomes.ts";
+import { biomeCode, biomeName } from "../shared/biomes.ts";
 import {
   barterErrorMessage,
+  chooseBarterChain,
   fetchBarterOrders,
   planBarterChain,
+  type BarterFish,
   type BarterHop,
   type BarterOrder,
   type BarterPlan,
 } from "../../services/barter-plan.ts";
 import {
+  filterStartFish,
   masteryTargetFishIds,
   pickStartCandidates,
   readInventoryFish,
@@ -166,25 +169,42 @@ const definition: ModuleDefinition = {
       return v ? String(v) : null;
     };
 
-    const planFor = (task: BarterTaskRow, orders: BarterOrder[], fromFishId = task.from_fish_id): BarterPlan =>
+    /** 一条链的起点（多起点任务里挑出来的那条鱼） */
+    type StartFish = BarterFish & { quantity: number };
+
+    /** 从指定的鱼出发规划（链的稀有度 = 这条鱼的稀有度） */
+    const planFor = (task: BarterTaskRow, orders: BarterOrder[], from: BarterFish): BarterPlan =>
       planBarterChain({
         orders,
-        fromFishId,
-        rarity: task.rarity,
+        fromFishId: from.fishId,
+        fromFish: from,
+        rarity: from.rarity,
         maxHops,
         isTarget: taskTargetMatcher(task),
         selfNickname: selfNickname(),
         selfPublicId: selfPublicId(),
       });
 
-    const fishText = (biomeId: string | null, name: string): string =>
-      `${biomeId ? `${biomeName(biomeId) ?? biomeId}·` : ""}${name}`;
+    /** 「B2 雾语湿地·雾语灯笼鱼」——玩家说的是 B 几，日志里就带上它 */
+    const fishText = (fish: { biomeId: string | null; name: string }): string => {
+      const place = fish.biomeId ? `${biomeCode(fish.biomeId) ?? ""}${biomeName(fish.biomeId) ?? fish.biomeId}` : "";
+      return place ? `${place}·${fish.name}` : fish.name;
+    };
 
     const hopText = (hop: BarterHop, index: number): string =>
-      `第 ${index} 跳：交出 ${fishText(hop.give.biomeId, hop.give.name)}，获得 ${fishText(hop.get.biomeId, hop.get.name)}` +
+      `第 ${index} 跳：交出 ${fishText(hop.give)}，获得 ${fishText(hop.get)}` +
       `（单主 ${hop.ownerNickname ?? "未知"}，这一对还能成交 ${hop.capacity} 次）`;
 
     const targetText = (task: BarterTaskRow): string => taskTargetText(task);
+
+    /** 任务起点侧现在能用哪些鱼（按规格匹配，且排除锁定 / 专精目标鱼） */
+    const startFishOf = (
+      task: BarterTaskRow,
+      inv: InventoryFish[],
+      content: unknown,
+      masteryTargets: Set<string>,
+    ): StartFish[] =>
+      filterStartFish(task.from_specs, pickStartCandidates({ inventory: inv, content, masteryTargets }));
 
     /**
      * 从某条鱼开始尽量往前走（一条链）。
@@ -200,10 +220,11 @@ const definition: ModuleDefinition = {
      */
     const walk = async (
       task: BarterTaskRow,
+      start: StartFish,
       budget: { fills: number; done: number },
+      firstPlan: BarterPlan,
     ): Promise<{ fishId: string; fishName: string; hops: number; reached: boolean; note: string | null }> => {
-      let current = task.from_fish_id;
-      let currentName = task.from_fish_name || task.from_fish_id;
+      let current: BarterFish = { fishId: start.fishId, name: start.name, biomeId: start.biomeId, rarity: start.rarity };
       let hops = 0;
 
       const dead = new Set<string>();
@@ -211,15 +232,21 @@ const definition: ModuleDefinition = {
         (await fetchOrders()).filter((o) => !dead.has(o.id));
 
       let inv = await inventory();
-      let plan = planFor(task, await refresh());
-      if (!plan.ok) {
-        return { fishId: current, fishName: currentName, hops: 0, reached: false, note: plan.reason };
-      }
+      let plan = firstPlan;
+      const done = (reached: boolean, note: string | null) => ({
+        fishId: current.fishId,
+        fishName: current.name,
+        hops,
+        reached,
+        note,
+      });
+
+      if (!plan.ok) return done(false, plan.reason);
       if (plan.hops.length > 1) {
         ctx.log.info(
           "以物易物",
           `规划到一条 ${plan.hops.length} 跳的路：` +
-            [currentName, ...plan.hops.map((h) => h.get.name)].join(" → ") +
+            [start.name, ...plan.hops.map((h) => h.get.name)].join(" → ") +
             `（最紧的一跳还能成交 ${plan.capacity} 次）`,
         );
       }
@@ -228,13 +255,7 @@ const definition: ModuleDefinition = {
         const hop = plan.hops[0]!;
         // 这一跳要交出的鱼必须还在手上（可能刚被卖鱼 / 献祭 / 别的任务用掉了）
         if (qtyOf(inv, hop.give.fishId) <= 0) {
-          return {
-            fishId: current,
-            fishName: currentName,
-            hops,
-            reached: false,
-            note: `手上没有「${hop.give.name}」了（可能被别的功能卖掉或用掉），先跳过这一跳`,
-          };
+          return done(false, `手上没有「${hop.give.name}」了（可能被别的功能卖掉或用掉），先跳过这一跳`);
         }
 
         const beforeInv = inv;
@@ -257,9 +278,7 @@ const definition: ModuleDefinition = {
           dead.add(hop.orderId);
           inv = await inventory();
           plan = planFor(task, await refresh(), current);
-          if (!plan.ok) {
-            return { fishId: current, fishName: currentName, hops, reached: false, note: plan.reason };
-          }
+          if (!plan.ok) return done(false, plan.reason);
           continue;
         }
 
@@ -272,11 +291,10 @@ const definition: ModuleDefinition = {
             "以物易物",
             `${hopText(hop, hops + 1)} 的结果无法确认（交出 ${gave} 条、获得 ${got} 条），本轮停下，下一轮重新检查`,
           );
-          return { fishId: current, fishName: currentName, hops, reached: false, note: "上一次成交结果无法确认，已停下等待下一轮" };
+          return done(false, "上一次成交结果无法确认，已停下等待下一轮");
         }
 
-        current = hop.get.fishId;
-        currentName = hop.get.name;
+        current = { fishId: hop.get.fishId, name: hop.get.name, biomeId: hop.get.biomeId, rarity: hop.get.rarity };
         hops += 1;
         inv = after;
         S.lastIdle = "";
@@ -284,28 +302,18 @@ const definition: ModuleDefinition = {
           "以物易物",
           `🔄 ${hopText(hop, hops)}` +
             (tradeOk ? "" : "（按背包变化确认）") +
-            `｜任务：${task.from_fish_name || task.from_fish_id} → ${targetText(task)} 进度 ${budget.done}/${task.quantity}`,
+            `｜任务：换到 ${targetText(task)} 进度 ${budget.done + 1}/${task.quantity}`,
         );
 
-        if (taskTargetMatcher(task)(hop.get)) {
-          return { fishId: current, fishName: currentName, hops, reached: true, note: null };
-        }
+        if (taskTargetMatcher(task)(hop.get)) return done(true, null);
 
         // 下一跳：从**手上这条鱼**重新读单子与背包再规划
         inv = await inventory();
         plan = planFor(task, await refresh(), current);
       }
 
-      if (!plan.ok) {
-        return { fishId: current, fishName: currentName, hops, reached: false, note: plan.reason };
-      }
-      return {
-        fishId: current,
-        fishName: currentName,
-        hops,
-        reached: false,
-        note: hops >= maxHops ? `已经走满 ${maxHops} 跳还没到目标` : null,
-      };
+      if (!plan.ok) return done(false, plan.reason);
+      return done(false, hops >= maxHops ? `已经走满 ${maxHops} 跳还没到目标` : null);
     };
 
     const run = async (trigger: string) => {
@@ -327,11 +335,9 @@ const definition: ModuleDefinition = {
         const inv = await inventory();
         // 起点鱼必须还在手上、没被锁定、也不是当前专精目标鱼（专精鱼要留给献祭）
         const mastery = masteryTargetFishIds(await ctx.api.mastery().catch(() => null));
-        const usable = pickStartCandidates({ inventory: inv, content, masteryTargets: mastery }).find(
-          (c) => c.fishId === task.from_fish_id,
-        );
-        if (!usable) {
-          const note = `手上暂时没有可用的「${task.from_fish_name || task.from_fish_id}」（可能已用完、被锁定，或成了专精目标鱼）`;
+        const starts = startFishOf(task, inv, content, mastery);
+        if (!starts.length) {
+          const note = `起点侧（${task.from_specs.map((s) => biomeCode(s.biomeId) ?? s.biomeId ?? s.fishId).join(" / ")}）现在没有可用的鱼：可能已用完、被锁定，或成了专精目标鱼`;
           ctx.account.barterUpdateTask(task.id, { status: "blocked", lastNote: note, lastError: null });
           idleOnce(`no-start:${task.id}`, `${trigger}：${note}`);
           return;
@@ -342,7 +348,33 @@ const definition: ModuleDefinition = {
 
         // 一轮里可以连着换几条（受 maxFillsPerRound 限制）：一条链换到 1 条，再走下一条
         while (budget.fills > 0 && budget.done < task.quantity) {
-          const r = await walk(task, budget);
+          // ★ 每一轮都重新看一遍起点侧与市场：多起点任务要挑「能走通、跳数少、单子剩余多」的那条
+          const freshInv = await inventory();
+          const usable = startFishOf(task, freshInv, content, mastery);
+          if (!usable.length) {
+            note = "起点侧的鱼已经用完（或被锁定 / 成了专精目标鱼）";
+            break;
+          }
+          const choice = chooseBarterChain({
+            orders: await fetchOrders(),
+            starts: usable,
+            targets: task.target_specs,
+            maxHops,
+            selfNickname: selfNickname(),
+            selfPublicId: selfPublicId(),
+          });
+          if (!choice.ok) {
+            note = choice.reason;
+            break;
+          }
+          if (usable.length > 1) {
+            ctx.log.info(
+              "以物易物",
+              `起点侧有 ${usable.length} 种鱼可用，这次先走「${fishText(choice.start)}」（${choice.plan.hops.length} 跳，最紧的一跳还能成交 ${choice.plan.capacity} 次）`,
+            );
+          }
+
+          const r = await walk(task, choice.start, budget, choice.plan);
           note = r.note ?? note;
           if (!r.reached) {
             if (r.hops > 0) {
@@ -365,7 +397,7 @@ const definition: ModuleDefinition = {
           if (budget.done >= task.quantity) {
             ctx.log.info(
               "以物易物",
-              `✅ 任务完成：${task.from_fish_name || task.from_fish_id} → ${targetText(task)} 共 ${budget.done} 条`,
+              `✅ 任务完成：换到 ${targetText(task)} 共 ${budget.done} 条`,
             );
             break;
           }
@@ -377,9 +409,15 @@ const definition: ModuleDefinition = {
         }
 
         if (budget.done < task.quantity) {
+          // 收尾时再看一眼起点侧还剩多少：够不够把目标数量凑齐，直接写进说明里
+          const left = startFishOf(
+            task,
+            await inventory().catch(() => [] as InventoryFish[]),
+            content,
+            mastery,
+          ).reduce((sum, c) => sum + c.quantity, 0);
           const needed = task.quantity - budget.done;
-          const shortfall =
-            usable.quantity < needed ? `；起点鱼还够换 ${usable.quantity} 条，差 ${needed - usable.quantity} 条` : "";
+          const shortfall = left < needed ? `；起点侧还剩 ${left} 条可换，离目标还差 ${needed} 条` : "";
           const tail = budget.fills <= 0 ? "；本轮成交次数用完，下一轮继续" : "";
           ctx.account.barterUpdateTask(task.id, {
             status: "waiting",

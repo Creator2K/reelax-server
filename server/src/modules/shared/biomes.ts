@@ -47,6 +47,28 @@ export function biomeName(id: unknown): string | null {
   return BIOMES.find((b) => b.id === id)?.name ?? null;
 }
 
+/**
+ * 地图编号的短写法：`b_002` → `B2`（玩家在游戏里就是这么叫的）。
+ *
+ * 界面上的地图一律写成「雾语湿地 B2」这种形式 —— 玩家交流时说的是 B 几，
+ * 只给中文名反而对不上；拿不到编号就返回 null（调用方退回只显示名字）。
+ */
+export function biomeCode(id: unknown): string | null {
+  const s = String(id ?? "");
+  const m = /^b_(\d+)$/.exec(s);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? `B${n}` : null;
+}
+
+/** 「雾语湿地 B2」；名字或编号缺失时尽量给出可读结果 */
+export function biomeLabel(id: unknown): string | null {
+  const name = biomeName(id);
+  const code = biomeCode(id);
+  if (name && code) return `${name} ${code}`;
+  return name ?? code ?? null;
+}
+
 export function biomeById(id: unknown): BiomeOption | null {
   return BIOMES.find((b) => b.id === id) ?? null;
 }

@@ -11,10 +11,13 @@ import { describe, expect, it } from "vitest";
 import {
   barterErrorMessage,
   barterNextCursor,
+  chooseBarterChain,
   fetchBarterOrders,
   normalizeBarterOrders,
   planBarterChain,
   readBarterOrder,
+  specMatchesFish,
+  specsMatcher,
   type BarterEntry,
   type BarterFish,
   type BarterOrder,
@@ -302,6 +305,131 @@ describe("fetchBarterOrders", () => {
     );
     expect(calls).toBe(3);
     expect(orders).toHaveLength(3);
+  });
+});
+
+describe("规格匹配（地图 + 稀有度）", () => {
+  const fish = (fishId: string, biomeId: string | null, rarity = "mythic"): BarterFish => ({
+    fishId,
+    name: fishId,
+    biomeId,
+    rarity,
+  });
+
+  it("★ 地图与稀有度都是严格比较：拿不准的鱼一律不算命中", () => {
+    const spec = { biomeId: "b_005", rarity: "mythic", fishId: null };
+    expect(specMatchesFish(spec, fish("a", "b_005"))).toBe(true);
+    expect(specMatchesFish(spec, fish("a", "b_003"))).toBe(false);
+    expect(specMatchesFish(spec, fish("a", "b_005", "exotic"))).toBe(false);
+    // 不知道在哪张图的鱼不能当成「B5 的鱼」
+    expect(specMatchesFish(spec, fish("a", null))).toBe(false);
+  });
+
+  it("指名鱼种（老任务）按 id 判，不受地图影响", () => {
+    expect(specMatchesFish({ biomeId: null, rarity: "", fishId: "x" }, fish("x", "b_009"))).toBe(true);
+    expect(specMatchesFish({ biomeId: null, rarity: "", fishId: "x" }, fish("y", "b_009"))).toBe(false);
+  });
+
+  it("specsMatcher：命中任意一个规格就算", () => {
+    const hit = specsMatcher([
+      { biomeId: "b_005", rarity: "mythic", fishId: null },
+      { biomeId: "b_003", rarity: "mythic", fishId: null },
+    ]);
+    expect(hit(fish("a", "b_003"))).toBe(true);
+    expect(hit(fish("a", "b_005"))).toBe(true);
+    expect(hit(fish("a", "b_009"))).toBe(false);
+  });
+});
+
+describe("chooseBarterChain（多起点里挑一条）", () => {
+  const start = (fishId: string, biomeId: string, quantity: number, name = fishId) => ({
+    fishId,
+    name,
+    biomeId,
+    rarity: "mythic",
+    quantity,
+  });
+
+  it("★ 先看能不能走通：B2 换不出去就走 B3", () => {
+    const order = makeOrder("o3", [entry(B3, 1)], [entry(B5, 1)]);
+    const r = chooseBarterChain({
+      orders: [order],
+      starts: [start(B2.fishId, "b_002", 1), start(B3.fishId, "b_003", 1)],
+      targets: [{ biomeId: B5.biomeId, rarity: "mythic", fishId: null }],
+      maxHops: 3,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.start.fishId).toBe(B3.fishId);
+  });
+
+  it("★ 都有路时跳数少的优先（B3 直达赢过 B2 两跳）", () => {
+    const orders = [
+      makeOrder("a1", [entry(B2, 1)], [entry(B6, 1)]),
+      makeOrder("a2", [entry(B6, 1)], [entry(B5, 1)]),
+      makeOrder("direct", [entry(B3, 1)], [entry(B5, 1)]),
+    ];
+    const r = chooseBarterChain({
+      orders,
+      starts: [start(B2.fishId, "b_002", 1), start(B3.fishId, "b_003", 1)],
+      targets: [{ biomeId: B5.biomeId, rarity: "mythic", fishId: null }],
+      maxHops: 3,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.start.fishId).toBe(B3.fishId);
+      expect(r.plan.hops.map((h) => h.orderId)).toEqual(["direct"]);
+    }
+  });
+
+  it("跳数相同时优先「单子剩余量多」的那条（不容易被抢）", () => {
+    const orders = [
+      makeOrder("thin", [entry(B2, 5)], [entry(B5, 5)]),
+      makeOrder("thin2", [entry(B2, 5)], [entry(B5, 1)]), // 先入列表，但容量小
+      makeOrder("fat", [entry(B3, 6)], [entry(B5, 6)]),
+    ];
+    // 让 B2 只能走 thin2：把 thin 的提供改成别处
+    orders[0] = makeOrder("thin", [entry(B2, 5)], [entry(B6, 5)]);
+    const r = chooseBarterChain({
+      orders,
+      starts: [start(B2.fishId, "b_002", 5), start(B3.fishId, "b_003", 1)],
+      targets: [{ biomeId: B5.biomeId, rarity: "mythic", fishId: null }],
+      maxHops: 3,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.start.fishId).toBe(B3.fishId);
+      expect(r.plan.capacity).toBe(6);
+    }
+  });
+
+  it("都没路时把原因带回去；起点侧全空时也有明确说法", () => {
+    const none = chooseBarterChain({
+      orders: [],
+      starts: [start(B2.fishId, "b_002", 1)],
+      targets: [{ biomeId: B5.biomeId, rarity: "mythic", fishId: null }],
+      maxHops: 2,
+    });
+    expect(none.ok).toBe(false);
+    if (!none.ok) expect(none.reason).toContain("没有能在");
+
+    const empty = chooseBarterChain({
+      orders: [],
+      starts: [start(B2.fishId, "b_002", 0)],
+      targets: [{ biomeId: B5.biomeId, rarity: "mythic", fishId: null }],
+      maxHops: 2,
+    });
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) expect(empty.reason).toBe("手上没有可用的起点鱼");
+  });
+
+  it("起点鱼本身就是目标图上的鱼 → 这条起点不算有路（不会原地换）", () => {
+    const r = chooseBarterChain({
+      orders: [makeOrder("o1", [entry(B5, 1)], [entry(B6, 1)])],
+      starts: [start(B5.fishId, B5.biomeId ?? "b_005", 1)],
+      targets: [{ biomeId: B5.biomeId, rarity: "mythic", fishId: null }],
+      maxHops: 3,
+    });
+    expect(r.ok).toBe(false);
   });
 });
 

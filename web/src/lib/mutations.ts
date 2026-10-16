@@ -240,9 +240,9 @@ export function useManagePartyMember(accountId: string) {
 /* ---------------- 以物易物（交换任务） ---------------- */
 
 /**
- * 新增一条交换任务（定好「拿什么换什么」并排队）。
+ * 新增一条交换任务（起点 / 目标都是「地图 + 稀有度」的列表，换到目标任意一种都算达成）。
  *
- * 校验在服务端做（起点鱼必须真的在手、稀有度必须是最高三档、目标地图上必须真有同稀有度的鱼），
+ * 校验在服务端做（地图存在、稀有度是最高三档、目标图上真有这一档的鱼、起点侧还有鱼可换），
  * 失败原因直接 toast 出来 —— 用户不需要猜为什么加不进去。
  */
 export function useCreateBarterTask(accountId: string) {
@@ -252,7 +252,7 @@ export function useCreateBarterTask(accountId: string) {
       api.post<BarterTask>(`/api/accounts/${accountId}/barter/tasks`, input),
     onSuccess: (task) => {
       void qc.invalidateQueries({ queryKey: ["account-barter", accountId] });
-      toast.success(`已加入队列：${task.fromFishName} → ${task.targetFishName ?? task.targetBiomeName ?? "目标鱼"} ×${task.quantity}`);
+      toast.success(`已加入队列：${task.fromText} → ${task.targetText} ×${task.quantity}`);
     },
     onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
   });

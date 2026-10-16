@@ -49,7 +49,7 @@ import {
 import { ProxyDispatcherHolder, type ProxyConfig } from "./proxy.ts";
 import { getModule, MODULES } from "../modules/registry.ts";
 import { resolveModuleConfig, type ModuleContext, type ModuleDefinition } from "../modules/types.ts";
-import { taskTargetText } from "../services/barter-view.ts";
+import { taskFromText, taskTargetText } from "../services/barter-view.ts";
 
 export type AccountStatus = "stopped" | "starting" | "online" | "reconnecting" | "error" | "expired";
 
@@ -1193,7 +1193,7 @@ export class AccountRuntime {
     const queued = this.repos.barter.countOpen(this.accountId);
     this.log.info(
       "以物易物",
-      `🧾 新增交换任务：${row.from_fish_name || row.from_fish_id} → ${taskTargetText(row)} ×${row.quantity}（队列里共 ${queued} 条）`,
+      `🧾 新增交换任务：${taskFromText(row)} → ${taskTargetText(row)} ×${row.quantity}（队列里共 ${queued} 条）`,
     );
     return row;
   }
@@ -1206,7 +1206,7 @@ export class AccountRuntime {
     if (ok) {
       this.log.info(
         "以物易物",
-        `🗑 已取消交换任务：${row.from_fish_name || row.from_fish_id} → ${taskTargetText(row)}（已完成 ${row.done_quantity}/${row.quantity}，已换到的鱼留在背包里）`,
+        `🗑 已取消交换任务：${taskFromText(row)} → ${taskTargetText(row)}（已完成 ${row.done_quantity}/${row.quantity}，已换到的鱼留在背包里）`,
       );
     }
     return ok;

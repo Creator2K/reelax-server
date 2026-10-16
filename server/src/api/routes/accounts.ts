@@ -59,15 +59,20 @@ const partyMemberSchema = z.object({
   role: z.enum(["helmsman", "crew"]).optional(),
 });
 
+const barterSpecSchema = z.object({
+  /** 地图 id（b_002） */
+  biomeId: z.string().min(1).max(80),
+  /** 稀有度：以物易物只支持神话 / 奇异 / 奥秘（服务端还会再校验一次） */
+  rarity: z.string().min(1).max(20),
+});
+
 const barterTaskSchema = z.object({
-  /** 起点鱼（必须是我背包里现有、未被锁定、且不是专精目标鱼的最高三档稀有度鱼） */
-  fromFishId: z.string().min(1).max(120),
+  /** 起点侧：这些地图上的任意同稀有度鱼都可以拿去换（1~5 项） */
+  fromSpecs: z.array(barterSpecSchema).min(1).max(5),
+  /** 目标侧：换到其中任意一种都算达成（1~5 项） */
+  targetSpecs: z.array(barterSpecSchema).min(1).max(5),
   /** 想换到几条 */
   quantity: z.number().int().min(1).max(99),
-  /** 目标地图 */
-  targetBiomeId: z.string().min(1).max(80),
-  /** 目标鱼种；不填 = 该地图上任意同稀有度鱼 */
-  targetFishId: z.string().min(1).max(120).nullish(),
 });
 
 export function createAccountsRouter(deps: {
@@ -249,10 +254,9 @@ export function createAccountsRouter(deps: {
     const userId = currentUserId(req);
     const id = req.params.id as string;
     const task = await deps.accounts.createBarterTask(id, userId, {
-      fromFishId: req.body.fromFishId,
+      fromSpecs: req.body.fromSpecs,
+      targetSpecs: req.body.targetSpecs,
       quantity: req.body.quantity,
-      targetBiomeId: req.body.targetBiomeId,
-      targetFishId: req.body.targetFishId ?? null,
     });
     deps.audit.record({
       userId,
@@ -261,8 +265,8 @@ export function createAccountsRouter(deps: {
       detail: {
         op: "create",
         taskId: task.id,
-        from: task.fromFishName,
-        to: task.targetFishName ?? task.targetBiomeName,
+        from: task.fromText,
+        to: task.targetText,
         quantity: task.quantity,
       },
       ip: clientIp(req),

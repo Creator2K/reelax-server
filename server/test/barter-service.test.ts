@@ -1,10 +1,10 @@
 // 以物易物交换任务：路由 + 服务层校验（全栈集成，游戏接口用假的顶替）
 //
-// 这里盯的是「能不能建出一条注定换不到的任务」：
-//   · 起点鱼不在背包 / 稀有度不够 / 数量超过库存 / 是专精目标鱼 → 直接拒绝
-//   · 目标地图上没有同稀有度的鱼 / 目标鱼不在那张图 / 目标和起点是同一种 → 拒绝
+// 任务的两侧都是「地图 + 稀有度」的列表，所以这里盯的是：
+//   · 能不能建出一条注定换不到的任务（地图不存在、档位不对、目标图上没这一档的鱼、
+//     目标与起点完全重合、起点侧一条鱼都拿不出来）→ 应当直接拒绝
+//   · 多起点 / 多目标 / 不同档位混搭能正常存下来，并在面板与预览里正确呈现
 //   · 队列上限、取消幂等、越权 404、审计留痕
-// 面板与队列本身是数据库 + 服务组装，所以走真实路由最划算。
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildFullApp, type FullApp } from "./helpers/full-app.ts";
 import type { AccountRuntime } from "../src/game/account-runtime.ts";
@@ -23,7 +23,9 @@ const CONTENT = {
     { id: "f-myth-b2", name: "雾语灯笼鱼", rarity: "mythic", biomeId: "b_002" },
     { id: "f-myth-b3", name: "镜潮银鲷", rarity: "mythic", biomeId: "b_003" },
     { id: "f-myth-b5", name: "星根盲鳗", rarity: "mythic", biomeId: "b_005" },
+    { id: "f-myth-b7", name: "云汐银刀", rarity: "mythic", biomeId: "b_007" },
     { id: "f-exo-b2", name: "雾语幻影鳅", rarity: "exotic", biomeId: "b_002" },
+    { id: "f-arc-b2", name: "雾语幽光鳗", rarity: "arcane", biomeId: "b_002" },
     { id: "f-common-b2", name: "雾语小鲫", rarity: "common", biomeId: "b_002" },
   ],
 };
@@ -43,6 +45,7 @@ function seedAccountWithGame(opts: {
 
   const inventory = opts.inventory ?? [
     { fishId: "f-myth-b2", quantity: 3 },
+    { fishId: "f-myth-b3", quantity: 2 },
     { fishId: "f-exo-b2", quantity: 1 },
     { fishId: "f-common-b2", quantity: 9 },
   ];
@@ -75,59 +78,81 @@ function seedAccountWithGame(opts: {
   return { accountId, rt, jar: user.jar };
 }
 
+const spec = (biomeId: string, rarity = "mythic") => ({ biomeId, rarity });
+
 describe("交换任务路由", () => {
-  it("★ 建一条任务 → 面板能读到它（含起点候选与目标鱼表）", async () => {
+  it("★ 建一条多起点 × 多目标的任务 → 面板能读到它（含 B 编号与两侧候选）", async () => {
     const { accountId, jar } = seedAccountWithGame();
 
     const created = await app.post<{
       id: string;
-      fromFishName: string;
-      targetFishName: string | null;
+      fromText: string;
+      targetText: string;
       status: string;
+      statusText: string;
       quantity: number;
-      rarityLabel: string;
+      doneQuantity: number;
+      fromSpecs: { biomeCode: string; biomeName: string; rarityLabel: string }[];
+      targetSpecs: { biomeCode: string }[];
     }>(
       `/api/accounts/${accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 2, targetBiomeId: "b_005", targetFishId: "f-myth-b5" },
+      { fromSpecs: [spec("b_002"), spec("b_003")], targetSpecs: [spec("b_005"), spec("b_007")], quantity: 2 },
       jar,
     );
 
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({
-      fromFishName: "雾语灯笼鱼",
-      targetFishName: "星根盲鳗",
-      targetBiomeName: "星根洞窟",
+      fromText: "B2 / B3的任意神话鱼",
+      targetText: "B5 / B7的任意神话鱼",
       status: "waiting",
       statusText: "等待中",
       quantity: 2,
       doneQuantity: 0,
-      rarityLabel: "神话",
     });
+    expect(created.body.fromSpecs[0]).toMatchObject({ biomeCode: "B2", biomeName: "雾语湿地", rarityLabel: "神话" });
+    expect(created.body.targetSpecs.map((s) => s.biomeCode)).toEqual(["B5", "B7"]);
 
     const panel = await app.get<{
       tasks: { id: string }[];
-      start: { fishId: string; quantity: number; rarityLabel: string }[];
-      fish: { id: string; biomeId: string }[];
+      startOptions: { biomeCode: string; rarity: string; quantity: number }[];
+      targetOptions: { biomeCode: string; rarity: string }[];
+      limits: { maxOpenTasks: number; maxQuantity: number; maxSpecs: number; rarities: { value: string; label: string }[] };
       module: { enabled: boolean; running: boolean };
-      limits: { maxOpenTasks: number; maxQuantity: number };
-      rarityHint: string;
-      head: { reachable: boolean; hops: unknown[]; reason: string | null } | null;
+      head: { reachable: boolean; reason: string | null } | null;
     }>(`/api/accounts/${accountId}/barter`, jar);
 
     expect(panel.status).toBe(200);
     expect(panel.body.tasks.map((t) => t.id)).toEqual([created.body.id]);
-    // 起点候选：只留最高三档（神话 / 奇异），普通鱼不进列表
-    expect(panel.body.start.map((s) => s.fishId)).toEqual(["f-myth-b2", "f-exo-b2"]);
-    expect(panel.body.start[0]).toMatchObject({ name: "雾语灯笼鱼", rarityLabel: "神话", quantity: 3 });
-    expect(panel.body.fish).toHaveLength(4);
+    // 起点候选：B2 的神话 3 条 + 奇异 1 条（普通鱼与不在鱼表里的都不算）
+    expect(panel.body.startOptions.map((o) => `${o.biomeCode}:${o.rarity}=${o.quantity}`)).toEqual([
+      "B2:mythic=3",
+      "B2:exotic=1",
+      "B3:mythic=2",
+    ]);
+    // 目标候选：游戏里这些图上有鱼（含 B2 的三档，但 B6 没有）
+    expect(panel.body.targetOptions.some((o) => o.biomeCode === "B5" && o.rarity === "mythic")).toBe(true);
+    expect(panel.body.limits).toMatchObject({ maxOpenTasks: 5, maxQuantity: 99, maxSpecs: 5 });
+    expect(panel.body.limits.rarities[0]).toEqual({ value: "mythic", label: "神话" });
     expect(panel.body.module).toEqual({ enabled: false, running: false });
-    expect(panel.body.limits).toMatchObject({ maxOpenTasks: 5, maxQuantity: 99 });
-    expect(panel.body.rarityHint).toContain("三档稀有度");
-    // 没有能走的单 → 预览说走不通
     expect(panel.body.head).toMatchObject({ reachable: false });
   });
 
-  it("★ 有现成单时面板给出路径预览", async () => {
+  it("★ 一条任务里可以混不同稀有度（各自走各自的链）", async () => {
+    const { accountId, jar } = seedAccountWithGame();
+    const created = await app.post<{ fromText: string; status: number }>(
+      `/api/accounts/${accountId}/barter/tasks`,
+      {
+        fromSpecs: [spec("b_002", "mythic"), spec("b_002", "exotic")],
+        targetSpecs: [spec("b_005", "mythic"), spec("b_007", "mythic")],
+        quantity: 1,
+      },
+      jar,
+    );
+    expect(created.status).toBe(201);
+    expect(created.body.fromText).toBe("B2 / B2的任意同稀有度鱼");
+  });
+
+  it("★ 有现成单时面板给出路径预览（带起点鱼与 B 编号）", async () => {
     const { accountId, jar } = seedAccountWithGame({
       orders: [
         {
@@ -135,121 +160,158 @@ describe("交换任务路由", () => {
           rarity: "mythic",
           ownerNickname: "艾拉",
           status: "active",
-          requests: [{ fish: { fishId: "f-myth-b2", name: "雾语灯笼鱼", biomeId: "b_002", rarity: "mythic" }, remainingQuantity: 2, initialQuantity: 2 }],
-          offers: [{ fish: { fishId: "f-myth-b5", name: "星根盲鳗", biomeId: "b_005", rarity: "mythic" }, remainingQuantity: 2, initialQuantity: 2 }],
+          requests: [
+            {
+              fish: { fishId: "f-myth-b2", name: "雾语灯笼鱼", biomeId: "b_002", rarity: "mythic" },
+              remainingQuantity: 2,
+              initialQuantity: 2,
+            },
+          ],
+          offers: [
+            {
+              fish: { fishId: "f-myth-b5", name: "星根盲鳗", biomeId: "b_005", rarity: "mythic" },
+              remainingQuantity: 2,
+              initialQuantity: 2,
+            },
+          ],
         },
       ],
     });
     await app.post(
       `/api/accounts/${accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_005", targetFishId: "f-myth-b5" },
+      { fromSpecs: [spec("b_002")], targetSpecs: [spec("b_005")], quantity: 1 },
       jar,
     );
 
-    const panel = await app.get<{ head: { reachable: boolean; hops: { owner: string; getName: string; remaining: number }[] } }>(
-      `/api/accounts/${accountId}/barter`,
-      jar,
-    );
+    const panel = await app.get<{
+      head: {
+        taskId: string;
+        startFishName: string | null;
+        reachable: boolean;
+        hops: { owner: string; getName: string; getBiomeCode: string | null; remaining: number }[];
+      };
+    }>(`/api/accounts/${accountId}/barter`, jar);
     expect(panel.body.head.reachable).toBe(true);
-    expect(panel.body.head.hops[0]).toMatchObject({ owner: "艾拉", getName: "星根盲鳗", remaining: 2 });
+    expect(panel.body.head.startFishName).toBe("雾语灯笼鱼");
+    expect(panel.body.head.hops[0]).toMatchObject({
+      owner: "艾拉",
+      getName: "星根盲鳗",
+      getBiomeCode: "B5",
+      remaining: 2,
+    });
   });
 
-  it("目标不填具体鱼种 = 该地图任意同稀有度鱼", async () => {
-    const { accountId, jar } = seedAccountWithGame();
-    const created = await app.post<{ targetFishId: string | null; targetFishName: string | null }>(
-      `/api/accounts/${accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_005" },
-      jar,
-    );
-    expect(created.status).toBe(201);
-    expect(created.body.targetFishId).toBeNull();
-    expect(created.body.targetFishName).toBeNull();
-  });
-
-  it("★ 校验：起点鱼不在背包 / 稀有度不够 / 数量超标 / 是专精目标鱼", async () => {
+  it("★ 校验：起点侧与目标侧的规格", async () => {
     const a = seedAccountWithGame();
-    const notOwned = await app.post(
+    // 空列表与超过 5 项在路由的参数校验就被挡住了（服务层还有一道兜底）
+    const noSpec = await app.post(
       `/api/accounts/${a.accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b5", quantity: 1, targetBiomeId: "b_005" },
+      { fromSpecs: [], targetSpecs: [spec("b_005")], quantity: 1 },
       a.jar,
     );
-    expect(notOwned.status).toBe(400);
-    expect(notOwned.body.error.code).toBe("BARTER_START_FISH_UNUSABLE");
-
-    const commonFish = await app.post(
-      `/api/accounts/${a.accountId}/barter/tasks`,
-      { fromFishId: "f-common-b2", quantity: 1, targetBiomeId: "b_005" },
-      a.jar,
-    );
-    expect(commonFish.status).toBe(400);
-    expect(commonFish.body.error.code).toBe("BARTER_START_FISH_UNUSABLE");
+    expect(noSpec.status).toBe(400);
+    expect(noSpec.body.error.code).toBe("VALIDATION_ERROR");
 
     const tooMany = await app.post(
       `/api/accounts/${a.accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 4, targetBiomeId: "b_005" },
+      {
+        fromSpecs: ["b_001", "b_002", "b_003", "b_004", "b_005", "b_006"].map((b) => spec(b)),
+        targetSpecs: [spec("b_005")],
+        quantity: 1,
+      },
       a.jar,
     );
     expect(tooMany.status).toBe(400);
-    expect(tooMany.body.error.code).toBe("BARTER_NOT_ENOUGH_FISH");
-    expect(tooMany.body.error.message).toContain("只有 3 条");
+    expect(tooMany.body.error.code).toBe("VALIDATION_ERROR");
 
-    // 专精目标鱼：还缺若干条 → 不能拿去换
-    const b = seedAccountWithGame({ mastery: { "f-myth-b2": 8 } });
-    const masteryFish = await app.post(
+    const unknownBiome = await app.post(
+      `/api/accounts/${a.accountId}/barter/tasks`,
+      { fromSpecs: [spec("b_999")], targetSpecs: [spec("b_005")], quantity: 1 },
+      a.jar,
+    );
+    expect(unknownBiome.status).toBe(400);
+    expect(unknownBiome.body.error.code).toBe("BARTER_BIOME_UNKNOWN");
+
+    const badRarity = await app.post(
+      `/api/accounts/${a.accountId}/barter/tasks`,
+      { fromSpecs: [spec("b_002", "epic")], targetSpecs: [spec("b_005")], quantity: 1 },
+      a.jar,
+    );
+    expect(badRarity.status).toBe(400);
+    expect(badRarity.body.error.code).toBe("BARTER_RARITY_NOT_ALLOWED");
+
+    // b_006 在鱼表里没有任何鱼
+    const emptyTarget = await app.post(
+      `/api/accounts/${a.accountId}/barter/tasks`,
+      { fromSpecs: [spec("b_002")], targetSpecs: [spec("b_006")], quantity: 1 },
+      a.jar,
+    );
+    expect(emptyTarget.status).toBe(400);
+    expect(emptyTarget.body.error.code).toBe("BARTER_SPEC_EMPTY");
+    expect(emptyTarget.body.error.message).toContain("目标");
+
+    // 目标与起点完全重合 = 原地不动
+    const same = await app.post(
+      `/api/accounts/${a.accountId}/barter/tasks`,
+      { fromSpecs: [spec("b_002")], targetSpecs: [spec("b_002"), spec("b_005")], quantity: 1 },
+      a.jar,
+    );
+    expect(same.status).toBe(400);
+    expect(same.body.error.code).toBe("BARTER_TARGET_SAME_AS_START");
+  });
+
+  it("★ 校验：起点侧现在一条鱼都拿不出来 → 拒绝", async () => {
+    // 起点写 B5（背包里只有 B2/B3 的鱼）
+    const a = seedAccountWithGame();
+    const r = await app.post(
+      `/api/accounts/${a.accountId}/barter/tasks`,
+      { fromSpecs: [spec("b_005")], targetSpecs: [spec("b_007")], quantity: 1 },
+      a.jar,
+    );
+    expect(r.status).toBe(400);
+    expect(r.body.error.code).toBe("BARTER_START_FISH_UNUSABLE");
+
+    // 鱼被锁定 / 成了专精目标鱼同样不算
+    const b = seedAccountWithGame({ mastery: { "f-myth-b2": 8, "f-exo-b2": 2 } });
+    const mastery = await app.post(
       `/api/accounts/${b.accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_005" },
+      { fromSpecs: [spec("b_002")], targetSpecs: [spec("b_005")], quantity: 1 },
       b.jar,
     );
-    expect(masteryFish.status).toBe(400);
-    expect(masteryFish.body.error.code).toBe("BARTER_START_FISH_UNUSABLE");
+    expect(mastery.status).toBe(400);
+    expect(mastery.body.error.code).toBe("BARTER_START_FISH_UNUSABLE");
 
-    // 被锁定的鱼同理
     const c = seedAccountWithGame({ inventory: [{ fishId: "f-myth-b2", quantity: 2, isMasteryLocked: true }] });
     const locked = await app.post(
       `/api/accounts/${c.accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_005" },
+      { fromSpecs: [spec("b_002")], targetSpecs: [spec("b_005")], quantity: 1 },
       c.jar,
     );
     expect(locked.status).toBe(400);
     expect(locked.body.error.code).toBe("BARTER_START_FISH_UNUSABLE");
   });
 
-  it("★ 校验：目标地图 / 目标鱼种", async () => {
-    const a = seedAccountWithGame();
-    const unknownBiome = await app.post(
-      `/api/accounts/${a.accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_999" },
-      a.jar,
+  it("数量超过起点侧现有的鱼也允许建（钓到鱼之后自己会继续换）", async () => {
+    const { accountId, jar } = seedAccountWithGame(); // B2 只有 3 条
+    const r = await app.post<{ quantity: number }>(
+      `/api/accounts/${accountId}/barter/tasks`,
+      { fromSpecs: [spec("b_002"), spec("b_003")], targetSpecs: [spec("b_005")], quantity: 20 },
+      jar,
     );
-    expect(unknownBiome.status).toBe(400);
-    expect(unknownBiome.body.error.code).toBe("BARTER_TARGET_BIOME_UNKNOWN");
+    expect(r.status).toBe(201);
+    expect(r.body.quantity).toBe(20);
+  });
 
-    // b_006 在鱼表里没有神话鱼
-    const emptyBiome = await app.post(
-      `/api/accounts/${a.accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_006" },
-      a.jar,
+  it("★ 重复的规格会被并掉（同一张图同一档只算一次）", async () => {
+    const { accountId, jar } = seedAccountWithGame();
+    const r = await app.post<{ fromSpecs: unknown[]; targetSpecs: unknown[] }>(
+      `/api/accounts/${accountId}/barter/tasks`,
+      { fromSpecs: [spec("b_002"), spec("b_002")], targetSpecs: [spec("b_005"), spec("b_005")], quantity: 1 },
+      jar,
     );
-    expect(emptyBiome.status).toBe(400);
-    expect(emptyBiome.body.error.code).toBe("BARTER_TARGET_BIOME_EMPTY");
-
-    // 目标鱼神话，但不在所选地图上
-    const wrongFish = await app.post(
-      `/api/accounts/${a.accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_003", targetFishId: "f-myth-b5" },
-      a.jar,
-    );
-    expect(wrongFish.status).toBe(400);
-    expect(wrongFish.body.error.code).toBe("BARTER_TARGET_FISH_INVALID");
-
-    // 目标和起点是同一种鱼
-    const sameFish = await app.post(
-      `/api/accounts/${a.accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_002", targetFishId: "f-myth-b2" },
-      a.jar,
-    );
-    expect(sameFish.status).toBe(400);
-    expect(sameFish.body.error.code).toBe("BARTER_TARGET_SAME_AS_START");
+    expect(r.status).toBe(201);
+    expect(r.body.fromSpecs).toHaveLength(1);
+    expect(r.body.targetSpecs).toHaveLength(1);
   });
 
   it("★ 队列上限：未完成的任务最多 5 条", async () => {
@@ -257,14 +319,14 @@ describe("交换任务路由", () => {
     for (let i = 0; i < 5; i++) {
       const r = await app.post(
         `/api/accounts/${accountId}/barter/tasks`,
-        { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_005" },
+        { fromSpecs: [spec("b_002")], targetSpecs: [spec("b_005")], quantity: 1 },
         jar,
       );
       expect(r.status).toBe(201);
     }
     const overflow = await app.post(
       `/api/accounts/${accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_005" },
+      { fromSpecs: [spec("b_002")], targetSpecs: [spec("b_005")], quantity: 1 },
       jar,
     );
     expect(overflow.status).toBe(400);
@@ -275,7 +337,7 @@ describe("交换任务路由", () => {
     const { accountId, jar } = seedAccountWithGame();
     const created = await app.post<{ id: string }>(
       `/api/accounts/${accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_005" },
+      { fromSpecs: [spec("b_002")], targetSpecs: [spec("b_005")], quantity: 1 },
       jar,
     );
 
@@ -284,12 +346,9 @@ describe("交换任务路由", () => {
       jar,
     );
     expect(first.status).toBe(200);
-    expect(first.body).toMatchObject({ ok: true, status: "cancelled", from: "雾语灯笼鱼", to: "星根洞窟" });
+    expect(first.body).toMatchObject({ ok: true, status: "cancelled", from: "B2的任意神话鱼", to: "B5的任意神话鱼" });
 
-    const again = await app.del<{ ok: boolean; status: string }>(
-      `/api/accounts/${accountId}/barter/tasks/${created.body.id}`,
-      jar,
-    );
+    const again = await app.del<{ status: string }>(`/api/accounts/${accountId}/barter/tasks/${created.body.id}`, jar);
     expect(again.status).toBe(200);
     expect(again.body.status).toBe("cancelled");
 
@@ -311,17 +370,17 @@ describe("交换任务路由", () => {
 
     const write = await app.post(
       `/api/accounts/${mine.accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 1, targetBiomeId: "b_005" },
+      { fromSpecs: [spec("b_002")], targetSpecs: [spec("b_005")], quantity: 1 },
       other.jar,
     );
     expect(write.status).toBe(404);
   });
 
-  it("★ 审计：新增与取消各留一条，描述是人话", async () => {
+  it("★ 审计：新增与取消各留一条，描述里带 B 编号", async () => {
     const { accountId, jar, rt } = seedAccountWithGame();
     const created = await app.post<{ id: string }>(
       `/api/accounts/${accountId}/barter/tasks`,
-      { fromFishId: "f-myth-b2", quantity: 2, targetBiomeId: "b_005" },
+      { fromSpecs: [spec("b_002"), spec("b_003")], targetSpecs: [spec("b_005")], quantity: 2 },
       jar,
     );
     await app.del(`/api/accounts/${accountId}/barter/tasks/${created.body.id}`, jar);
@@ -330,10 +389,9 @@ describe("交换任务路由", () => {
     expect(rows).toHaveLength(2);
     const { describeAudit } = await import("../src/lib/audit-text.ts");
     const resolvers = { accountLabel: () => "以物易物1", userName: () => "tester" };
-    // 最近一条是取消，另一条是新增 —— 两条都要说清「从什么换成什么」
     const texts = rows.map((r) => describeAudit(r, resolvers));
-    expect(texts.some((t) => t.includes("新增以物易物任务") && t.includes("雾语灯笼鱼"))).toBe(true);
-    expect(texts.some((t) => t.includes("取消") && t.includes("雾语灯笼鱼") && t.includes("星根洞窟"))).toBe(true);
+    expect(texts.some((t) => t.includes("新增以物易物任务") && t.includes("B2 / B3"))).toBe(true);
+    expect(texts.some((t) => t.includes("取消") && t.includes("B5"))).toBe(true);
   });
 
   it("★ 功能开关状态会跟着面板一起下发（没开就说没开）", async () => {

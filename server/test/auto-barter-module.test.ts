@@ -93,26 +93,32 @@ function makeCtx(opts: Opts = {}) {
     return true;
   };
 
-  // 任务队列（内存版 barter_tasks）；不传就默认一条「B2 → B5 ×1」
-  const tasks: BarterTaskRow[] = (opts.tasks ?? [{}]).map((t, i) => ({
-    id: t.id ?? `t${i + 1}`,
-    account_id: "acc1",
-    user_id: "u1",
-    from_fish_id: t.from_fish_id ?? B2.fishId,
-    from_fish_name: t.from_fish_name ?? B2.name,
-    from_biome_id: t.from_biome_id ?? B2.biomeId,
-    rarity: t.rarity ?? "mythic",
-    quantity: t.quantity ?? 1,
-    done_quantity: t.done_quantity ?? 0,
-    target_biome_id: t.target_biome_id ?? B5.biomeId,
-    target_fish_id: t.target_fish_id ?? null,
-    target_fish_name: t.target_fish_name ?? "",
-    status: t.status ?? "waiting",
-    last_note: t.last_note ?? null,
-    last_error: t.last_error ?? null,
-    created_at: t.created_at ?? 1000 + i,
-    updated_at: t.updated_at ?? 1000 + i,
-  }));
+  // 任务队列（内存版 barter_tasks）；不传就默认一条「B2 上的神话鱼 → B5 上的神话鱼 ×1」
+  const tasks: BarterTaskRow[] = (opts.tasks ?? [{}]).map((t, i) => {
+    const rarity = t.rarity ?? "mythic";
+    const fromBiome = t.from_biome_id ?? B2.biomeId;
+    return {
+      id: t.id ?? `t${i + 1}`,
+      account_id: "acc1",
+      user_id: "u1",
+      from_specs: t.from_specs ?? [{ biomeId: fromBiome, rarity, fishId: null }],
+      target_specs: t.target_specs ?? [{ biomeId: t.target_biome_id ?? B5.biomeId, rarity, fishId: null }],
+      from_fish_id: t.from_fish_id ?? B2.fishId,
+      from_fish_name: t.from_fish_name ?? B2.name,
+      from_biome_id: fromBiome,
+      rarity,
+      quantity: t.quantity ?? 1,
+      done_quantity: t.done_quantity ?? 0,
+      target_biome_id: t.target_biome_id ?? B5.biomeId,
+      target_fish_id: t.target_fish_id ?? null,
+      target_fish_name: t.target_fish_name ?? "",
+      status: t.status ?? "waiting",
+      last_note: t.last_note ?? null,
+      last_error: t.last_error ?? null,
+      created_at: t.created_at ?? 1000 + i,
+      updated_at: t.updated_at ?? 1000 + i,
+    };
+  });
   const taskById = new Map(tasks.map((t) => [t.id, t]));
   const history: BarterTaskRow[] = [];
 
@@ -350,7 +356,7 @@ describe("自动以物易物", () => {
 
     expect(w.fills).toHaveLength(0);
     expect(w.tasks[0]!.status).toBe("blocked");
-    expect(w.log.info.some((m) => m.includes("手上暂时没有可用的"))).toBe(true);
+    expect(w.log.info.some((m) => m.includes("现在没有可用的鱼"))).toBe(true);
   });
 
   it("★ 被抢单后重新规划：第一跳那张单废了，改走另一条路", async () => {
@@ -475,7 +481,8 @@ describe("自动以物易物", () => {
 
     expect(w.tasks[0]!.done_quantity).toBe(1);
     expect(w.tasks[0]!.status).toBe("waiting");
-    expect(w.tasks[0]!.last_note).toContain("起点鱼还够换 1 条");
+    expect(w.tasks[0]!.last_note).toContain("起点侧还剩 0 条可换");
+    expect(w.tasks[0]!.last_note).toContain("离目标还差 2 条");
   });
 
   it("★ 不响应自己发布的单", async () => {
@@ -500,6 +507,121 @@ describe("自动以物易物", () => {
 
     expect(w.fills).toHaveLength(0);
     expect(w.log.debug.some((m) => m.includes("队列里没有待执行的任务"))).toBe(true);
+  });
+
+  it("★ 多起点：只在起点侧列表里的地图上的鱼才动用，别的鱼不碰", async () => {
+    const w = makeCtx({
+      inventory: [
+        { fishId: B2.fishId, quantity: 2 },
+        { fishId: B7.fishId, quantity: 2 }, // B7 不在起点侧列表里 → 不能拿它去换
+      ],
+      orders: [mkOrder("o7", [B7, 2], [B5, 2]), mkOrder("o2", [B2, 2], [B5, 2])],
+      tasks: [
+        {
+          from_specs: [{ biomeId: B2.biomeId, rarity: "mythic", fishId: null }],
+          target_specs: [{ biomeId: B5.biomeId, rarity: "mythic", fishId: null }],
+        },
+      ],
+    });
+    const run = await w.start();
+    await run();
+
+    expect(w.fills.map((x) => x.orderId)).toEqual(["o2"]);
+    expect(w.qty(B7.fishId)).toBe(2);
+    expect(w.tasks[0]!.status).toBe("done");
+  });
+
+  it("★ 多起点：B2 没有路时自动改走同样在列表里的 B3", async () => {
+    const w = makeCtx({
+      inventory: [
+        { fishId: B2.fishId, quantity: 1 },
+        { fishId: B3.fishId, quantity: 1 },
+      ],
+      // 只有「要 B3」的单 → B2 换不出去
+      orders: [mkOrder("o3", [B3, 1], [B5, 1])],
+      tasks: [
+        {
+          from_specs: [
+            { biomeId: B2.biomeId, rarity: "mythic", fishId: null },
+            { biomeId: B3.biomeId, rarity: "mythic", fishId: null },
+          ],
+          target_specs: [{ biomeId: B5.biomeId, rarity: "mythic", fishId: null }],
+        },
+      ],
+    });
+    const run = await w.start();
+    await run();
+
+    expect(w.fills.map((x) => x.requestFishId)).toEqual([B3.fishId]);
+    expect(w.tasks[0]!.status).toBe("done");
+    expect(w.log.info.some((m) => m.includes("起点侧有 2 种鱼可用"))).toBe(true);
+  });
+
+  it("★ 多起点优先「跳数少」：B2 要 2 跳、B3 只要 1 跳 → 先用 B3", async () => {
+    const w = makeCtx({
+      inventory: [
+        { fishId: B2.fishId, quantity: 1 },
+        { fishId: B3.fishId, quantity: 1 },
+      ],
+      orders: [
+        // B2 → B6 → B5（2 跳）
+        mkOrder("a1", [B2, 1], [B6, 1]),
+        mkOrder("a2", [B6, 1], [B5, 1]),
+        // B3 → B5（1 跳）
+        mkOrder("direct", [B3, 1], [B5, 1]),
+      ],
+      tasks: [
+        {
+          from_specs: [
+            { biomeId: B2.biomeId, rarity: "mythic", fishId: null },
+            { biomeId: B3.biomeId, rarity: "mythic", fishId: null },
+          ],
+          target_specs: [{ biomeId: B5.biomeId, rarity: "mythic", fishId: null }],
+        },
+      ],
+    });
+    const run = await w.start();
+    await run();
+
+    expect(w.fills.map((x) => x.orderId)).toEqual(["direct"]);
+    expect(w.tasks[0]!.status).toBe("done");
+  });
+
+  it("★ 多目标：换到列表里任意一张图上的鱼都算达成", async () => {
+    const w = makeCtx({
+      inventory: [{ fishId: B2.fishId, quantity: 1 }],
+      orders: [mkOrder("o7", [B2, 1], [B7, 1])],
+      tasks: [
+        {
+          target_specs: [
+            { biomeId: B5.biomeId, rarity: "mythic", fishId: null },
+            { biomeId: B7.biomeId, rarity: "mythic", fishId: null },
+          ],
+        },
+      ],
+    });
+    const run = await w.start();
+    await run();
+
+    expect(w.fills.map((x) => x.orderId)).toEqual(["o7"]);
+    expect(w.tasks[0]!.status).toBe("done");
+    expect(w.tasks[0]!.done_quantity).toBe(1);
+  });
+
+  it("起点侧列表里的地图都没有鱼时标「缺鱼」", async () => {
+    const w = makeCtx({
+      inventory: [{ fishId: B2.fishId, quantity: 1 }],
+      orders: [mkOrder("o1", [B2, 1], [B5, 1])],
+      tasks: [
+        { from_specs: [{ biomeId: B7.biomeId, rarity: "mythic", fishId: null }] },
+      ],
+    });
+    const run = await w.start();
+    await run();
+
+    expect(w.fills).toHaveLength(0);
+    expect(w.tasks[0]!.status).toBe("blocked");
+    expect(w.tasks[0]!.last_note).toContain("B7");
   });
 
   it("定时器按配置注册：检查间隔 / 启动检查 / 上限写进启动日志", async () => {

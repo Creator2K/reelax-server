@@ -305,6 +305,19 @@ CREATE INDEX idx_barter_tasks_account ON barter_tasks (account_id, created_at);
 CREATE INDEX idx_barter_tasks_open ON barter_tasks (account_id, status);
 `,
   },
+
+  // ---------- 交换任务支持「多起点 × 多目标」 ----------
+  // 为什么需要：一条任务常常是「B2 / B3 / B4 上的鱼都能拿去换，换到 B1 / B5 / B6 上任意一种都算达成」——
+  // 与官方挂单的结构一致（每边多种鱼，任意组合都算成交）。
+  // 老任务不受影响：这两列是空的就按原来的单起点 / 单目标解读（见 barter-tasks 仓储）。
+  // 每项形如 { biomeId, rarity, fishId }：fishId 非空 = 指名鱼种（老数据），否则 = 该地图上的任意同稀有度鱼。
+  {
+    id: "0009_barter_task_specs",
+    sql: `
+ALTER TABLE barter_tasks ADD COLUMN from_specs_json TEXT NOT NULL DEFAULT '';
+ALTER TABLE barter_tasks ADD COLUMN target_specs_json TEXT NOT NULL DEFAULT '';
+`,
+  },
 ];
 
 /** 供 migrate.ts 记录已应用版本 */

@@ -14,21 +14,25 @@ import { validateConfigPatch, type ConfigValues, type ModuleDefinition } from ".
 import { parseProxyInput, parseBaseUrl } from "./proxy-input.ts";
 import { buildMapsView, buildCompetitionMarks, checkTravel, type AccountMapsView } from "./map-view.ts";
 import { buildPartyView, invitationList, partyErrorMessage, type PartyView } from "./party-view.ts";
-import { fetchBarterOrders, planBarterChain, type BarterPlan } from "./barter-plan.ts";
+import { fetchBarterOrders, chooseBarterChain, isBarterRarity, type BarterPlan } from "./barter-plan.ts";
 import {
   buildBarterView,
+  filterStartFish,
   masteryTargetFishIds,
-  pickFishCatalog,
   pickStartCandidates,
+  readContentFish,
   readInventoryFish,
-  taskTargetMatcher,
+  taskFromText,
+  taskTargetText,
   toTaskView,
   MAX_OPEN_TASKS,
   MAX_TASK_QUANTITY,
   type BarterTaskView,
   type BarterView,
 } from "./barter-view.ts";
-import { biomeName } from "../modules/shared/biomes.ts";
+import { MAX_SPECS_PER_SIDE } from "../db/repositories/barter-tasks.ts";
+import { biomeLabel, biomeName } from "../modules/shared/biomes.ts";
+import { rarityLabel } from "../modules/shared/rarity.ts";
 
 export type AccountView = {
   id: string;
@@ -525,7 +529,7 @@ export class AccountService {
   /* ---------- 以物易物（交换任务面板） ---------- */
 
   /**
-   * 交换任务面板：队列 + 可作为起点的鱼 + 目标鱼候选 + 队首任务的路径预览。
+   * 交换任务面板：队列 + 起点候选（地图 × 稀有度）+ 目标候选 + 队首任务的路径预览。
    *
    * 打开面板是用户主动动作，所以**现读游戏接口**（背包 / 鱼表 / 专精目标），
    * 但鱼表走运行时的 6 小时缓存 —— 内容表很大，不能每次开面板都拉一遍。
@@ -542,25 +546,37 @@ export class AccountService {
       throw new HttpError(502, "GAME_UNREACHABLE", "读不到背包或鱼表（账号可能还没连上游戏，稍后再试）");
     }
 
+    const inventory = readInventoryFish(inv);
+    const masteryTargets = masteryTargetFishIds(mastery);
     const tasks = this.repos.barter.listForAccount(accountId);
     const head = tasks.find((t) => t.status === "waiting" || t.status === "running" || t.status === "blocked") ?? null;
 
     // 队首任务现在能不能走通：失败不影响面板打开（预览只是"顺便看一眼"）
-    let headPlan: { taskId: string; plan: BarterPlan } | null = null;
+    let headPlan: {
+      taskId: string;
+      plan: BarterPlan;
+      start?: { fishId: string; name: string; biomeId: string | null } | null;
+    } | null = null;
     if (head) {
       try {
-        const orders = await fetchBarterOrders(rt.client, { limit: 50, pages: 2 });
+        const starts = filterStartFish(
+          head.from_specs,
+          pickStartCandidates({ inventory, content, masteryTargets }),
+        );
+        const choice = chooseBarterChain({
+          orders: await fetchBarterOrders(rt.client, { limit: 50, pages: 2 }),
+          starts,
+          targets: head.target_specs,
+          maxHops: clampMaxHops(rt, getModule("auto-barter")),
+          selfNickname: rt.me?.player?.nickname ?? null,
+          selfPublicId: rt.client.publicIdentity?.publicId ?? null,
+        });
         headPlan = {
           taskId: head.id,
-          plan: planBarterChain({
-            orders,
-            fromFishId: head.from_fish_id,
-            rarity: head.rarity,
-            maxHops: clampMaxHops(rt, getModule("auto-barter")),
-            isTarget: taskTargetMatcher(head),
-            selfNickname: rt.me?.player?.nickname ?? null,
-            selfPublicId: rt.client.publicIdentity?.publicId ?? null,
-          }),
+          plan: choice.ok ? choice.plan : { ok: false, reason: choice.reason },
+          start: choice.ok
+            ? { fishId: choice.start.fishId, name: choice.start.name, biomeId: choice.start.biomeId }
+            : null,
         };
       } catch {
         headPlan = null;
@@ -570,25 +586,30 @@ export class AccountService {
     const moduleDef = getModule("auto-barter");
     return buildBarterView({
       tasks,
-      inventory: readInventoryFish(inv),
+      inventory,
       content,
       masteryOverview: mastery,
       moduleEnabled: moduleDef ? rt.isEnabled(moduleDef) : false,
       moduleRunning: rt.moduleInstances.includes("auto-barter"),
       head: headPlan,
+      maxSpecs: MAX_SPECS_PER_SIDE,
     });
   }
 
   /**
-   * 新增交换任务。
+   * 新增交换任务：起点侧与目标侧都是一组「地图 + 稀有度」规格。
    *
-   * 校验全部在这里做完（起点鱼必须真的在手、稀有度必须是最高三档、
-   * 目标地图上必须真有同稀有度的鱼），避免把「换不到的任务」排进队列后才发现。
+   * 校验全部在这里做完（地图存在、稀有度是最高三档、目标图上真有这一档的鱼、
+   * 起点侧至少还有一条能拿出去的鱼），避免把「注定换不到的任务」排进队列。
    */
   async createBarterTask(
     accountId: string,
     userId: string,
-    input: { fromFishId: string; quantity: number; targetBiomeId: string; targetFishId?: string | null },
+    input: {
+      fromSpecs: { biomeId: string; rarity: string }[];
+      targetSpecs: { biomeId: string; rarity: string }[];
+      quantity: number;
+    },
   ): Promise<BarterTaskView> {
     const rt = this.requireRuntime(accountId, userId);
 
@@ -600,6 +621,9 @@ export class AccountService {
       );
     }
 
+    const fromSpecs = normalizeSpecs(input.fromSpecs, "起点");
+    const targetSpecs = normalizeSpecs(input.targetSpecs, "目标");
+
     const [inv, content, mastery] = await Promise.all([
       rt.client.inventoryFish().catch(() => null),
       rt.contentBootstrapCached().catch(() => null),
@@ -609,66 +633,66 @@ export class AccountService {
       throw new HttpError(502, "GAME_UNREACHABLE", "读不到背包或鱼表（账号可能还没连上游戏，稍后再试）");
     }
 
-    const candidates = pickStartCandidates({
-      inventory: readInventoryFish(inv),
-      content,
-      masteryTargets: masteryTargetFishIds(mastery),
-    });
-    const from = candidates.find((c) => c.fishId === input.fromFishId);
-    if (!from) {
+    // 两边都要「这张图上真有这一档的鱼」，否则这条任务从定义上就换不到
+    const catalog = readContentFish(content);
+    for (const [side, specs] of [
+      ["起点", fromSpecs],
+      ["目标", targetSpecs],
+    ] as const) {
+      for (const spec of specs) {
+        const hit = catalog.some((f) => f.biomeId === spec.biomeId && f.rarity === spec.rarity);
+        if (!hit) {
+          throw new HttpError(
+            400,
+            "BARTER_SPEC_EMPTY",
+            `${side}「${biomeLabel(spec.biomeId) ?? spec.biomeId}」上没有「${rarityLabel(spec.rarity)}」的鱼`,
+          );
+        }
+      }
+    }
+
+    // 目标不能和起点完全重合（同图同档 = 原地不动）
+    const sameSpec = targetSpecs.find((t) => fromSpecs.some((f) => f.biomeId === t.biomeId && f.rarity === t.rarity));
+    if (sameSpec) {
+      throw new HttpError(
+        400,
+        "BARTER_TARGET_SAME_AS_START",
+        `目标「${biomeLabel(sameSpec.biomeId) ?? sameSpec.biomeId}」和起点是同一张图上的同一档鱼，换了等于没换`,
+      );
+    }
+
+    // 起点侧现在至少要有 1 条能拿出去的鱼（未锁定、不是专精目标鱼）
+    const starts = filterStartFish(
+      fromSpecs.map((s) => ({ biomeId: s.biomeId, rarity: s.rarity, fishId: null })),
+      pickStartCandidates({ inventory: readInventoryFish(inv), content, masteryTargets: masteryTargetFishIds(mastery) }),
+    );
+    const available = starts.reduce((sum, c) => sum + c.quantity, 0);
+    if (!starts.length || available <= 0) {
       throw new HttpError(
         400,
         "BARTER_START_FISH_UNUSABLE",
-        "这条鱼现在不能拿去交换：可能已经卖掉 / 被锁定 / 是专精目标鱼，或者稀有度不是神话、奇异、奥秘",
+        "这些地图上现在没有可以拿去交换的鱼（需要未锁定、且不是当前专精目标鱼）",
       );
     }
 
     const quantity = Math.min(Math.max(Math.floor(Number(input.quantity) || 0), 1), MAX_TASK_QUANTITY);
-    if (quantity > from.quantity) {
-      throw new HttpError(400, "BARTER_NOT_ENOUGH_FISH", `背包里只有 ${from.quantity} 条「${from.name}」`);
-    }
 
-    const targetBiomeId = String(input.targetBiomeId ?? "");
-    if (!biomeName(targetBiomeId)) {
-      throw new HttpError(400, "BARTER_TARGET_BIOME_UNKNOWN", "目标地图不存在");
-    }
-    const targets = pickFishCatalog(content).filter((f) => f.biomeId === targetBiomeId && f.rarity === from.rarity);
-    if (!targets.length) {
-      throw new HttpError(
-        400,
-        "BARTER_TARGET_BIOME_EMPTY",
-        `「${biomeName(targetBiomeId)}」上没有「${from.rarityLabel}」的鱼，换不过去`,
-      );
-    }
-
-    const wanted = input.targetFishId ? String(input.targetFishId) : null;
-    let targetFishName = "";
-    if (wanted) {
-      const hit = targets.find((f) => f.id === wanted);
-      if (!hit) {
-        throw new HttpError(
-          400,
-          "BARTER_TARGET_FISH_INVALID",
-          `这条鱼不在「${biomeName(targetBiomeId)}」上，或者不是「${from.rarityLabel}」稀有度`,
-        );
-      }
-      if (hit.id === from.fishId) {
-        throw new HttpError(400, "BARTER_TARGET_SAME_AS_START", "目标鱼不能和起点鱼是同一种");
-      }
-      targetFishName = hit.name;
-    }
-
+    // 老列（from_fish_* / target_*）只用于展示与老数据兼容：填第一个规格的样子
+    const firstStart = starts[0]!;
+    const firstTarget = targetSpecs[0]!;
     const row = rt.barterCreateTask({
       accountId,
       userId,
-      fromFishId: from.fishId,
-      fromFishName: from.name,
-      fromBiomeId: from.biomeId,
-      rarity: from.rarity,
+      fromSpecs: fromSpecs.map((s) => ({ biomeId: s.biomeId, rarity: s.rarity, fishId: null })),
+      targetSpecs: targetSpecs.map((s) => ({ biomeId: s.biomeId, rarity: s.rarity, fishId: null })),
       quantity,
-      targetBiomeId,
-      targetFishId: wanted,
-      targetFishName,
+      fromFishId: firstStart.fishId,
+      fromFishName: firstStart.name,
+      fromBiomeId: firstStart.biomeId,
+      rarity: firstStart.rarity,
+      targetBiomeId: firstTarget.biomeId,
+      targetFishId: null,
+      targetFishName: "",
     });
     this.repos.barter.pruneFinished(accountId);
     return toTaskView(row);
@@ -683,10 +707,7 @@ export class AccountService {
     const rt = this.requireRuntime(accountId, userId);
     const row = this.repos.barter.find(taskId, accountId);
     if (!row) throw new HttpError(404, "BARTER_TASK_NOT_FOUND", "交换任务不存在");
-    const names = {
-      from: row.from_fish_name || row.from_fish_id,
-      to: row.target_fish_name || biomeName(row.target_biome_id) || row.target_biome_id,
-    };
+    const names = { from: taskFromText(row), to: taskTargetText(row) };
     // 幂等：已经结束的任务再取消一次不算错
     if (row.status === "done" || row.status === "cancelled") {
       return { ok: true, status: row.status, ...names };
@@ -694,6 +715,41 @@ export class AccountService {
     rt.barterCancelTask(taskId);
     return { ok: true, status: "cancelled", ...names };
   }
+}
+
+/**
+ * 规格列表校验与去重：地图必须存在、稀有度必须是最高三档、不能重复、每侧 1~5 项。
+ * 出错直接抛 400（带上人话原因），调用方不需要再判。
+ */
+function normalizeSpecs(
+  raw: { biomeId: string; rarity: string }[],
+  side: "起点" | "目标",
+): { biomeId: string; rarity: string }[] {
+  if (!Array.isArray(raw) || !raw.length) {
+    throw new HttpError(400, "BARTER_SPEC_REQUIRED", `${side}至少选一张地图`);
+  }
+  if (raw.length > MAX_SPECS_PER_SIDE) {
+    throw new HttpError(400, "BARTER_SPEC_TOO_MANY", `${side}最多 ${MAX_SPECS_PER_SIDE} 项`);
+  }
+  const out: { biomeId: string; rarity: string }[] = [];
+  for (const item of raw) {
+    const biomeId = String(item?.biomeId ?? "");
+    const rarity = String(item?.rarity ?? "");
+    if (!biomeName(biomeId)) {
+      throw new HttpError(400, "BARTER_BIOME_UNKNOWN", `${side}里有不存在的地图：${biomeId}`);
+    }
+    if (!isBarterRarity(rarity)) {
+      throw new HttpError(
+        400,
+        "BARTER_RARITY_NOT_ALLOWED",
+        `${side}里有「${rarity || "未选"}」这一档：以物易物只支持神话 / 奇异 / 奥秘`,
+      );
+    }
+    if (out.some((s) => s.biomeId === biomeId && s.rarity === rarity)) continue; // 重复的直接并掉
+    out.push({ biomeId, rarity });
+  }
+  if (!out.length) throw new HttpError(400, "BARTER_SPEC_REQUIRED", `${side}至少选一张地图`);
+  return out;
 }
 
 /**

@@ -623,14 +623,51 @@ describe("barter_tasks（以物易物队列）", () => {
     repos.barter.create({
       accountId,
       userId,
+      // 新任务的主体是两侧的规格列表（老的 from_fish_* / target_* 只用于展示与兼容）
+      fromSpecs: [
+        { biomeId: "b_002", rarity: "mythic", fishId: null },
+        { biomeId: "b_003", rarity: "mythic", fishId: null },
+      ],
+      targetSpecs: [{ biomeId: "b_005", rarity: "mythic", fishId: null }],
+      quantity,
       fromFishId,
       fromFishName: "起点鱼",
       fromBiomeId: "b_002",
       rarity: "mythic",
-      quantity,
       targetBiomeId: "b_005",
       targetFishId: null,
     });
+
+  it("★ 规格列表能存能取（多起点 × 多目标）", () => {
+    const { accountId, userId } = seed();
+    const t = create(accountId, userId, "fa", 3);
+    const row = repos.barter.find(t.id, accountId)!;
+    expect(row.from_specs).toEqual([
+      { biomeId: "b_002", rarity: "mythic", fishId: null },
+      { biomeId: "b_003", rarity: "mythic", fishId: null },
+    ]);
+    expect(row.target_specs).toEqual([{ biomeId: "b_005", rarity: "mythic", fishId: null }]);
+    expect(row.quantity).toBe(3);
+  });
+
+  it("★ 老任务（只有老的列、没有规格列）照样能读出来", () => {
+    const { accountId, userId } = seed();
+    const t = create(accountId, userId, "fa", 1);
+    // 手工把规格列清空 + 填上老列，模拟 1.17.0 建的任务
+    db.run("UPDATE barter_tasks SET from_specs_json = '', target_specs_json = '', from_fish_id = ?, target_biome_id = ?, target_fish_id = NULL WHERE id = ?", "legacy-fish", "b_009", t.id);
+
+    const row = repos.barter.find(t.id, accountId)!;
+    expect(row.from_specs).toEqual([{ biomeId: "b_002", rarity: "mythic", fishId: "legacy-fish" }]);
+    expect(row.target_specs).toEqual([{ biomeId: "b_009", fishId: null, rarity: "mythic" }]);
+  });
+
+  it("规格列的 JSON 坏掉时不抛错，退回老列", () => {
+    const { accountId, userId } = seed();
+    const t = create(accountId, userId, "fa");
+    db.run("UPDATE barter_tasks SET target_specs_json = '{不是 JSON' WHERE id = ?", t.id);
+    const row = repos.barter.find(t.id, accountId)!;
+    expect(row.target_specs).toEqual([{ biomeId: "b_005", fishId: null, rarity: "mythic" }]);
+  });
 
   it("队列头 = 最早创建的未结束任务；已结束的不再参与", () => {
     const { accountId, userId } = seed();

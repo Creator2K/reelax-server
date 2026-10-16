@@ -62,6 +62,36 @@ export type BarterPlan =
   | { ok: true; hops: BarterHop[]; capacity: number }
   | { ok: false; reason: string };
 
+/**
+ * 任务一侧的规格（起点 / 目标都用它）。
+ *
+ * 「B2 上的任意神话鱼」= `{ biomeId: "b_002", rarity: "mythic", fishId: null }`；
+ * 指名鱼种（1.17.0 的老任务）则带 `fishId`，两种形态共用一套匹配逻辑。
+ */
+export type BarterSpec = {
+  biomeId: string | null;
+  rarity: string;
+  fishId: string | null;
+};
+
+/**
+ * 这个规格是否包含某条鱼。
+ *
+ * ★ 地图与稀有度都是**严格**比较：拿不准的鱼（缺 biomeId / 缺 rarity）一律不算命中 ——
+ *   这里宁可"判定为不可达"（面板会写清走不通），也不能把不该换的鱼当成目标。
+ */
+export function specMatchesFish(spec: BarterSpec, fish: BarterFish): boolean {
+  if (spec.fishId) return fish.fishId === spec.fishId;
+  if (spec.biomeId && spec.biomeId !== fish.biomeId) return false;
+  if (spec.rarity && spec.rarity !== fish.rarity) return false;
+  return true;
+}
+
+/** 一组规格的匹配器：命中其中任意一个规格就算（目标判定用） */
+export function specsMatcher(specs: BarterSpec[]): (fish: BarterFish) => boolean {
+  return (fish) => specs.some((s) => specMatchesFish(s, fish));
+}
+
 const str = (v: unknown): string => (v === undefined || v === null ? "" : String(v));
 const num = (v: unknown): number => {
   const n = Number(v);
@@ -191,6 +221,8 @@ type Visited = { hops: number; capacity: number; path: BarterHop[] };
 export function planBarterChain(input: {
   orders: BarterOrder[];
   fromFishId: string;
+  /** 起点鱼的完整信息（带 biomeId / name）—— 判定「起点本身是否已满足目标」时用它；缺了就只能按 id 判 */
+  fromFish?: BarterFish | null;
   rarity?: string | null;
   maxHops: number;
   isTarget: (fish: BarterFish) => boolean;
@@ -199,7 +231,7 @@ export function planBarterChain(input: {
   /** 自己的玩家 id（更可靠；两个都给就都用来排除） */
   selfPublicId?: string | null;
 }): BarterPlan {
-  const from = str(input.fromFishId);
+  const from = str(input.fromFish?.fishId ?? input.fromFishId);
   if (!from) return { ok: false, reason: "没有指定起点鱼" };
 
   const maxHops = Math.min(Math.max(Math.floor(num(input.maxHops) || 1), 1), 8);
@@ -244,7 +276,7 @@ export function planBarterChain(input: {
     }
   }
 
-  const fromFish: BarterFish = { fishId: from, name: from, biomeId: null, rarity: rarity ?? "" };
+  const fromFish: BarterFish = input.fromFish ?? { fishId: from, name: from, biomeId: null, rarity: rarity ?? "" };
   if (input.isTarget(fromFish)) return { ok: false, reason: "起点鱼本身已经符合目标（不需要交换）" };
 
   /* ---------- 逐层 BFS：先比跳数，再比容量 ---------- */
@@ -291,6 +323,75 @@ export function planBarterChain(input: {
     ok: false,
     reason: `当前没有能在 ${maxHops} 次交换内换到目标的现成交换单（只接现成的单，不自己挂单）`,
   };
+}
+
+/** 可作为起点的鱼（带现有数量）：面板的选项与模块的候选都用它 */
+export type BarterStartOption = {
+  fishId: string;
+  name: string;
+  biomeId: string | null;
+  rarity: string;
+  /** 现在能拿出几条（未锁定、不是专精目标鱼） */
+  quantity: number;
+};
+
+export type BarterChoice =
+  | { ok: true; start: BarterStartOption; plan: Extract<BarterPlan, { ok: true }> }
+  | { ok: false; reason: string };
+
+/**
+ * 从**多个**起点鱼里挑一条最值得走的链。
+ *
+ * 一条任务可以写「B2 / B3 / B4 上的鱼都能拿去换」，所以每一轮要决定先动哪条：
+ *   能走通优先 → 跳数少优先 → 单子剩余量多优先 → 现有数量多优先。
+ * 都不行时把「走不通」的原因带回去（面板与日志直接用）。
+ */
+export function chooseBarterChain(input: {
+  orders: BarterOrder[];
+  starts: BarterStartOption[];
+  /** 目标规格：换到其中任意一种都算达成 */
+  targets: BarterSpec[];
+  maxHops: number;
+  selfNickname?: string | null;
+  selfPublicId?: string | null;
+}): BarterChoice {
+  const usable = input.starts.filter((s) => s.quantity > 0);
+  if (!usable.length) return { ok: false, reason: "手上没有可用的起点鱼" };
+
+  const isTarget = specsMatcher(input.targets);
+  let best: { start: BarterStartOption; plan: Extract<BarterPlan, { ok: true }> } | null = null;
+  let reason: string | null = null;
+
+  for (const start of usable) {
+    const plan = planBarterChain({
+      orders: input.orders,
+      fromFishId: start.fishId,
+      fromFish: { fishId: start.fishId, name: start.name, biomeId: start.biomeId, rarity: start.rarity },
+      rarity: start.rarity,
+      maxHops: input.maxHops,
+      isTarget,
+      selfNickname: input.selfNickname ?? null,
+      selfPublicId: input.selfPublicId ?? null,
+    });
+    if (!plan.ok) {
+      reason ??= plan.reason;
+      continue;
+    }
+    if (!best) {
+      best = { start, plan };
+      continue;
+    }
+    const cand = { hops: plan.hops.length, capacity: plan.capacity, quantity: start.quantity };
+    const cur = { hops: best.plan.hops.length, capacity: best.plan.capacity, quantity: best.start.quantity };
+    const better =
+      cand.hops < cur.hops ||
+      (cand.hops === cur.hops && cand.capacity > cur.capacity) ||
+      (cand.hops === cur.hops && cand.capacity === cur.capacity && cand.quantity > cur.quantity);
+    if (better) best = { start, plan };
+  }
+
+  if (!best) return { ok: false, reason: reason ?? "当前没有可走的交换路径" };
+  return { ok: true, start: best.start, plan: best.plan };
 }
 
 /**
