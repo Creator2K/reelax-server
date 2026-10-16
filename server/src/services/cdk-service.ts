@@ -130,6 +130,22 @@ export type SubmitOutcome = {
   id?: string;
 };
 
+/** 后台码库的一行：不打码，并且带提交人的可读名字 */
+export type AdminCdkItem = {
+  id: string;
+  code: string;
+  status: CdkStatus;
+  reward: RewardSummary | null;
+  submittedBy: string;
+  /** 「显示名（邮箱）」；提交人已被删除时退回 id */
+  submitter: string;
+  accountId: string | null;
+  successCount: number;
+  lastError: string | null;
+  submittedAt: number;
+  lastRedeemedAt: number | null;
+};
+
 export type ClaimOutcome =
   | { ok: true; reward?: RewardSummary; already?: boolean }
   | { ok: false; reason: string; removed?: boolean; already?: boolean };
@@ -351,6 +367,99 @@ export class CdkService {
   /** 删除自己提交的码 */
   remove(userId: string, id: string): boolean {
     return this.deps.repos.cdk.deleteOwned(id, userId);
+  }
+
+  /* ---------------- 后台（管理员） ---------------- */
+
+  /**
+   * 后台码库列表：**不打码**，并且把提交人解析成可读的人（邮箱 / 显示名）。
+   *
+   * 与用户页的区别只有这两点：用户看别人的码是打码的，管理员要能直接复制 / 核对。
+   */
+  adminList(
+    opts: { status?: CdkStatus | "all"; search?: string; limit?: number; offset?: number } = {},
+  ): { items: AdminCdkItem[]; counts: Record<CdkStatus, number>; total: number } {
+    const filter = {
+      status: opts.status ?? "all",
+      ...(opts.search?.trim() ? { search: opts.search.trim() } : {}),
+    };
+    const rows = this.deps.repos.cdk.list({ ...filter, limit: opts.limit ?? 50, offset: opts.offset ?? 0 });
+    return {
+      items: rows.map((row) => this.toAdminItem(row)),
+      counts: this.deps.repos.cdk.countByStatus(),
+      total: this.deps.repos.cdk.count(filter),
+    };
+  }
+
+  /**
+   * 管理员手动添加码：**不试领验证**，直接入库（状态默认「可用」）。
+   *
+   * 为什么不做验证：管理员通常是从别处整批拿到的码，一个个试领既慢又会把码先领掉一份；
+   * 真无效的码会在有人兑换时被自动标成「已失效」并移出列表（见 claim）。
+   * 重复的码（归一化后同一个）会被跳过并说明，不会覆盖已有记录。
+   */
+  adminAdd(
+    adminUserId: string,
+    rawCodes: unknown[],
+  ): { input: string; ok: boolean; reason?: string; id?: string }[] {
+    const out: { input: string; ok: boolean; reason?: string; id?: string }[] = [];
+    for (const raw of rawCodes.slice(0, 50)) {
+      const input = String(raw ?? "").trim();
+      if (!input) continue;
+      const norm = normalizeCdk(input);
+      if (!norm) {
+        out.push({ input, ok: false, reason: "格式不对（只允许字母、数字、连字符与下划线）" });
+        continue;
+      }
+      if (this.deps.repos.cdk.existsNormalized(norm.normalized)) {
+        out.push({ input, ok: false, reason: "库里已经有这个码了" });
+        continue;
+      }
+      const row = this.insertWithRetry({
+        code: norm.display,
+        normalized: norm.normalized,
+        status: "available",
+        submittedBy: adminUserId,
+      });
+      if (!row) {
+        out.push({ input, ok: false, reason: "库里已经有这个码了" });
+        continue;
+      }
+      out.push({ input, ok: true, id: row.id });
+    }
+    return out;
+  }
+
+  /** 管理员删除任意码（不限提交人） */
+  adminDelete(id: string): { ok: boolean; code: string | null } {
+    const row = this.deps.repos.cdk.findById(id);
+    if (!row) return { ok: false, code: null };
+    return { ok: this.deps.repos.cdk.deleteById(id), code: row.code };
+  }
+
+  private toAdminItem(row: CdkRow): AdminCdkItem {
+    let reward: RewardSummary | null = null;
+    if (row.reward_json) {
+      try {
+        reward = JSON.parse(row.reward_json) as RewardSummary;
+      } catch {
+        reward = null;
+      }
+    }
+    const submitter = this.deps.repos.users.findById(row.submitted_by);
+    return {
+      id: row.id,
+      code: row.code,
+      status: row.status,
+      reward,
+      submittedBy: row.submitted_by,
+      submitter: submitter ? `${submitter.display_name}（${submitter.email}）` : row.submitted_by,
+      accountId: row.account_id,
+      successCount: Number(row.success_count) || 0,
+      lastError: row.last_error,
+      submittedAt: Number(row.submitted_at),
+      lastRedeemedAt: row.last_redeemed_at === null ? null : Number(row.last_redeemed_at),
+    };
   }
 
   /**

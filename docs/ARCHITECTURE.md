@@ -14,7 +14,7 @@ api/            Express 路由 + WebSocket 网关（只做参数校验、鉴权�
 security/       AES-256-GCM 加解密、凭证保管箱、scrypt 口令哈希
 auth/           注册/登录/会话/RBAC/限流/cookie 策略
 game/           签名客户端、代理层、账号运行时、运行时注册表
-modules/        19 个内置功能 + 模块定义契约
+modules/        18 个内置功能 + 模块定义契约
 ```
 
 **硬性规则**：
@@ -228,7 +228,7 @@ export const MODULES: ModuleDefinition[] = [
 | **奥秘献祭** | `auto-sacrifice` | `/api/events/arcane-sacrifice/contributions` |
 | **公会区域增益** | `auto-guild-boost` | `/api/guilds/me/boosts/{biomeId}` |
 | 地图专精献祭（助手没有） | `auto-mastery` | `/api/mastery/{biomeId}/contribute-all` |
-| 以物易物多轮交换（助手没有） | `auto-barter` | `/api/barter/orders` + `/api/barter/orders/{id}/fill` |
+| 专精换鱼 · 多轮以物易物（助手没有） | 「交换助手」页（`services/swap-service.ts`） | `/api/barter/orders` + `/api/barter/orders/{id}/fill` |
 
 ---
 

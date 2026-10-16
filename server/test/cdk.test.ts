@@ -55,6 +55,7 @@ function makeFetch(): typeof fetch {
 let app: FullApp;
 let A: ReturnType<FullApp["seedApprovedUser"]>;
 let B: ReturnType<FullApp["seedApprovedUser"]>;
+let admin: ReturnType<FullApp["seedApprovedUser"]>;
 let aAccount: string;
 let bAccount: string;
 
@@ -62,6 +63,7 @@ beforeAll(async () => {
   app = await buildFullApp({ fetchImpl: makeFetch() });
   A = app.seedApprovedUser("cdk-a@example.com");
   B = app.seedApprovedUser("cdk-b@example.com");
+  admin = app.seedApprovedUser("cdk-admin@example.com", "admin");
   aAccount = app.seedAccount(A.id, "甲号");
   bAccount = app.seedAccount(B.id, "乙号");
 });
@@ -291,5 +293,97 @@ describe("提交与兑换（对着假游戏服务跑真实路由）", () => {
   it("提交需要登录", async () => {
     expect((await app.post("/api/cdk/submit", { accountId: aAccount, codes: ["X1"] })).status).toBe(401);
     expect((await app.get("/api/cdk")).status).toBe(401);
+  });
+});
+
+/* ---------------- 后台：CDK 码库 ---------------- */
+
+type AdminItem = {
+  id: string;
+  code: string;
+  status: string;
+  submitter: string;
+  submittedBy: string;
+  successCount: number;
+  lastError: string | null;
+  submittedAt: number;
+};
+type AdminListBody = { items: AdminItem[]; counts: Record<string, number>; total: number };
+
+describe("后台码库（管理员）", () => {
+  it("★ 只有管理员能进（普通用户 403）", async () => {
+    expect((await app.get("/api/admin/cdk", A.jar)).status).toBe(403);
+    expect((await app.post("/api/admin/cdk", { codes: ["NOPE"] }, A.jar)).status).toBe(403);
+    expect((await app.del("/api/admin/cdk/whatever")).status).toBe(401);
+  });
+
+  it("★ 列表不打码：能看到别人提交的完整码 + 提交人 + 兑换次数", async () => {
+    await app.post("/api/cdk/submit", { accountId: aAccount, codes: ["ADMIN-SEE-1"] }, A.jar);
+
+    const r = await app.get<AdminListBody>("/api/admin/cdk?search=ADMINSEE1", admin.jar);
+    expect(r.status).toBe(200);
+    const hit = r.body.items.find((i) => i.code === "ADMIN-SEE-1");
+    expect(hit).toBeTruthy();
+    expect(hit!.submitter).toContain("cdk-a@example.com"); // 提交人解析成了邮箱，而不是 id
+    expect(hit!.status).toBe("available");
+    expect(r.body.total).toBeGreaterThanOrEqual(1);
+  });
+
+  it("★ 手动加码：直接入库（不试领），重复的跳过", async () => {
+    const r = await app.post<{ results: { input: string; ok: boolean; reason?: string }[] }>(
+      "/api/admin/cdk",
+      { codes: ["ADMIN-ADD-1", "ADMIN-ADD-2", "admin-add-1"] }, // 第三个与第一个归一化后相同
+      admin.jar,
+    );
+    expect(r.status).toBe(200);
+    expect(r.body.results.map((x) => x.ok)).toEqual([true, true, false]);
+    expect(r.body.results[2]!.reason).toContain("已经有");
+
+    // 加进去的码是可兑换状态，且提交人是管理员
+    const list = await app.get<AdminListBody>("/api/admin/cdk?search=ADMINADD1", admin.jar);
+    const hit = list.body.items.find((i) => i.code === "ADMIN-ADD-1")!;
+    expect(hit.status).toBe("available");
+
+    // 普通用户能直接领取它（真的进了公共库）
+    behaviors.set("ADMIN-ADD-2", { ok: true });
+    const claim = await app.post<{ ok: boolean }>("/api/cdk/claim-all", { accountId: bAccount }, B.jar);
+    expect(claim.status).toBe(200);
+    expect(redeemCalls).toContain("ADMIN-ADD-2");
+  });
+
+  it("★ 删除任意码（不限提交人）+ 未知 id 404 + 审计留痕", async () => {
+    // A 提交的码，由管理员删掉
+    await app.post("/api/cdk/submit", { accountId: aAccount, codes: ["ADMIN-DEL-1"] }, A.jar);
+    const list = await app.get<AdminListBody>("/api/admin/cdk?search=ADMINDEL1", admin.jar);
+    const target = list.body.items.find((i) => i.code === "ADMIN-DEL-1")!;
+    expect(target).toBeTruthy();
+
+    const del = await app.del(`/api/admin/cdk/${target.id}`, admin.jar);
+    expect(del.status).toBe(200);
+
+    const again = await app.get<AdminListBody>("/api/admin/cdk?search=ADMINDEL1", admin.jar);
+    expect(again.body.items.some((i) => i.code === "ADMIN-DEL-1")).toBe(false);
+
+    const missing = await app.del("/api/admin/cdk/nope", admin.jar);
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe("CDK_NOT_FOUND");
+
+    const added = app.repos.audit.list({ action: "admin.cdk.added", userId: admin.id });
+    const deleted = app.repos.audit.list({ action: "admin.cdk.deleted", userId: admin.id });
+    expect(added.length).toBeGreaterThanOrEqual(1);
+    expect(deleted.length).toBeGreaterThanOrEqual(1);
+
+    const { describeAudit } = await import("../src/lib/audit-text.ts");
+    expect(describeAudit(added[0]!, {})).toContain("CDK 码库");
+    expect(describeAudit(deleted[0]!, {})).toContain("ADMIN-DEL-1");
+  });
+
+  it("按状态筛选与分页", async () => {
+    const paged = await app.get<AdminListBody>("/api/admin/cdk?limit=1&offset=0", admin.jar);
+    expect(paged.body.items).toHaveLength(1);
+    expect(paged.body.total).toBeGreaterThan(1);
+
+    const avail = await app.get<AdminListBody>("/api/admin/cdk?status=available", admin.jar);
+    expect(avail.body.items.every((i) => i.status === "available")).toBe(true);
   });
 });

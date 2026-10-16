@@ -318,6 +318,17 @@ ALTER TABLE barter_tasks ADD COLUMN from_specs_json TEXT NOT NULL DEFAULT '';
 ALTER TABLE barter_tasks ADD COLUMN target_specs_json TEXT NOT NULL DEFAULT '';
 `,
   },
+
+  // ---------- 撤掉「交换任务」队列 ----------
+  // 需求变了：自动以物易物（模块 + 交换任务面板 + 队列）整体下线，
+  // 改成手动工具「交换助手」（扫全市场找链、自己点执行，见 services/swap-service.ts），
+  // 那条队列就没有任何使用者了 —— 按「已发布的迁移只增不改」的规矩，这里补一条把它删掉。
+  {
+    id: "0010_drop_barter_tasks",
+    sql: `
+DROP TABLE barter_tasks;
+`,
+  },
 ];
 
 /** 供 migrate.ts 记录已应用版本 */

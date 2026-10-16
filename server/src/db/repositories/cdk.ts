@@ -165,8 +165,13 @@ export class CdkRepo extends BaseRepo {
     );
   }
 
-  /** 删除自己的提交（只有提交者能删；管理员视角不提供） */
+  /** 删除自己的提交（只有提交者能删） */
   deleteOwned(id: string, userId: string): boolean {
     return Number(this.db.run("DELETE FROM cdk_codes WHERE id = ? AND submitted_by = ?", id, userId).changes) > 0;
+  }
+
+  /** 管理员删除任意码（不限提交人） */
+  deleteById(id: string): boolean {
+    return Number(this.db.run("DELETE FROM cdk_codes WHERE id = ?", id).changes) > 0;
   }
 }

@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError } from "./api.ts";
 import { ACCOUNTS_QUERY_KEY, MODULES_QUERY_KEY, PROXIES_QUERY_KEY } from "./queries.ts";
-import type { BarterTask, CreateBarterTaskInput } from "./queries.ts";
+import type { SwapExecuteResult, SwapState } from "./queries.ts";
 import { SYSTEM_QUERY_KEY } from "./session.ts";
 
 function errMessage(err: unknown): string {
@@ -237,34 +237,62 @@ export function useManagePartyMember(accountId: string) {
   });
 }
 
-/* ---------------- 以物易物（交换任务） ---------------- */
+/* ---------------- 交换助手（专精换鱼） ---------------- */
 
-/**
- * 新增一条交换任务（起点 / 目标都是「地图 + 稀有度」的列表，换到目标任意一种都算达成）。
- *
- * 校验在服务端做（地图存在、稀有度是最高三档、目标图上真有这一档的鱼、起点侧还有鱼可换），
- * 失败原因直接 toast 出来 —— 用户不需要猜为什么加不进去。
- */
-export function useCreateBarterTask(accountId: string) {
+/** 开始扫描全市场交换单（后台跑，进度由 useSwapState 轮询） */
+export function useStartSwapScan(accountId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: CreateBarterTaskInput) =>
-      api.post<BarterTask>(`/api/accounts/${accountId}/barter/tasks`, input),
-    onSuccess: (task) => {
-      void qc.invalidateQueries({ queryKey: ["account-barter", accountId] });
-      toast.success(`已加入队列：${task.fromText} → ${task.targetText} ×${task.quantity}`);
+    mutationFn: () => api.post<SwapState>(`/api/accounts/${accountId}/swap/scan`),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["account-swap", accountId] });
     },
     onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
   });
 }
 
-export function useCancelBarterTask(accountId: string) {
+/**
+ * 执行一条交换链（会真的把鱼换出去）。
+ *
+ * 结果按「走了几跳、停在哪一步」如实提示：半路停下时前面几跳的成交是算数的。
+ */
+export function useExecuteSwapPath(accountId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (taskId: string) => api.del(`/api/accounts/${accountId}/barter/tasks/${taskId}`),
+    mutationFn: (hops: { orderId: string; requestFishId: string; offerFishId: string }[]) =>
+      api.post<SwapExecuteResult>(`/api/accounts/${accountId}/swap/execute`, { hops }),
+    onSuccess: (r) => {
+      void qc.invalidateQueries({ queryKey: ["account-swap", accountId] });
+      void qc.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY });
+      if (r.ok) toast.success(`已走完这条链（${r.done} 跳）`);
+      else toast.error(r.error ?? `只走了 ${r.done} 跳就停了`, { duration: 8000 });
+    },
+    onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
+  });
+}
+
+/* ---------------- 后台：CDK 码库 ---------------- */
+
+/** 管理员手动加码（不试领验证，直接入库；重复的会跳过并说明） */
+export function useAdminCdkAdd() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (codes: string[]) =>
+      api.post<{ results: { input: string; ok: boolean; reason?: string }[] }>("/api/admin/cdk", { codes }),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["account-barter", accountId] });
-      toast.success("已取消该交换任务（已经换到的鱼留在背包里）");
+      void qc.invalidateQueries({ queryKey: ["admin", "cdk"] });
+    },
+    onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
+  });
+}
+
+export function useAdminCdkDelete() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/api/admin/cdk/${id}`),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "cdk"] });
+      toast.success("已从码库删除");
     },
     onError: (err) => toast.error(errMessage(err), { duration: 8000 }),
   });

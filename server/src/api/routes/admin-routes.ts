@@ -11,6 +11,7 @@ import type { Repos } from "../../db/repositories/index.ts";
 import type { RunnerRegistry } from "../../game/runner-registry.ts";
 import type { UpdateService } from "../../services/update-service.ts";
 import type { SettingsService } from "../../services/settings-service.ts";
+import type { CdkService } from "../../services/cdk-service.ts";
 import { currentUser, requireAdmin } from "../../auth/middleware.ts";
 import { body, query } from "../middleware/validate.ts";
 import { clientIp, Limiters } from "../../auth/ratelimit.ts";
@@ -75,12 +76,24 @@ const auditSchema = z.object({
   offset: z.coerce.number().int().min(0).max(100000).optional(),
 });
 
+const adminCdkListSchema = z.object({
+  status: z.enum(["all", "available", "not_started", "exhausted"]).optional(),
+  search: z.string().max(80).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).max(100000).optional(),
+});
+
+const adminCdkAddSchema = z.object({
+  codes: z.array(z.string().min(1).max(80)).min(1, "至少填一个码").max(50, "一次最多 50 个"),
+});
+
 export function createAdminRouter(deps: {
   auth: AuthService;
   invites: InvitesRepo;
   audit: AuditRepo;
   repos: Repos;
   registry: RunnerRegistry;
+  cdk: CdkService;
   update: UpdateService;
   settings: SettingsService;
   limiters: Limiters;
@@ -250,6 +263,57 @@ export function createAdminRouter(deps: {
       return;
     }
     deps.audit.record({ userId: admin.id, action: AUDIT_ACTIONS.INVITE_DELETED, target: id, ip: clientIp(req) });
+    res.json({ ok: true });
+  });
+
+  /* ---------- CDK 码库 ---------- */
+
+  /** 码库列表：不打码（管理员要能核对 / 复制），带提交人、提交时间、成功次数与最近错误 */
+  router.get("/cdk", query(adminCdkListSchema), (req, res) => {
+    const q = res.locals.query as z.infer<typeof adminCdkListSchema>;
+    res.json(
+      deps.cdk.adminList({
+        status: q.status ?? "all",
+        ...(q.search ? { search: q.search } : {}),
+        limit: q.limit ?? 50,
+        offset: q.offset ?? 0,
+      }),
+    );
+  });
+
+  /** 手动加码：一次最多 50 条，逐条返回结论（重复的会跳过并说明） */
+  router.post("/cdk", body(adminCdkAddSchema), (req, res) => {
+    const admin = currentUser(req);
+    const results = deps.cdk.adminAdd(admin.id, req.body.codes);
+    const added = results.filter((r) => r.ok);
+    if (added.length) {
+      deps.audit.record({
+        userId: admin.id,
+        action: AUDIT_ACTIONS.ADMIN_CDK_ADDED,
+        target: null,
+        detail: { count: added.length, sample: added[0]?.input ?? null },
+        ip: clientIp(req),
+      });
+    }
+    res.json({ results });
+  });
+
+  /** 删除任意码（不限提交人） */
+  router.delete("/cdk/:id", (req, res) => {
+    const admin = currentUser(req);
+    const id = req.params.id as string;
+    const removed = deps.cdk.adminDelete(id);
+    if (!removed.ok) {
+      res.status(404).json({ error: { code: "CDK_NOT_FOUND", message: "这个码不在库里（可能已被移除）" } });
+      return;
+    }
+    deps.audit.record({
+      userId: admin.id,
+      action: AUDIT_ACTIONS.ADMIN_CDK_DELETED,
+      target: id,
+      detail: { code: removed.code },
+      ip: clientIp(req),
+    });
     res.json({ ok: true });
   });
 

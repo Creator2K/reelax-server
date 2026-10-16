@@ -11,7 +11,6 @@ import { StatsRepo } from "./stats.ts";
 import { AuditRepo } from "./audit.ts";
 import { NotifyRepo } from "./notify.ts";
 import { CdkRepo } from "./cdk.ts";
-import { BarterTasksRepo } from "./barter-tasks.ts";
 
 export type Repos = {
   users: UsersRepo;
@@ -25,7 +24,6 @@ export type Repos = {
   audit: AuditRepo;
   notify: NotifyRepo;
   cdk: CdkRepo;
-  barter: BarterTasksRepo;
 };
 
 export function createRepos(db: Db): Repos {
@@ -41,7 +39,6 @@ export function createRepos(db: Db): Repos {
     audit: new AuditRepo(db),
     notify: new NotifyRepo(db),
     cdk: new CdkRepo(db),
-    barter: new BarterTasksRepo(db),
   };
 }
 
@@ -56,7 +53,6 @@ export * from "./stats.ts";
 export * from "./audit.ts";
 export * from "./notify.ts";
 export * from "./cdk.ts";
-export * from "./barter-tasks.ts";
 
 /**
  * 测试/开发辅助：建一个内存库并跑迁移。

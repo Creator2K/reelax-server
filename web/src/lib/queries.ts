@@ -262,120 +262,93 @@ export function useAccountParty(id: string | undefined, enabled = true) {
   });
 }
 
-/* ---------- 以物易物（交换任务面板） ---------- */
+/* ---------- 交换助手（专精换鱼） ---------- */
 
-export type BarterTaskStatus = "waiting" | "running" | "done" | "blocked" | "cancelled";
-
-/** 一侧规格（任务里的「起点 / 目标」项）：某张地图上的任意同稀有度鱼 */
-export type BarterSpecView = {
-  biomeId: string | null;
-  /** `B2` 这种简称（玩家交流用的就是它） */
-  biomeCode: string | null;
-  biomeName: string | null;
-  rarity: string;
-  rarityLabel: string;
-  /** 有值 = 指名鱼种（1.17.0 的老任务） */
-  fishId: string | null;
-  fishName: string | null;
-  text: string;
-};
-
-export type BarterTask = {
-  id: string;
-  quantity: number;
-  doneQuantity: number;
-  status: BarterTaskStatus;
-  statusText: string;
-  lastNote: string | null;
-  lastError: string | null;
-  fromSpecs: BarterSpecView[];
-  targetSpecs: BarterSpecView[];
-  fromText: string;
-  targetText: string;
-  createdAt: number;
-  updatedAt: number;
-};
-
-/** 起点候选：某张地图 × 某一档现在能拿出几条 */
-export type BarterStartMapOption = {
-  biomeId: string;
-  biomeCode: string | null;
-  biomeName: string | null;
-  rarity: string;
-  rarityLabel: string;
-  quantity: number;
-};
-
-/** 目标候选：某张地图 × 某一档上有鱼可换 */
-export type BarterTargetMapOption = {
-  biomeId: string;
+export type SwapFishView = {
+  fishId: string;
+  name: string;
+  /** `B2` 这种简称 */
   biomeCode: string | null;
   biomeName: string | null;
   rarity: string;
   rarityLabel: string;
 };
 
-export type BarterHop = {
+export type SwapHopView = {
   orderId: string;
   owner: string | null;
-  giveFishId: string;
-  giveName: string;
-  giveBiomeCode: string | null;
-  giveBiomeName: string | null;
-  getFishId: string;
-  getName: string;
-  getBiomeCode: string | null;
-  getBiomeName: string | null;
+  /** 这一对组合最多还能成交几次 */
+  capacity: number;
+  give: SwapFishView;
+  get: SwapFishView;
+};
+
+export type SwapPathView = {
+  key: string;
+  targetFishId: string;
+  length: number;
+  hops: SwapHopView[];
+};
+
+export type SwapTargetView = {
+  fishId: string;
+  name: string;
+  rarity: string;
+  rarityLabel: string;
+  biomeCode: string | null;
+  biomeName: string | null;
+  /** 专精还差几条 */
   remaining: number;
+  /** 背包里现在有几条 */
+  available: number;
+  /** 这个目标当前有几条可行链 */
+  pathCount: number;
 };
 
-export type BarterHead = {
-  taskId: string;
-  /** 这一轮实际会动用的起点鱼（多起点里挑出来的那条） */
-  startFishId: string | null;
-  startFishName: string | null;
-  startBiomeCode: string | null;
-  startBiomeName: string | null;
-  reachable: boolean;
-  hops: BarterHop[];
-  reason: string | null;
+export type SwapState = {
+  status: "idle" | "scanning" | "ready" | "error";
+  progress: { phase: string; pages: number; orders: number };
+  error: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  /** 执行过之后数据就旧了：提示重新扫描 */
+  stale: boolean;
+  result: {
+    stats: {
+      orders: number;
+      edges: number;
+      targets: number;
+      paths: number;
+      pages: number;
+      truncated: boolean;
+      scannedAt: number;
+    };
+    targets: SwapTargetView[];
+    paths: SwapPathView[];
+  } | null;
 };
 
-export type BarterPanel = {
-  /** 功能开关状态：没运行的时侯队列只是「存着」 */
-  module: { enabled: boolean; running: boolean };
-  limits: {
-    maxOpenTasks: number;
-    maxQuantity: number;
-    maxSpecs: number;
-    /** 可用的稀有度档位（带中文名，面板的筛选下拉直接用） */
-    rarities: { value: string; label: string }[];
-  };
-  rarityHint: string;
-  tasks: BarterTask[];
-  startOptions: BarterStartMapOption[];
-  targetOptions: BarterTargetMapOption[];
-  /** 队首任务当前能不能走通（打开面板时现算一次） */
-  head: BarterHead | null;
+export type SwapExecuteResult = {
+  ok: boolean;
+  done: number;
+  steps: { index: number; orderId: string; ok: boolean; error?: string }[];
+  error?: string;
 };
 
-/** 一侧规格的提交形态 */
-export type BarterSpecInput = { biomeId: string; rarity: string };
-
-export type CreateBarterTaskInput = {
-  fromSpecs: BarterSpecInput[];
-  targetSpecs: BarterSpecInput[];
-  quantity: number;
-};
-
-/** 交换任务面板：每次打开现读（队列与背包都可能刚变过） */
-export function useAccountBarter(id: string | undefined, enabled = true) {
+/**
+ * 交换助手的扫描状态。
+ *
+ * 扫描是后台跑的（最多几十次翻页请求），所以「扫描中」时自动轮询；
+ * 一旦 ready / error 就停下来，不白刷接口。
+ */
+export function useSwapState(accountId: string | undefined, enabled = true) {
   return useQuery({
-    queryKey: ["account-barter", id],
-    queryFn: () => api.get<BarterPanel>(`/api/accounts/${id}/barter`),
-    enabled: Boolean(id) && enabled,
-    staleTime: 10_000,
+    queryKey: ["account-swap", accountId],
+    queryFn: () => api.get<SwapState>(`/api/accounts/${accountId}/swap`),
+    enabled: Boolean(accountId) && enabled,
+    staleTime: 0,
     retry: false,
+    refetchInterval: (query) => (query.state.data?.status === "scanning" ? 1500 : false),
   });
 }
 

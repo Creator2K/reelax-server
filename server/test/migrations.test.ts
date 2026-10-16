@@ -30,6 +30,7 @@ const FROZEN_CHECKSUMS: Record<string, string> = {
   "0007_cdk_codes": "29c4f8ae5b597c48",
   "0008_barter_tasks": "11d6b1a7131ba805",
   "0009_barter_task_specs": "fef9c07e60f8df7b",
+  "0010_drop_barter_tasks": "dbf7dba8a9a21b4a",
 };
 
 function checksum(sql: string): string {
@@ -92,11 +93,11 @@ describe("全新数据库能建出全部表", () => {
         "notify_channels",
         // 可在线修改的运行时设置
         "app_settings",
-        // 以物易物的交换任务队列
-        "barter_tasks",
       ]) {
         expect(tables.has(t), `缺少表 ${t}`).toBe(true);
       }
+      // ★ 0010 把「交换任务」队列删掉了（那个功能已下线）：全新库不该再有这张表
+      expect(tables.has("barter_tasks"), "barter_tasks 已被 0010 删除").toBe(false);
     } finally {
       db.close();
     }

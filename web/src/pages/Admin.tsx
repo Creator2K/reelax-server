@@ -29,6 +29,7 @@ import { DashboardTab } from "@/components/domain/DashboardTab.tsx";
 import { UsersTab } from "@/components/domain/UsersTab.tsx";
 import { AdminSettingsTab } from "@/components/domain/AdminSettingsTab.tsx";
 import { AdminLogsTab } from "@/components/domain/AdminLogsTab.tsx";
+import { AdminCdkTab } from "@/components/domain/AdminCdkTab.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { api } from "@/lib/api.ts";
 import { useSession } from "@/lib/session.ts";
@@ -85,12 +86,13 @@ export default function AdminPage() {
   return (
     <PageContainer wide>
       {/*
-        五个页签，按「日常要做的事」分组（原来 6 个太多、职责重叠）：
-          概览   —— 一眼看状态 + 待办（系统信息也在这里，它本来就是"看一眼"的东西）
-          用户   —— 找人、编辑、批量处理
-          日志   —— 跨用户运行日志（已脱敏），排查用户反馈的问题用
-          邀请码 —— 发注册名额
-          设置   —— 在线改运行参数、在线更新（都是运维动作）
+        六个页签，按「日常要做的事」分组（原来 6 个太多、职责重叠，后来把该有的补了回来）：
+          概览     —— 一眼看状态 + 待办（系统信息也在这里，它本来就是"看一眼"的东西）
+          用户     —— 找人、编辑、批量处理
+          日志     —— 跨用户运行日志（已脱敏），排查用户反馈的问题用
+          邀请码   —— 发注册名额
+          CDK 码库 —— 看 / 增 / 删全站的兑换码（管理员视角不打码）
+          设置     —— 在线改运行参数、在线更新（都是运维动作）
         详细变更历史在「关于」页，不占后台页签。
       */}
       <Tabs value={tab} onValueChange={setTab}>
@@ -99,6 +101,7 @@ export default function AdminPage() {
           <TabsTrigger value="users">用户</TabsTrigger>
           <TabsTrigger value="logs">日志</TabsTrigger>
           <TabsTrigger value="invites">邀请码</TabsTrigger>
+          <TabsTrigger value="cdk">CDK 码库</TabsTrigger>
           <TabsTrigger value="settings">设置</TabsTrigger>
         </TabsList>
 
@@ -121,6 +124,9 @@ export default function AdminPage() {
         </TabsContent>
         <TabsContent value="invites" className="pt-4">
           <InvitesTab />
+        </TabsContent>
+        <TabsContent value="cdk" className="pt-4">
+          <AdminCdkTab />
         </TabsContent>
         <TabsContent value="settings" className="pt-4">
           <AdminSettingsTab />

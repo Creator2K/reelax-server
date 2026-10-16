@@ -13,6 +13,7 @@ import { NavLink } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
   type Icon,
+  IconArrowsExchange,
   IconBroadcast,
   IconChartDots,
   IconCloudNetwork,
@@ -42,6 +43,7 @@ export type NavItem = {
 export const USER_NAV_ITEMS: NavItem[] = [
   { to: "/accounts", label: "账号", icon: IconUsers, end: true },
   { to: "/proxies", label: "代理", icon: IconCloudNetwork },
+  { to: "/swap", label: "交换助手", icon: IconArrowsExchange },
   { to: "/cdk", label: "CDK 兑换", icon: IconGift },
   { to: "/notify", label: "推送", icon: IconBroadcast },
   { to: "/logs", label: "运行日志", icon: IconListDetails },

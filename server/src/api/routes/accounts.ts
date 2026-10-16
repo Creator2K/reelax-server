@@ -5,6 +5,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { AccountService } from "../../services/account-service.ts";
+import type { SwapService } from "../../services/swap-service.ts";
 import type { RunnerRegistry } from "../../game/runner-registry.ts";
 import { currentUserId, requireApproved } from "../../auth/middleware.ts";
 import { body } from "../middleware/validate.ts";
@@ -59,26 +60,30 @@ const partyMemberSchema = z.object({
   role: z.enum(["helmsman", "crew"]).optional(),
 });
 
-const barterSpecSchema = z.object({
-  /** 地图 id（b_002） */
-  biomeId: z.string().min(1).max(80),
-  /** 稀有度：以物易物只支持神话 / 奇异 / 奥秘（服务端还会再校验一次） */
-  rarity: z.string().min(1).max(20),
-});
-
-const barterTaskSchema = z.object({
-  /** 起点侧：这些地图上的任意同稀有度鱼都可以拿去换（1~5 项） */
-  fromSpecs: z.array(barterSpecSchema).min(1).max(5),
-  /** 目标侧：换到其中任意一种都算达成（1~5 项） */
-  targetSpecs: z.array(barterSpecSchema).min(1).max(5),
-  /** 想换到几条 */
-  quantity: z.number().int().min(1).max(99),
+const swapExecuteSchema = z.object({
+  /**
+   * 要执行的一串交换步骤（正序）：每一步交出 requestFishId、获得 offerFishId。
+   *
+   * 直接收面板上看到的那条链 —— 服务端会重新确认每一步要交出的鱼还在背包里，
+   * 被抢单 / 缺鱼都会停在那一步并如实返回（不会假装整条成功）。
+   */
+  hops: z
+    .array(
+      z.object({
+        orderId: z.string().min(1).max(120),
+        requestFishId: z.string().min(1).max(120),
+        offerFishId: z.string().min(1).max(120),
+      }),
+    )
+    .min(1)
+    .max(8),
 });
 
 export function createAccountsRouter(deps: {
   accounts: AccountService;
   registry: RunnerRegistry;
   audit: AuditRepo;
+  swap: SwapService;
 }): Router {
   const router = Router();
   router.use(requireApproved);
@@ -242,49 +247,43 @@ export function createAccountsRouter(deps: {
     res.json(result);
   });
 
-  /* ---------- 以物易物（交换任务） ---------- */
+  /* ---------- 交换助手（专精换鱼） ---------- */
 
-  /** 交换任务面板：队列 + 可作为起点的鱼 + 目标鱼候选 + 队首任务的路径预览 */
-  router.get("/:id/barter", async (req, res) => {
-    res.json(await deps.accounts.barter(req.params.id as string, currentUserId(req)));
+  /** 当前扫描状态：进度 / 上次扫描的结果（没扫过就是 idle） */
+  router.get("/:id/swap", (req, res) => {
+    res.json(deps.swap.state(currentUserId(req), req.params.id as string));
   });
 
-  /** 新增一条交换任务（定好「拿什么换什么」并排队） */
-  router.post("/:id/barter/tasks", body(barterTaskSchema), async (req, res) => {
+  /** 开始一次扫描（立刻返回，进度由上面的接口轮询） */
+  router.post("/:id/swap/scan", (req, res) => {
     const userId = currentUserId(req);
     const id = req.params.id as string;
-    const task = await deps.accounts.createBarterTask(id, userId, {
-      fromSpecs: req.body.fromSpecs,
-      targetSpecs: req.body.targetSpecs,
-      quantity: req.body.quantity,
-    });
+    const state = deps.swap.start(userId, id);
     deps.audit.record({
       userId,
-      action: AUDIT_ACTIONS.ACCOUNT_BARTER_TASK,
+      action: AUDIT_ACTIONS.ACCOUNT_SWAP_SCAN,
       target: id,
-      detail: {
-        op: "create",
-        taskId: task.id,
-        from: task.fromText,
-        to: task.targetText,
-        quantity: task.quantity,
-      },
       ip: clientIp(req),
     });
-    res.status(201).json(task);
+    res.json(state);
   });
 
-  /** 取消一条交换任务（已经换到的鱼留在背包里） */
-  router.delete("/:id/barter/tasks/:taskId", async (req, res) => {
+  /** 执行一条链（用户手动点的；会真的把鱼换出去） */
+  router.post("/:id/swap/execute", body(swapExecuteSchema), async (req, res) => {
     const userId = currentUserId(req);
     const id = req.params.id as string;
-    const taskId = req.params.taskId as string;
-    const result = await deps.accounts.cancelBarterTask(id, userId, taskId);
+    const result = await deps.swap.execute(userId, id, req.body.hops);
     deps.audit.record({
       userId,
-      action: AUDIT_ACTIONS.ACCOUNT_BARTER_TASK,
+      action: AUDIT_ACTIONS.ACCOUNT_SWAP_EXECUTE,
       target: id,
-      detail: { op: "cancel", taskId, from: result.from, to: result.to },
+      detail: {
+        hops: req.body.hops.length,
+        from: req.body.hops[0]?.requestFishId,
+        to: req.body.hops[req.body.hops.length - 1]?.offerFishId,
+        ok: result.ok,
+        done: result.done,
+      },
       ip: clientIp(req),
     });
     res.json(result);

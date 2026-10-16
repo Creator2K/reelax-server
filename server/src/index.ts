@@ -38,6 +38,7 @@ import { createModulesRouter } from "./api/routes/modules.ts";
 import { createLogsRouter } from "./api/routes/logs-routes.ts";
 import { createCdkRouter } from "./api/routes/cdk-routes.ts";
 import { CdkService } from "./services/cdk-service.ts";
+import { SwapService } from "./services/swap-service.ts";
 import { createStatsRouter } from "./api/routes/stats-routes.ts";
 import { createAdminRouter } from "./api/routes/admin-routes.ts";
 import { WsGateway } from "./api/ws-gateway.ts";
@@ -426,6 +427,10 @@ async function main(): Promise<void> {
   };
 
   const startedAt = Date.now();
+  /** CDK 服务：用户页（提交 / 兑换 / 删自己的）与后台码库（不打码列表 / 手动增删）共用一份 */
+  const cdk = new CdkService({ repos, registry, logger });
+  /** 交换助手（专精换鱼）：扫全市场交换单 + 手动执行 */
+  const swap = new SwapService({ repos, registry, logger });
   const app = createApp({
     logger,
     webDist: path.resolve(__dirname, "../../web/dist"),
@@ -438,11 +443,11 @@ async function main(): Promise<void> {
       a.use("/api/auth", createAuthRouter({ auth, env: { ...env, version: VERSION }, logger }));
       a.use("/api/modules", createModulesRouter({ notify }));
       a.use("/api/notify", createNotifyRouter({ notify, audit: repos.audit, limiters }));
-      a.use("/api/accounts", createAccountsRouter({ accounts, registry, audit: repos.audit }));
+      a.use("/api/accounts", createAccountsRouter({ accounts, registry, audit: repos.audit, swap }));
       a.use("/api/proxies", createProxiesRouter({ proxies, accounts, audit: repos.audit, limiters }));
       a.use("/api/logs", createLogsRouter({ logger, logs: repos.logs }));
       // CDK 公共库：提交时用指定账号试领验证，兑换时复用该账号的会话与代理
-      a.use("/api/cdk", createCdkRouter({ cdk: new CdkService({ repos, registry, logger }) }));
+      a.use("/api/cdk", createCdkRouter({ cdk }));
       a.use(
         "/api/stats",
         createStatsRouter({
@@ -472,6 +477,7 @@ async function main(): Promise<void> {
           audit: repos.audit,
           repos,
           registry,
+          cdk,
           update,
           settings,
           limiters,

@@ -41,10 +41,15 @@ export const AUDIT_ACTIONS = {
   ACCOUNT_PARTY_INVITATION: "account.party.invitation",
   /** 船队成员管理（移出 / 任命舵手 / 转让船长） */
   ACCOUNT_PARTY_MEMBER: "account.party.member",
-  /** 以物易物的交换任务（新增 / 取消） */
-  ACCOUNT_BARTER_TASK: "account.barter.task",
+  /** 交换助手：扫描全市场交换单 */
+  ACCOUNT_SWAP_SCAN: "account.swap.scan",
+  /** 交换助手：手动执行一条交换链（会真的把鱼换出去） */
+  ACCOUNT_SWAP_EXECUTE: "account.swap.execute",
   ACCOUNT_CREDENTIALS_UPDATED: "account.credentials.updated",
   MODULE_UPDATED: "account.module.updated",
+  /** 后台：CDK 码库（手动添加 / 删除） */
+  ADMIN_CDK_ADDED: "admin.cdk.added",
+  ADMIN_CDK_DELETED: "admin.cdk.deleted",
   PROXY_CREATED: "proxy.created",
   PROXY_UPDATED: "proxy.updated",
   PROXY_DELETED: "proxy.deleted",

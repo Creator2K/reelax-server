@@ -26,6 +26,7 @@ import { createNotifyRouter } from "../../src/api/routes/notify-routes.ts";
 import { createLogsRouter } from "../../src/api/routes/logs-routes.ts";
 import { createCdkRouter } from "../../src/api/routes/cdk-routes.ts";
 import { CdkService } from "../../src/services/cdk-service.ts";
+import { SwapService } from "../../src/services/swap-service.ts";
 import { createStatsRouter } from "../../src/api/routes/stats-routes.ts";
 import { createAdminRouter } from "../../src/api/routes/admin-routes.ts";
 import { bootstrapModules } from "../../src/modules/bootstrap.ts";
@@ -153,6 +154,7 @@ export async function buildFullApp(
     onCommand: async () => null,
   });
   const cdk = new CdkService({ repos, registry, logger });
+  const swap = new SwapService({ repos, registry, logger });
   const proxies = new ProxyService({
     repos,
     vault,
@@ -174,7 +176,7 @@ export async function buildFullApp(
       a.use("/api/auth", createAuthRouter({ auth, env: { ...env, version: "test" }, logger }));
       a.use("/api/modules", createModulesRouter({ notify, hasUsableChannel: () => notifyAvailable }));
       a.use("/api/notify", createNotifyRouter({ notify, audit: repos.audit, limiters }));
-      a.use("/api/accounts", createAccountsRouter({ accounts, registry, audit: repos.audit }));
+      a.use("/api/accounts", createAccountsRouter({ accounts, registry, audit: repos.audit, swap }));
       a.use("/api/cdk", createCdkRouter({ cdk }));
       a.use("/api/proxies", createProxiesRouter({ proxies, accounts, audit: repos.audit, limiters }));
       a.use("/api/logs", createLogsRouter({ logger, logs: repos.logs }));
@@ -206,6 +208,7 @@ export async function buildFullApp(
           audit: repos.audit,
           repos,
           registry,
+          cdk,
           settings,
           limiters,
           env,

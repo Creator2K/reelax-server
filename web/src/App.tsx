@@ -29,6 +29,7 @@ const AccountDetailPage = lazy(() => import("./pages/AccountDetail.tsx"));
 const ProxiesPage = lazy(() => import("./pages/Proxies.tsx"));
 const NotifyPage = lazy(() => import("./pages/Notify.tsx"));
 const CdkPage = lazy(() => import("./pages/Cdk.tsx"));
+const SwapPage = lazy(() => import("./pages/Swap.tsx"));
 const LogsPage = lazy(() => import("./pages/Logs.tsx"));
 const SettingsPage = lazy(() => import("./pages/Settings.tsx"));
 const AboutPage = lazy(() => import("./pages/About.tsx"));
@@ -103,6 +104,7 @@ export default function App() {
           {/* 旧链接（书签 / 文档）重定向到合并后的页面 */}
           <Route path="/dashboard" element={<Navigate to="/accounts" replace />} />
           <Route path="/proxies" element={userOnly(createElement(ProxiesPage))} />
+          <Route path="/swap" element={userOnly(createElement(SwapPage))} />
           <Route path="/notify" element={userOnly(createElement(NotifyPage))} />
           <Route path="/cdk" element={userOnly(createElement(CdkPage))} />
           <Route path="/logs" element={userOnly(createElement(LogsPage))} />

@@ -14,7 +14,6 @@ import { PageContainer, EmptyState } from "@/components/layout/PageContainer.tsx
 import { StatusPanelCard } from "@/components/domain/StatusPanel.tsx";
 import { MapPicker } from "@/components/domain/MapPicker.tsx";
 import { PartyCard } from "@/components/domain/PartyCard.tsx";
-import { BarterCard } from "@/components/domain/BarterCard.tsx";
 import { ModuleForm, ModuleHeader } from "@/components/domain/ModuleForm.tsx";
 import { StatusBadge } from "@/components/domain/StatusBadge.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -117,7 +116,6 @@ export default function AccountDetailPage() {
           <StatusPanelCard panel={account.statusPanel} />
           <MapPicker accountId={account.id} />
           <PartyCard accountId={account.id} />
-          <BarterCard accountId={account.id} />
           <AccountMetaCard account={account} />
         </div>
 
