@@ -46,7 +46,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog.tsx";
-import { usePageHeader } from "@/components/layout/page-header.tsx";
+import { PageHeaderActions, usePageHeader } from "@/components/layout/page-header.tsx";
 import { useNotifyAvailability, useNotifyChannels, type NotifyChannel } from "@/lib/queries.ts";
 import {
   useCreateNotify,
@@ -91,19 +91,18 @@ export default function NotifyPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<NotifyChannel | null>(null);
 
-  usePageHeader(
-    "推送",
-    "收益日报等消息会推送给你配置的通道。Server酱 最简单（填 SendKey 即可），微信机器人支持双向交互。",
-    <Button size="sm" onClick={() => setAddOpen(true)} disabled={(channels?.length ?? 0) >= 10}>
-      <IconPlus className="size-3.5" />
-      添加通道
-    </Button>,
-  );
+  usePageHeader("推送", "收益日报等消息会推送给你配置的通道。Server酱 最简单（填 SendKey 即可），微信机器人支持双向交互。");
 
   const list = channels ?? [];
 
   return (
     <PageContainer>
+      <PageHeaderActions>
+        <Button size="sm" onClick={() => setAddOpen(true)} disabled={list.length >= 10}>
+          <IconPlus className="size-3.5" />
+          添加通道
+        </Button>
+      </PageHeaderActions>
       {error ? (
         <Alert variant="destructive">
           <IconAlertTriangle />

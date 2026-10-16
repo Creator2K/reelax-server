@@ -82,10 +82,11 @@ const swapExecuteSchema = z.object({
 const swapRunSchema = z.object({
   /** 想换到几条（服务端还会按「目标还差几条」与上限再收一次） */
   quantity: z.number().int().min(1).max(10).optional(),
-  /** 筛选：稀有度 / 目标地图 / 具体目标鱼（都不填 = 全部） */
+  /** 筛选：稀有度 / 目标地图 / 具体目标鱼 / 是否只要不降级（都不填 = 全部） */
   rarity: z.string().max(20).nullish(),
   biomeId: z.string().max(80).nullish(),
   targetFishId: z.string().max(120).nullish(),
+  onlyUpgrade: z.boolean().optional(),
 });
 
 export function createAccountsRouter(deps: {
@@ -307,6 +308,7 @@ export function createAccountsRouter(deps: {
       rarity: req.body.rarity ?? null,
       biomeId: req.body.biomeId ?? null,
       targetFishId: req.body.targetFishId ?? null,
+      onlyUpgrade: req.body.onlyUpgrade === true,
     });
     deps.audit.record({
       userId,
@@ -319,6 +321,7 @@ export function createAccountsRouter(deps: {
         rarity: req.body.rarity ?? null,
         biomeId: req.body.biomeId ?? null,
         targetFishId: req.body.targetFishId ?? null,
+        onlyUpgrade: req.body.onlyUpgrade === true,
       },
       ip: clientIp(req),
     });

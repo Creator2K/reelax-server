@@ -120,6 +120,9 @@ type State = {
       key: string;
       targetFishId: string;
       length: number;
+      startBiomeCode: string | null;
+      upgrade: boolean;
+      target: { fishId: string; name: string; rarity: string; biomeCode: string | null; remaining: number };
       hops: {
         orderId: string;
         owner: string | null;
@@ -188,6 +191,10 @@ describe("交换助手", () => {
       give: { name: "雾语灯笼鱼", biomeCode: "B2" },
       get: { name: "镜潮银鲷", biomeCode: "B3", rarityLabel: "神话" },
     });
+    // 每条链自带目标信息（面板按它筛选，不另外按 fishId 去 targets 里找）
+    expect(path.startBiomeCode).toBe("B2");
+    expect(path.target).toMatchObject({ name: F.b5.name, rarity: "mythic", biomeCode: "B5", remaining: 3 });
+    expect(path.upgrade).toBe(true); // B2 → B5 是往高等级地图换
   });
 
   it("★ 执行一条链：逐步真的换出去，写完返回每一步结果", async () => {
@@ -423,6 +430,53 @@ describe("交换助手", () => {
     const none = await app.post(`/api/accounts/${accountId}/swap/run`, { quantity: 1, targetFishId: "nope" }, jar);
     expect(none.status).toBe(400);
     expect(none.body.error.code).toBe("SWAP_NO_PATH");
+  });
+
+  it("★ 「过滤高换低」：只走目标地图等级不低于起点的链", async () => {
+    // 两个目标：B5（等级高）、B2（等级低）
+    const mastery = {
+      biomes: [
+        {
+          biomeId: "b_005",
+          isUnlocked: true,
+          rarities: [
+            { fish: { id: F.b5.fishId, name: F.b5.name }, rarity: "mythic", remainingQuantity: 1, availableQuantity: 0 },
+          ],
+        },
+        {
+          biomeId: "b_002",
+          isUnlocked: true,
+          rarities: [
+            { fish: { id: F.b2.fishId, name: F.b2.name }, rarity: "mythic", remainingQuantity: 1, availableQuantity: 0 },
+          ],
+        },
+      ],
+    };
+    const { accountId, jar, fills } = seedAccountWithGame({
+      // 升：B2 → B5；降：B3 → B2（B3 等级比 B2 高）
+      pages: [[order("up", F.b2, F.b5, 1), order("down", F.b3, F.b2, 1)]],
+      inventory: [
+        { fishId: F.b2.fishId, quantity: 1 },
+        { fishId: F.b3.fishId, quantity: 1 },
+      ],
+      mastery,
+    });
+    const state = await scanAndWait(accountId, jar);
+    // 三条：B2→B5（升）、B3→B2（降）、B3→B2→B5（升，两跳）
+    expect(state.result!.stats.paths).toBe(3);
+    const up = state.result!.paths.find((p) => p.length === 1 && p.target.biomeCode === "B5")!;
+    const down = state.result!.paths.find((p) => p.length === 1 && p.target.biomeCode === "B2")!;
+    expect(up.upgrade).toBe(true);
+    expect(down.upgrade).toBe(false);
+    // 排序上「B3 → B2」排在前面（目标鱼 id 更小），但它是降级 → 开关打开后必须被跳过
+    expect(state.result!.paths[0]!.key).toBe(down.key);
+
+    // 打开「过滤高换低」→ 只走升的那条
+    await app.post(`/api/accounts/${accountId}/swap/run`, { quantity: 1, onlyUpgrade: true }, jar);
+    const after = await waitRun(accountId, jar);
+    expect(after.run.doneCount).toBe(1);
+    expect(fills.map((f) => f.orderId)).toEqual(["up"]);
+    expect(after.log.some((l) => l.text.includes("只要不降级的地图"))).toBe(true);
   });
 
   it("★ 被抢单时换下一条链继续（不是整轮结束）", async () => {

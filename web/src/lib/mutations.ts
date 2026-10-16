@@ -13,6 +13,8 @@ export type SwapRunInput = {
   rarity?: string | null;
   biomeId?: string | null;
   targetFishId?: string | null;
+  /** true = 去掉「高等级地图换低等级地图」的链 */
+  onlyUpgrade?: boolean;
 };
 import { SYSTEM_QUERY_KEY } from "./session.ts";
 

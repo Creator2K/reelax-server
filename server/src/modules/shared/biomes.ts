@@ -69,6 +69,16 @@ export function biomeLabel(id: unknown): string | null {
   return name ?? code ?? null;
 }
 
+/**
+ * 地图的「关卡等级」：就是清单里的位置（b_001 最小、b_015 最大）。
+ *
+ * 与 requiredLevel 同序（后者是玩家等级门槛），用位置更直观且不受数值调整影响。
+ * 认不出的地图返回 -1（调用方按「不确定」处理，不做升降级判断）。
+ */
+export function biomeRank(id: unknown): number {
+  return BIOMES.findIndex((b) => b.id === id);
+}
+
 export function biomeById(id: unknown): BiomeOption | null {
   return BIOMES.find((b) => b.id === id) ?? null;
 }

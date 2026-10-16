@@ -16,8 +16,7 @@ import {
   IconTrash,
   IconUsers,
 } from "@tabler/icons-react";
-import { PageContainer, EmptyState, SectionTitle } from "@/components/layout/PageContainer.tsx";
-import { StatCard } from "@/components/domain/StatCard.tsx";
+import { PageContainer, EmptyState, SectionTitle } from "@/components/layout/PageContainer.tsx";import { StatCard } from "@/components/domain/StatCard.tsx";
 import { CountingNumber } from "@/components/animate-ui/counting-number.tsx";
 import { StatusBadge } from "@/components/domain/StatusBadge.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -47,7 +46,7 @@ import { Label } from "@/components/ui/label.tsx";
 import { Switch } from "@/components/ui/switch.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
-import { usePageHeader } from "@/components/layout/page-header.tsx";
+import { PageHeaderActions, usePageHeader } from "@/components/layout/page-header.tsx";
 import { useAccounts, useProxies, type Account, type SyncHealth } from "@/lib/queries.ts";
 import {
   useCreateAccount,
@@ -67,14 +66,7 @@ export default function AccountsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Account | null>(null);
 
-  usePageHeader(
-    "账号管理",
-    "每个账号独立运行、独立配置功能；建议为每个账号绑定代理以隔离出口 IP",
-    <Button size="sm" onClick={() => setCreateOpen(true)}>
-      <IconPlus className="size-3.5" />
-      添加账号
-    </Button>,
-  );
+  usePageHeader("账号管理", "每个账号独立运行、独立配置功能；建议为每个账号绑定代理以隔离出口 IP");
 
   const list = accounts ?? [];
 
@@ -87,6 +79,12 @@ export default function AccountsPage() {
 
   return (
     <PageContainer wide>
+      <PageHeaderActions>
+        <Button size="sm" onClick={() => setCreateOpen(true)}>
+          <IconPlus className="size-3.5" />
+          添加账号
+        </Button>
+      </PageHeaderActions>
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard
           label="在线账号"

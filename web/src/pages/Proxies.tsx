@@ -35,7 +35,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog.tsx";
-import { usePageHeader } from "@/components/layout/page-header.tsx";
+import { PageHeaderActions, usePageHeader } from "@/components/layout/page-header.tsx";
 import { useProxies, type ProxyRow } from "@/lib/queries.ts";
 import { useCreateProxy, useDeleteProxy, useTestProxy, useTestProxyAdhoc, type ProxyTestResult } from "@/lib/mutations.ts";
 import { fmtRelative } from "@/lib/utils.ts";
@@ -47,19 +47,18 @@ export default function ProxiesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ProxyRow | null>(null);
 
-  usePageHeader(
-    "代理",
-    "每个账号可以绑定一个独立出口。支持 HTTP / HTTPS / SOCKS5，添加前可以先测试连通性。",
-    <Button size="sm" onClick={() => setCreateOpen(true)}>
-      <IconPlus className="size-3.5" />
-      添加代理
-    </Button>,
-  );
+  usePageHeader("代理", "每个账号可以绑定一个独立出口。支持 HTTP / HTTPS / SOCKS5，添加前可以先测试连通性。");
 
   const list = proxies ?? [];
 
   return (
     <PageContainer wide>
+      <PageHeaderActions>
+        <Button size="sm" onClick={() => setCreateOpen(true)}>
+          <IconPlus className="size-3.5" />
+          添加代理
+        </Button>
+      </PageHeaderActions>
       {error ? (
         <Alert variant="destructive">
           <IconAlertTriangle />

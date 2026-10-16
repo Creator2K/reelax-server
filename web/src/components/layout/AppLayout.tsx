@@ -85,7 +85,6 @@ function Shell() {
           description={header.description}
           user={user}
           onLogout={() => void logout()}
-          actions={header.actions}
           onOpenMenu={() => setMenuOpen(true)}
         />
         {/* scroll-slim：细滚动条，嵌在卡片里的长列表观感更好 */}

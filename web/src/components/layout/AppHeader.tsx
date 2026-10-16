@@ -7,6 +7,7 @@
 //  · 主操作按钮在窄屏折叠成图标（只保留标题里最关键的入口）
 import { IconLogout, IconMenu2, IconMoon, IconSun, IconUserCircle } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button.tsx";
+import { usePageHeaderContext } from "@/components/layout/page-header.tsx";
 import { useTheme } from "@/lib/theme.tsx";
 import type { SessionUser } from "@/lib/session.tsx";
 
@@ -15,18 +16,17 @@ export function AppHeader({
   description,
   user,
   onLogout,
-  actions,
   onOpenMenu,
 }: {
   title: string;
   description?: string;
   user?: SessionUser | null;
   onLogout?: () => void;
-  actions?: React.ReactNode;
   /** 移动端：点汉堡按钮打开侧栏抽屉 */
   onOpenMenu?: () => void;
 }) {
   const { theme, toggleTheme } = useTheme();
+  const { setActionsSlot } = usePageHeaderContext();
 
   return (
     <header
@@ -56,7 +56,8 @@ export function AppHeader({
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
-          {actions}
+          {/* 页面操作区（页面用 <PageHeaderActions> 通过 portal 挂进来） */}
+          <div ref={setActionsSlot} className="flex min-w-0 items-center gap-1.5 empty:hidden" />
           <Button
             variant="ghost"
             size="icon-sm"

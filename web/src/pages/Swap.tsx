@@ -5,6 +5,9 @@
 //
 // 页面刻意做得短：一屏只有「账号 + 扫描 + 筛选 + 条数 + 数量 + 按钮 + 日志」，
 // 目标清单与链明细都收进下拉框和「展开」里 —— 想知道细节再点开，平时只看数字。
+//
+// ★ 账号选择器放在页面里、不放顶栏：顶栏那个位置在手机上会被挤爆，
+//   而且 usePageHeader 的 actions 只在标题变化时重建，放在顶栏的控件拿不到最新状态。
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
@@ -26,14 +29,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.t
 import { Badge } from "@/components/ui/badge.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
+import { Switch } from "@/components/ui/switch.tsx";
 import { usePageHeader } from "@/components/layout/page-header.tsx";
 import { useAccounts, useSwapState, type SwapPathView } from "@/lib/queries.ts";
 import { useExecuteSwapPath, useRunSwap, useStartSwapScan, useStopSwap } from "@/lib/mutations.ts";
 import { fmtRelative } from "@/lib/utils.ts";
 
-/** 「B2 雾语湿地」这种地图说法（只有编号时退回编号，都没有就说未知） */
+/** 「B2 雾语湿地」这种地图说法（只有编号时退回编号，都没有就说不出来） */
 const place = (code: string | null, name: string | null) =>
-  code ? `${code}${name ? ` ${name}` : ""}` : (name ?? "未知地图");
+  code ? `${code}${name ? ` ${name}` : ""}` : (name ?? "");
 
 const ALL = "";
 
@@ -45,6 +49,9 @@ function quantityOptions(remaining: number): number[] {
   const cap = Math.max(1, remaining);
   return [...new Set([...QUANTITY_CHOICES, cap])].filter((n) => n <= cap).sort((a, b) => a - b);
 }
+
+/** 下拉框统一的样式（窄屏占满一行，宽屏自动分栏） */
+const selectClass = "border-input bg-background h-9 w-full min-w-0 rounded-md border px-2 text-xs";
 
 export default function SwapPage() {
   const { data: accounts, isPending } = useAccounts();
@@ -62,31 +69,7 @@ export default function SwapPage() {
     }
   }, [params, list, setParams]);
 
-  usePageHeader(
-    "交换助手",
-    "扫全市场交换单，按筛选换到专精目标",
-    list.length ? (
-      <label className="flex items-center gap-2 text-xs">
-        <span className="text-muted-foreground">账号</span>
-        <select
-          className="border-input bg-background h-8 min-w-36 rounded-md border px-2 text-xs"
-          value={accountId}
-          onChange={(e) => {
-            const next = new URLSearchParams(params);
-            next.set("account", e.target.value);
-            setParams(next, { replace: true });
-          }}
-        >
-          {list.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.label}
-              {a.player?.nickname ? `（${a.player.nickname}）` : ""}
-            </option>
-          ))}
-        </select>
-      </label>
-    ) : undefined,
-  );
+  usePageHeader("交换助手", "扫全市场交换单，按筛选换到专精目标");
 
   if (isPending) {
     return (
@@ -114,13 +97,70 @@ export default function SwapPage() {
   }
 
   return (
-    <PageContainer wide>{accountId ? <SwapPanel key={accountId} accountId={accountId} /> : null}</PageContainer>
+    <PageContainer wide>
+      <div className="space-y-4">
+        <Card className="gap-3">
+          <CardContent className="grid gap-2 pt-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <label className="min-w-0 space-y-1">
+              <span className="text-muted-foreground block text-[11px]">账号</span>
+              <select
+                className={selectClass}
+                value={accountId}
+                onChange={(e) => {
+                  const next = new URLSearchParams(params);
+                  next.set("account", e.target.value);
+                  setParams(next, { replace: true });
+                }}
+              >
+                {list.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label}
+                    {a.player?.nickname ? `（${a.player.nickname}）` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {accountId ? <SwapScanButton accountId={accountId} /> : null}
+          </CardContent>
+        </Card>
+
+        {accountId ? <SwapPanel key={accountId} accountId={accountId} /> : null}
+      </div>
+    </PageContainer>
+  );
+}
+
+/** 扫描按钮 + 进度（与账号选择放在同一张卡里） */
+function SwapScanButton({ accountId }: { accountId: string }) {
+  const { data: state } = useSwapState(accountId);
+  const scan = useStartSwapScan(accountId);
+  const scanning = state?.status === "scanning";
+  const result = state?.result ?? null;
+
+  return (
+    <div className="space-y-1">
+      <Button
+        size="sm"
+        className="w-full gap-1.5 sm:w-auto"
+        disabled={scanning || scan.isPending}
+        onClick={() => scan.mutate()}
+      >
+        {scanning ? <IconLoader2 className="size-3.5 animate-spin" /> : <IconRefresh className="size-3.5" />}
+        {result ? "重新扫描" : "开始扫描"}
+      </Button>
+      <div className="text-muted-foreground text-[11px] sm:text-right">
+        {scanning
+          ? `${state?.progress.phase ?? ""}${state?.progress.pages ? ` · 第 ${state.progress.pages} 页 · 已收 ${state.progress.orders} 张单` : ""}`
+          : result
+            ? `${fmtRelative(result.stats.scannedAt)}扫描 · ${result.stats.orders} 张单 · ${result.stats.paths} 条链 · ${result.stats.targets} 个目标${result.stats.truncated ? "（达翻页上限）" : ""}`
+            : "还没扫描过"}
+      </div>
+    </div>
   );
 }
 
 function SwapPanel({ accountId }: { accountId: string }) {
   const { data: state, isPending, error } = useSwapState(accountId);
-  const scan = useStartSwapScan(accountId);
   const run = useRunSwap(accountId);
   const stop = useStopSwap(accountId);
   const single = useExecuteSwapPath(accountId);
@@ -128,66 +168,90 @@ function SwapPanel({ accountId }: { accountId: string }) {
   const [rarity, setRarity] = useState(ALL);
   const [biomeId, setBiomeId] = useState(ALL);
   const [targetFishId, setTargetFishId] = useState(ALL);
+  const [onlyUpgrade, setOnlyUpgrade] = useState(false);
   const [quantity, setQuantity] = useState(1);
   const [showChains, setShowChains] = useState(false);
 
-  const scanning = state?.status === "scanning";
   const running = state?.run?.status === "running";
   const result = state?.result ?? null;
 
-  /** 有链的目标（下拉框只列这些；没链的只在下面提一句） */
-  const targetable = useMemo(() => (result?.targets ?? []).filter((t) => t.pathCount > 0), [result]);
-  const hopless = (result?.targets.length ?? 0) - targetable.length;
+  /** 有链的目标（按「鱼 + 地图 + 稀有度」去重）—— 下拉框的候选来源 */
+  const chainTargets = useMemo(() => {
+    const map = new Map<string, SwapPathView["target"]>();
+    for (const p of result?.paths ?? []) {
+      const key = `${p.target.fishId}|${p.target.biomeId ?? ""}|${p.target.rarity}`;
+      if (!map.has(key)) map.set(key, p.target);
+    }
+    return [...map.values()];
+  }, [result]);
 
-  /** 稀有度 / 地图候选项：只列「有链的目标」里出现过的 */
+  /** 稀有度候选项（始终列出全部有链的档位，否则切不回去） */
   const rarities = useMemo(() => {
     const map = new Map<string, string>();
-    for (const t of targetable) map.set(t.rarity, t.rarityLabel || t.rarity);
+    for (const t of chainTargets) map.set(t.rarity, t.rarityLabel || t.rarity);
     return [...map.entries()].map(([value, label]) => ({ value, label }));
-  }, [targetable]);
+  }, [chainTargets]);
 
+  /** 地图候选项：跟着稀有度收窄 */
   const biomes = useMemo(() => {
     const map = new Map<string, string>();
-    for (const t of targetable) {
+    for (const t of chainTargets) {
       if (rarity && t.rarity !== rarity) continue;
-      map.set(t.biomeCode ?? t.fishId, `${place(t.biomeCode, t.biomeName)}`);
+      if (!t.biomeId) continue;
+      map.set(t.biomeId, place(t.biomeCode, t.biomeName));
     }
     return [...map.entries()].map(([value, label]) => ({ value, label }));
-  }, [targetable, rarity]);
+  }, [chainTargets, rarity]);
 
-  const targets = useMemo(
-    () => targetable.filter((t) => (!rarity || t.rarity === rarity) && (!biomeId || (t.biomeCode ?? t.fishId) === biomeId)),
-    [targetable, rarity, biomeId],
+  /** 当前筛选命中的链：直接用链自己的目标信息判断（不再按 fishId 去 targets 里找） */
+  const chains = useMemo(
+    () =>
+      (result?.paths ?? []).filter((p) => {
+        if (rarity && p.target.rarity !== rarity) return false;
+        if (biomeId && p.target.biomeId !== biomeId) return false;
+        if (onlyUpgrade && !p.upgrade) return false;
+        if (targetFishId && p.targetFishId !== targetFishId) return false;
+        return true;
+      }),
+    [result, rarity, biomeId, onlyUpgrade, targetFishId],
   );
 
-  /** 当前筛选命中的链（明细展开时用；数量与统计也从这里来） */
-  const chains = useMemo(() => {
-    if (!result) return [];
-    return result.paths.filter((p) => {
-      const t = result.targets.find((x) => x.fishId === p.targetFishId);
-      if (!t) return false;
-      if (targetFishId && p.targetFishId !== targetFishId) return false;
-      if (rarity && t.rarity !== rarity) return false;
-      if (biomeId && (t.biomeCode ?? t.fishId) !== biomeId) return false;
-      return true;
-    });
-  }, [result, rarity, biomeId, targetFishId]);
+  /** 目标下拉：只列「当前筛选下真有链」的目标，并带上条数 */
+  const targetOptions = useMemo(() => {
+    const count = new Map<string, number>();
+    for (const p of chains) count.set(p.targetFishId, (count.get(p.targetFishId) ?? 0) + 1);
+    const seen = new Set<string>();
+    return chainTargets
+      .filter((t) => {
+        if (rarity && t.rarity !== rarity) return false;
+        if (biomeId && t.biomeId !== biomeId) return false;
+        if (!count.has(t.fishId)) return false;
+        if (seen.has(t.fishId)) return false;
+        seen.add(t.fishId);
+        return true;
+      })
+      .map((t) => ({ ...t, pathCount: count.get(t.fishId) ?? 0 }));
+  }, [chainTargets, chains, rarity, biomeId]);
+
+  /** 完全没链的目标数（提示用） */
+  const hopless = (result?.targets.length ?? 0) - chainTargets.length;
+  /** 有链、但被当前筛选挡住的目标数 */
+  const filteredOut = Math.max(0, chainTargets.length - targetOptions.length - (hopless > 0 ? 0 : 0));
+
+  const remainingTotal = useMemo(
+    () => targetOptions.filter((t) => !targetFishId || t.fishId === targetFishId).reduce((acc, t) => acc + Math.max(1, t.remaining), 0),
+    [targetOptions, targetFishId],
+  );
+  const quantityValue = Math.max(1, Math.min(quantity, Math.max(1, remainingTotal)));
 
   const filterHint = useMemo(() => {
     const parts: string[] = [];
     if (rarity) parts.push(rarities.find((r) => r.value === rarity)?.label ?? rarity);
     if (biomeId) parts.push(biomes.find((b) => b.value === biomeId)?.label ?? biomeId);
-    if (targetFishId) parts.push(targets.find((t) => t.fishId === targetFishId)?.name ?? targetFishId);
+    if (targetFishId) parts.push(targetOptions.find((t) => t.fishId === targetFishId)?.name ?? targetFishId);
+    if (onlyUpgrade) parts.push("只要不降级");
     return parts.join(" · ");
-  }, [rarity, biomeId, targetFishId, rarities, biomes, targets]);
-
-  /** 选中的目标还差几条（数量上限提示用） */
-  const remainingTotal = useMemo(
-    () => targets.filter((t) => !targetFishId || t.fishId === targetFishId).reduce((acc, t) => acc + Math.max(1, t.remaining), 0),
-    [targets, targetFishId],
-  );
-
-  const quantityValue = Math.max(1, Math.min(quantity, Math.max(1, remainingTotal)));
+  }, [rarity, biomeId, targetFishId, onlyUpgrade, rarities, biomes, targetOptions]);
 
   const send = () =>
     run.mutate({
@@ -195,38 +259,11 @@ function SwapPanel({ accountId }: { accountId: string }) {
       rarity: rarity || null,
       biomeId: biomeId || null,
       targetFishId: targetFishId || null,
+      onlyUpgrade,
     });
 
   return (
     <div className="space-y-4">
-      {/* 扫描 + 上次结果 */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" className="gap-1.5" disabled={scanning || scan.isPending} onClick={() => scan.mutate()}>
-          {scanning ? <IconLoader2 className="size-3.5 animate-spin" /> : <IconRefresh className="size-3.5" />}
-          {result ? "重新扫描" : "开始扫描"}
-        </Button>
-        {scanning ? (
-          <span className="text-muted-foreground text-xs">
-            {state?.progress.phase}
-            {state?.progress.pages ? ` · 第 ${state.progress.pages} 页 · 已收 ${state.progress.orders} 张单` : ""}
-          </span>
-        ) : null}
-        {!scanning && result ? (
-          <span
-            className="text-muted-foreground text-xs"
-            title={new Date(result.stats.scannedAt).toLocaleString("zh-CN")}
-          >
-            {fmtRelative(result.stats.scannedAt)}扫描 · {result.stats.orders} 张单 ·{" "}
-            <span className="text-foreground font-medium">{result.stats.paths} 条链</span> ·{" "}
-            {result.stats.targets} 个专精目标
-            {result.stats.truncated ? "（达到翻页上限）" : ""}
-          </span>
-        ) : null}
-        {state?.stale && !running ? (
-          <span className="text-[var(--status-warn)] text-xs">数据已过期，建议重新扫描</span>
-        ) : null}
-      </div>
-
       {error ? (
         <Alert variant="destructive">
           <IconAlertTriangle />
@@ -241,25 +278,32 @@ function SwapPanel({ accountId }: { accountId: string }) {
         </Alert>
       ) : null}
 
+      {state?.stale && !running ? (
+        <Alert variant="warn">
+          <IconInfoCircle />
+          <AlertDescription>执行过交换之后数据已经旧了（单子剩余量与背包都变了），建议重新扫描一次。</AlertDescription>
+        </Alert>
+      ) : null}
+
       {isPending ? <Skeleton className="h-40" /> : null}
 
       {!isPending && state?.status === "idle" ? (
         <EmptyState
           icon={<IconArrowsExchange />}
           title="还没有扫描过"
-          description="点「开始扫描」：助手会拉取全部在售交换单、读一次专精进度与背包，找出所有能换到专精目标的链。"
+          description="点上面的「开始扫描」：助手会拉取全部在售交换单、读一次专精进度与背包，找出所有能换到专精目标的链。"
         />
       ) : null}
 
       {result ? (
         <Card className="gap-3">
           <CardContent className="space-y-3 pt-4">
-            {/* 筛选：稀有度 → 地图 → 目标鱼（下拉框里直接写有几条链） */}
-            <div className="flex flex-wrap items-end gap-2">
-              <label className="space-y-1">
+            {/* 筛选：稀有度 → 地图 → 目标鱼 + 高换低开关 */}
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <label className="min-w-0 space-y-1">
                 <span className="text-muted-foreground block text-[11px]">稀有度</span>
                 <select
-                  className="border-input bg-background h-8 min-w-24 rounded-md border px-2 text-xs"
+                  className={selectClass}
                   value={rarity}
                   disabled={running}
                   onChange={(e) => {
@@ -277,10 +321,10 @@ function SwapPanel({ accountId }: { accountId: string }) {
                 </select>
               </label>
 
-              <label className="space-y-1">
-                <span className="text-muted-foreground block text-[11px]">地图</span>
+              <label className="min-w-0 space-y-1">
+                <span className="text-muted-foreground block text-[11px]">目标地图</span>
                 <select
-                  className="border-input bg-background h-8 min-w-32 rounded-md border px-2 text-xs"
+                  className={selectClass}
                   value={biomeId}
                   disabled={running}
                   onChange={(e) => {
@@ -297,93 +341,119 @@ function SwapPanel({ accountId }: { accountId: string }) {
                 </select>
               </label>
 
-              <label className="min-w-0 flex-1 space-y-1">
-                <span className="text-muted-foreground block text-[11px]">专精目标鱼（只列有可行链的）</span>
+              <label className="min-w-0 space-y-1">
+                <span className="text-muted-foreground block text-[11px]">专精目标鱼（只列有链的）</span>
                 <select
-                  className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
+                  className={selectClass}
                   value={targetFishId}
                   disabled={running}
                   onChange={(e) => setTargetFishId(e.target.value)}
                 >
                   <option value={ALL}>全部（任意目标都算）</option>
-                  {targets.map((t) => (
+                  {targetOptions.map((t) => (
                     <option key={t.fishId} value={t.fishId}>
-                      {t.name}（{place(t.biomeCode, t.biomeName)}）· 还差 {t.remaining} · {t.pathCount} 条链
+                      {t.name}（{place(t.biomeCode, null)}）· 还差 {t.remaining} · {t.pathCount} 条链
                     </option>
                   ))}
                 </select>
               </label>
+
+              <div className="flex items-center gap-2 sm:pt-5">
+                <Switch
+                  id="swap-upgrade"
+                  checked={onlyUpgrade}
+                  disabled={running}
+                  onCheckedChange={(v) => setOnlyUpgrade(v)}
+                />
+                <label htmlFor="swap-upgrade" className="text-xs">
+                  过滤高换低
+                  <span className="text-muted-foreground block text-[11px]">不换到等级更低的地图</span>
+                </label>
+              </div>
             </div>
 
-            {hopless > 0 ? (
+            {hopless > 0 || filteredOut > 0 ? (
               <p className="text-muted-foreground text-[11px]">
-                另有 {hopless} 个专精目标暂没有可行链（市场上没人挂出能接上的单），没有列进上面的下拉框。
+                {hopless > 0 ? `另有 ${hopless} 个专精目标暂没有可行链` : ""}
+                {hopless > 0 && filteredOut > 0 ? "；" : ""}
+                {filteredOut > 0 ? `${filteredOut} 个目标被当前筛选挡住` : ""}
+                （都不会出现在上面的下拉框里）
               </p>
             ) : null}
 
             {/* 条数 + 数量 + 执行 */}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-3">
-              <span className="text-sm">
-                当前筛选：<span className="font-medium">{chains.length}</span> 条链 ·{" "}
-                <span className="font-medium">{targets.filter((t) => !targetFishId || t.fishId === targetFishId).length}</span>{" "}
-                个目标
-                {filterHint ? <span className="text-muted-foreground text-xs">（{filterHint}）</span> : null}
-              </span>
-
-              <label className="flex items-center gap-2 text-xs">
-                <span className="text-muted-foreground">换</span>
-                <select
-                  className="border-input bg-background h-8 w-16 rounded-md border px-2 text-xs"
-                  value={String(quantityValue)}
-                  disabled={running}
-                  onChange={(e) => setQuantity(Number(e.target.value))}
-                >
-                  {quantityOptions(remainingTotal).map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
-                <span className="text-muted-foreground">
-                  条{remainingTotal < quantity ? `（目标只差 ${remainingTotal} 条，按 ${quantityValue} 算）` : ""}
+            <div className="space-y-2 border-t pt-3">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                <span>
+                  当前筛选：<span className="font-medium">{chains.length}</span> 条链
                 </span>
-              </label>
+                <span className="text-muted-foreground text-xs">
+                  {targetOptions.length} 个目标
+                  {filterHint ? `（${filterHint}）` : ""}
+                </span>
+              </div>
 
-              {running ? (
-                <>
-                  <Button size="sm" variant="outline" className="gap-1.5" disabled={stop.isPending} onClick={() => stop.mutate()}>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 text-xs">
+                  <span className="text-muted-foreground">换</span>
+                  <select
+                    className="border-input bg-background h-8 w-16 rounded-md border px-2 text-xs"
+                    value={String(quantityValue)}
+                    disabled={running}
+                    onChange={(e) => setQuantity(Number(e.target.value))}
+                  >
+                    {quantityOptions(remainingTotal).map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-muted-foreground">
+                    条{remainingTotal < quantity ? `（目标只差 ${remainingTotal} 条，按 ${quantityValue} 算）` : ""}
+                  </span>
+                </label>
+
+                {running ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 sm:w-auto"
+                    disabled={stop.isPending}
+                    onClick={() => stop.mutate()}
+                  >
                     <IconPlayerStop className="size-3.5" />
                     停止
                   </Button>
-                  <span className="text-muted-foreground flex items-center gap-1 text-xs">
-                    <IconLoader2 className="size-3.5 animate-spin" />
-                    {state?.run.doneCount ?? 0}/{state?.run.targetCount ?? 0} 条
-                    {state?.run.current ? ` · ${state.run.current}` : ""}
-                  </span>
-                </>
-              ) : (
-                <Button size="sm" className="gap-1.5" disabled={!chains.length || run.isPending} onClick={send}>
-                  <IconArrowsExchange className="size-3.5" />
-                  开始换
+                ) : (
+                  <Button size="sm" className="w-full gap-1.5 sm:w-auto" disabled={!chains.length || run.isPending} onClick={send}>
+                    <IconArrowsExchange className="size-3.5" />
+                    开始换
+                  </Button>
+                )}
+
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="w-full gap-1 text-xs sm:ml-auto sm:w-auto"
+                  onClick={() => setShowChains((v) => !v)}
+                >
+                  <IconChevronDown className={showChains ? "size-3.5 rotate-180 transition-transform" : "size-3.5"} />
+                  {showChains ? "收起明细" : `展开看会走哪几手（${chains.length}）`}
                 </Button>
-              )}
+              </div>
 
-              <Button
-                size="sm"
-                variant="ghost"
-                className="ml-auto h-8 gap-1 text-xs"
-                onClick={() => setShowChains((v) => !v)}
-              >
-                <IconChevronDown className={showChains ? "size-3.5 rotate-180 transition-transform" : "size-3.5"} />
-                {showChains ? "收起明细" : `展开看会走哪几手（${chains.length}）`}
-              </Button>
+              {running ? (
+                <p className="flex items-center gap-1 text-xs">
+                  <IconLoader2 className="size-3.5 animate-spin" />
+                  已换到 {state?.run.doneCount ?? 0}/{state?.run.targetCount ?? 0} 条
+                  {state?.run.current ? ` · ${state.run.current}` : ""}
+                </p>
+              ) : state && state.run.status !== "idle" && state.run.note ? (
+                <p className="text-muted-foreground text-xs">
+                  上次执行：{state.run.note}（换到 {state.run.doneCount}/{state.run.targetCount} 条）
+                </p>
+              ) : null}
             </div>
-
-            {state?.run.status !== "idle" && state?.run.note && !running ? (
-              <p className="text-muted-foreground text-xs">
-                上次执行：{state.run.note}（换到 {state.run.doneCount}/{state.run.targetCount} 条）
-              </p>
-            ) : null}
 
             {/* 明细：默认收起，展开后每条可以单独执行 */}
             {showChains ? (
@@ -395,7 +465,6 @@ function SwapPanel({ accountId }: { accountId: string }) {
                     <ChainRow
                       key={p.key}
                       path={p}
-                      targetName={result.targets.find((t) => t.fishId === p.targetFishId)?.name ?? p.targetFishId}
                       busy={running || single.isPending}
                       onExecute={() =>
                         single.mutate(
@@ -410,7 +479,9 @@ function SwapPanel({ accountId }: { accountId: string }) {
                   ))
                 )}
                 {chains.length > 50 ? (
-                  <p className="text-muted-foreground text-[11px]">只列出前 50 条（共 {chains.length} 条），执行时会自动挑最优的。</p>
+                  <p className="text-muted-foreground text-[11px]">
+                    只列出前 50 条（共 {chains.length} 条），执行时会自动挑最优的。
+                  </p>
                 ) : null}
               </div>
             ) : null}
@@ -431,16 +502,17 @@ function SwapPanel({ accountId }: { accountId: string }) {
         </CardHeader>
         <CardContent>
           {state?.log.length ? (
-            <div className="bg-muted/30 max-h-72 space-y-0.5 overflow-y-auto rounded-lg px-3 py-2 font-mono text-[11px] leading-relaxed">
+            <div className="bg-muted/30 max-h-72 space-y-0.5 overflow-y-auto rounded-lg px-2.5 py-2 font-mono text-[11px] leading-relaxed sm:px-3">
               {state.log.map((entry, i) => (
                 <div
                   key={`${String(entry.t)}-${String(i)}`}
                   className={
-                    entry.level === "error"
+                    "break-words " +
+                    (entry.level === "error"
                       ? "text-destructive"
                       : entry.level === "warn"
                         ? "text-[var(--status-warn)]"
-                        : "text-foreground"
+                        : "text-foreground")
                   }
                 >
                   [{new Date(entry.t).toLocaleTimeString("zh-CN", { hour12: false })}] {entry.text}
@@ -464,15 +536,13 @@ function SwapPanel({ accountId }: { accountId: string }) {
   );
 }
 
-/** 明细里的一条链：一行摘要 + 展开后的每一手 + 「只执行这一条」 */
+/** 明细里的一条链：一行摘要（起点 → 目标，两边都带 B 几）+ 展开后的每一手 + 「只执行这一条」 */
 function ChainRow({
   path,
-  targetName,
   busy,
   onExecute,
 }: {
   path: SwapPathView;
-  targetName: string;
   busy: boolean;
   onExecute: () => void;
 }) {
@@ -481,24 +551,32 @@ function ChainRow({
 
   return (
     <div className="bg-muted/30 space-y-1 rounded-lg px-2.5 py-1.5">
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <Badge variant="secondary" className="shrink-0">
           {path.length} 跳
         </Badge>
+        {!path.upgrade ? (
+          <Badge variant="warn" className="shrink-0" title="目标地图等级低于起点地图">
+            降级
+          </Badge>
+        ) : null}
         <button
           type="button"
           className="flex min-w-0 flex-1 items-center gap-1 text-left"
           onClick={() => setOpen((v) => !v)}
         >
           <IconChevronRight className={open ? "size-3 shrink-0 rotate-90 transition-transform" : "size-3 shrink-0 transition-transform"} />
-          <span className="min-w-0 truncate">
+          <span className="min-w-0 break-words">
             <span className="font-medium">
-              {place(start?.give.biomeCode ?? null, null)} {start?.give.name}
+              {place(path.startBiomeCode, null)} {start?.give.name}
             </span>
-            <span className="text-muted-foreground"> → {targetName}</span>
+            <span className="text-muted-foreground"> → </span>
+            <span className="font-medium">
+              {place(path.target.biomeCode, null)} {path.target.name}
+            </span>
           </span>
         </button>
-        <Button size="sm" variant="outline" className="h-6 shrink-0 px-2 text-[11px]" disabled={busy} onClick={onExecute}>
+        <Button size="sm" variant="outline" className="ml-auto h-6 shrink-0 px-2 text-[11px]" disabled={busy} onClick={onExecute}>
           只执行这一条
         </Button>
       </div>
@@ -506,18 +584,21 @@ function ChainRow({
       {open ? (
         <div className="space-y-0.5 pl-4 text-[11px]">
           {path.hops.map((hop, i) => (
-            <div key={`${hop.orderId}-${String(i)}`} className="flex flex-wrap items-center gap-1">
+            <div key={`${hop.orderId}-${String(i)}`} className="break-words">
               <span className="font-medium">
                 {place(hop.give.biomeCode, null)} {hop.give.name}
               </span>
-              <IconChevronRight className="text-muted-foreground size-3" />
+              <IconChevronRight className="text-muted-foreground mx-0.5 inline size-3" />
               <span className="font-medium">
                 {place(hop.get.biomeCode, null)} {hop.get.name}
               </span>
               <span className="text-muted-foreground">
                 （单主 {hop.owner ?? "未知"}，剩 {hop.capacity} 次）
+                {i === path.hops.length - 1 ? ` · 目标还差 ${path.target.remaining} 条` : ""}
               </span>
-              {i === path.hops.length - 1 ? <IconCircleCheck className="text-[var(--status-online)] size-3" /> : null}
+              {i === path.hops.length - 1 ? (
+                <IconCircleCheck className="text-[var(--status-online)] ml-1 inline size-3" />
+              ) : null}
             </div>
           ))}
         </div>

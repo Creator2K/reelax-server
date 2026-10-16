@@ -13,7 +13,7 @@ import type { Repos } from "../db/repositories/index.ts";
 import type { RunnerRegistry } from "../game/runner-registry.ts";
 import type { Logger } from "../lib/logger.ts";
 import { HttpError } from "../api/server.ts";
-import { biomeCode, biomeName } from "../modules/shared/biomes.ts";
+import { biomeCode, biomeName, biomeRank } from "../modules/shared/biomes.ts";
 import { rarityLabel } from "../modules/shared/rarity.ts";
 import { barterErrorMessage, barterNextCursor, normalizeBarterOrders, type BarterFish, type BarterOrder } from "./barter-orders.ts";
 import {
@@ -46,6 +46,8 @@ export type SwapFilter = {
   rarity?: string | null;
   biomeId?: string | null;
   targetFishId?: string | null;
+  /** true = 去掉「从高等级地图换到低等级地图」的链 */
+  onlyUpgrade?: boolean;
 };
 
 export type SwapFishView = {
@@ -71,6 +73,23 @@ export type SwapPathView = {
   key: string;
   targetFishId: string;
   length: number;
+  /** 起点鱼所在地图（面板按它判断升 / 降级） */
+  startBiomeId: string | null;
+  startBiomeCode: string | null;
+  /** 目标鱼完整信息：面板不再自己去 targets 里"按 fishId 找"（同一鱼种可能是多张图的专精目标，会找错） */
+  target: {
+    fishId: string;
+    name: string;
+    rarity: string;
+    rarityLabel: string;
+    biomeId: string | null;
+    biomeCode: string | null;
+    biomeName: string | null;
+    /** 这个目标还差几条 */
+    remaining: number;
+  };
+  /** 目标地图等级 ≥ 起点地图等级（false = 高换低） */
+  upgrade: boolean;
   hops: SwapHopView[];
 };
 
@@ -164,12 +183,40 @@ const hopView = (hop: SwapHop): SwapHopView => ({
   get: fishView(hop.get),
 });
 
-const pathView = (path: SwapPath): SwapPathView => ({
-  key: `${path.target.fishId}|${path.length}|${path.hops.map((h) => h.orderId).join(",")}`,
-  targetFishId: path.target.fishId,
-  length: path.length,
-  hops: path.hops.map(hopView),
-});
+const pathView = (path: SwapPath): SwapPathView => {
+  const startBiome = path.hops[0]?.give.biomeId ?? null;
+  const targetBiome = path.target.biomeId;
+  const startRank = biomeRank(startBiome);
+  const targetRank = biomeRank(targetBiome);
+  return {
+    key: `${path.target.fishId}|${path.length}|${path.hops.map((h) => h.orderId).join(",")}`,
+    targetFishId: path.target.fishId,
+    length: path.length,
+    startBiomeId: startBiome,
+    startBiomeCode: startBiome ? biomeCode(startBiome) : null,
+    target: {
+      fishId: path.target.fishId,
+      name: path.target.name,
+      rarity: path.target.rarity,
+      rarityLabel: path.target.rarity ? rarityLabel(path.target.rarity) : "",
+      biomeId: targetBiome,
+      biomeCode: targetBiome ? biomeCode(targetBiome) : null,
+      biomeName: targetBiome ? biomeName(targetBiome) : null,
+      remaining: path.target.remaining,
+    },
+    // 地图认不出来时不做升降级判断（宁可放行，也不要静默藏掉链）
+    upgrade: startRank < 0 || targetRank < 0 ? true : targetRank >= startRank,
+    hops: path.hops.map(hopView),
+  };
+};
+
+/** 这条链是不是「往更高（或同级）等级的地图换」；地图认不出来时不拦 */
+function isUpgradePath(path: SwapPath): boolean {
+  const startRank = biomeRank(path.hops[0]?.give.biomeId ?? null);
+  const targetRank = biomeRank(path.target.biomeId);
+  if (startRank < 0 || targetRank < 0) return true;
+  return targetRank >= startRank;
+}
 
 const targetView = (target: SwapTarget, pathCount: number): SwapTargetView => ({
   fishId: target.fishId,
@@ -183,8 +230,7 @@ const targetView = (target: SwapTarget, pathCount: number): SwapTargetView => ({
   pathCount,
 });
 
-const idleRun = (): SwapRunView => ({
-  status: "idle",
+const idleRun = (): SwapRunView => ({  status: "idle",
   targetCount: 0,
   doneCount: 0,
   current: null,
@@ -550,15 +596,9 @@ export class SwapService {
       if (filter.targetFishId && p.target.fishId !== filter.targetFishId) return false;
       if (filter.rarity && p.target.rarity !== filter.rarity) return false;
       if (filter.biomeId && p.target.biomeId !== filter.biomeId) return false;
+      if (filter.onlyUpgrade && !isUpgradePath(p)) return false;
       return true;
     });
-  }
-
-  /** 筛选命中的目标「还差几条」之和（决定批量最多换几条） */
-  private remainingOf(entry: Entry, filter: SwapFilter): number {
-    const hit = new Set(this.filterPaths(entry, filter).map((p) => p.target.fishId));
-    const sum = entry.rawTargets.filter((t) => hit.has(t.fishId)).reduce((acc, t) => acc + Math.max(1, t.remaining), 0);
-    return sum || 1;
   }
 
   private filterText(filter: SwapFilter): string {
@@ -566,7 +606,15 @@ export class SwapService {
     if (filter.rarity) parts.push(`${rarityLabel(filter.rarity)}`);
     if (filter.biomeId) parts.push(`目标图 ${biomeCode(filter.biomeId) ?? filter.biomeId}`);
     if (filter.targetFishId) parts.push(`目标鱼 ${filter.targetFishId}`);
+    if (filter.onlyUpgrade) parts.push("只要不降级的地图");
     return parts.join(" / ");
+  }
+
+  /** 筛选命中的目标「还差几条」之和（决定批量最多换几条） */
+  private remainingOf(entry: Entry, filter: SwapFilter): number {
+    const hit = new Set(this.filterPaths(entry, filter).map((p) => p.target.fishId));
+    const sum = entry.rawTargets.filter((t) => hit.has(t.fishId)).reduce((acc, t) => acc + Math.max(1, t.remaining), 0);
+    return sum || 1;
   }
 
   /** 一条链的人话：B2 雾语灯笼鱼 → B3 镜潮银鲷 → B5 星根盲鳗（2 跳） */

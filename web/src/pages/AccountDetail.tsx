@@ -21,7 +21,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card.tsx";
 import { CollapsibleCard } from "@/components/ui/collapsible-card.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert.tsx";
-import { usePageHeader } from "@/components/layout/page-header.tsx";
+import { PageHeaderActions, usePageHeader } from "@/components/layout/page-header.tsx";
 import { useAccounts, useModuleDefinitions, type Account, type ModuleRuntimeState } from "@/lib/queries.ts";
 import { useResetModule, useStartAccount, useStopAccount, useUpdateModule } from "@/lib/mutations.ts";
 import { fmtNum } from "@/lib/utils.ts";
@@ -39,27 +39,6 @@ export default function AccountDetailPage() {
   usePageHeader(
     account?.label ?? "账号详情",
     account ? `${account.email || "Cookie 导入"} · ${account.proxyLabel ?? "直连"}` : undefined,
-    account ? (
-      <div className="flex items-center gap-1.5">
-        <Button asChild size="sm" variant="outline">
-          <Link to="/accounts">
-            <IconArrowLeft className="size-3.5" />
-            返回列表
-          </Link>
-        </Button>
-        {account.status === "stopped" ? (
-          <Button size="sm" onClick={() => start.mutate(account.id)} disabled={start.isPending}>
-            <IconPlayerPlay className="size-3.5" />
-            启动
-          </Button>
-        ) : (
-          <Button size="sm" variant="outline" onClick={() => stop.mutate(account.id)} disabled={stop.isPending}>
-            <IconPlayerStop className="size-3.5" />
-            停止
-          </Button>
-        )}
-      </div>
-    ) : undefined,
   );
 
   if (isPending) {
@@ -91,6 +70,25 @@ export default function AccountDetailPage() {
 
   return (
     <PageContainer wide>
+      <PageHeaderActions>
+        <Button asChild size="sm" variant="outline">
+          <Link to="/accounts">
+            <IconArrowLeft className="size-3.5" />
+            返回列表
+          </Link>
+        </Button>
+        {account.status === "stopped" ? (
+          <Button size="sm" onClick={() => start.mutate(account.id)} disabled={start.isPending}>
+            <IconPlayerPlay className="size-3.5" />
+            启动
+          </Button>
+        ) : (
+          <Button size="sm" variant="outline" onClick={() => stop.mutate(account.id)} disabled={stop.isPending}>
+            <IconPlayerStop className="size-3.5" />
+            停止
+          </Button>
+        )}
+      </PageHeaderActions>
       {account.credentialOk ? null : (
         <Alert variant="destructive" className="mb-4">
           <IconLock />

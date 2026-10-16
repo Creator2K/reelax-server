@@ -283,10 +283,29 @@ export type SwapHopView = {
   get: SwapFishView;
 };
 
+export type SwapPathTarget = {
+  fishId: string;
+  name: string;
+  rarity: string;
+  rarityLabel: string;
+  biomeId: string | null;
+  biomeCode: string | null;
+  biomeName: string | null;
+  /** 这个目标还差几条 */
+  remaining: number;
+};
+
 export type SwapPathView = {
   key: string;
   targetFishId: string;
   length: number;
+  /** 起点鱼所在地图 */
+  startBiomeId: string | null;
+  startBiomeCode: string | null;
+  /** 目标鱼完整信息（同一鱼种可能是多张图的专精目标，筛选与显示都用它，不去别处按 id 找） */
+  target: SwapPathTarget;
+  /** 目标地图等级 ≥ 起点地图等级（false = 高换低） */
+  upgrade: boolean;
   hops: SwapHopView[];
 };
 
