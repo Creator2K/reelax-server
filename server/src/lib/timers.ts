@@ -91,6 +91,7 @@ export class TimerPool {
  */
 export class TtlCache<T> {
   private value: T | null = null;
+  private loaded = false;
   private at = 0;
   private loading: Promise<T> | null = null;
   private ttlMs: number;
@@ -108,12 +109,13 @@ export class TtlCache<T> {
   }
 
   async get(loader: () => Promise<T>, force = false, now = Date.now()): Promise<T> {
-    if (!force && this.value !== null && now - this.at < this.ttlMs) return this.value;
+    if (!force && this.loaded && now - this.at < this.ttlMs) return this.value as T;
     // 并发合并：同一时刻多个调用只发一次请求
     if (this.loading) return this.loading;
     this.loading = loader()
       .then((v) => {
         this.value = v;
+        this.loaded = true;
         this.at = Date.now();
         return v;
       })
@@ -125,6 +127,7 @@ export class TtlCache<T> {
 
   invalidate(): void {
     this.value = null;
+    this.loaded = false;
     this.at = 0;
   }
 }

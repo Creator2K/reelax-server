@@ -4,8 +4,8 @@
 // 这类越权如果存在，表现是「界面正常，但看到了别人的数据」——最难被发现，
 // 所以必须有自动化测试兜住。
 import http from "node:http";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { WebSocket } from "ws";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { WebSocket, type WebSocketServer } from "ws";
 import { openDb } from "../src/db/client.ts";
 import { createRepos } from "../src/db/repositories/index.ts";
 import { Limiters } from "../src/auth/ratelimit.ts";
@@ -16,7 +16,7 @@ import { RunnerRegistry } from "../src/game/runner-registry.ts";
 import { AccountService } from "../src/services/account-service.ts";
 import { Logger } from "../src/lib/logger.ts";
 import { Bus, EVENTS } from "../src/lib/bus.ts";
-import { WsGateway } from "../src/api/ws-gateway.ts";
+import { WsGateway, MAX_WS_BUFFERED_BYTES } from "../src/api/ws-gateway.ts";
 import { testEnv } from "./helpers/full-app.ts";
 
 type Msg = { type: string; data: any; t: number };
@@ -302,6 +302,50 @@ describe("★ 事件与日志的用户隔离", () => {
 });
 
 describe("快照去重与强制刷新", () => {
+  it("同一用户连续多个事件只生成一份最新快照，多个连接仍都收到", async () => {
+    const ca = new TestWsClient(port, userA.cookie);
+    const cb = new TestWsClient(port, userA.cookie);
+    await Promise.all([ca.waitOpen(), cb.waitOpen()]);
+    await Promise.all([ca.wait((m) => m.type === "snapshot"), cb.wait((m) => m.type === "snapshot")]);
+    ca.messages = [];
+    cb.messages = [];
+    const reads = vi.spyOn(accounts, "listForUser");
+    try {
+      for (let i = 0; i < 5; i++) {
+        bus.emit(EVENTS.ACCOUNT_STATUS, { accountId: accountA, userId: userA.id, status: "online" });
+      }
+      const [a, b] = await Promise.all([ca.wait((m) => m.type === "snapshot"), cb.wait((m) => m.type === "snapshot")]);
+      expect(reads).toHaveBeenCalledOnce();
+      expect(a).toEqual(b);
+      expect(ca.messages.filter((m) => m.type === "event")).toHaveLength(5);
+      expect(ca.messages.filter((m) => m.type === "snapshot")).toHaveLength(1);
+    } finally {
+      reads.mockRestore();
+      ca.close();
+      cb.close();
+    }
+  });
+
+  it("积压超过上限的慢连接断开，不影响同一用户的其它连接", async () => {
+    const wss = (gateway as unknown as { wss: WebSocketServer }).wss;
+    const existing = new Set(wss.clients);
+    const slow = new TestWsClient(port, userA.cookie);
+    await slow.waitOpen();
+    await slow.wait((m) => m.type === "snapshot");
+    const serverSocket = [...wss.clients].find((ws) => !existing.has(ws))!;
+    const healthy = new TestWsClient(port, userA.cookie);
+    await healthy.waitOpen();
+    await healthy.wait((m) => m.type === "snapshot");
+    Object.defineProperty(serverSocket, "bufferedAmount", { get: () => MAX_WS_BUFFERED_BYTES + 1 });
+    const closed = new Promise<void>((resolve) => slow.ws.once("close", () => resolve()));
+    try {
+      logger.info("测试", "慢连接测试", { userId: userA.id });
+      await closed;
+      expect((await healthy.wait((m) => m.type === "log")).data.msg).toBe("慢连接测试");
+      expect(healthy.ws.readyState).toBe(WebSocket.OPEN);
+    } finally { slow.close(); healthy.close(); }
+  });
+
   it("内容没变时不重复推送（前端不必无谓重渲染）", async () => {
     const c = new TestWsClient(port, userA.cookie);
     await c.waitOpen();

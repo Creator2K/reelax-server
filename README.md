@@ -9,8 +9,8 @@
   渊潮围猎参战 · 自动卖装备 · 自动 Buff · **奥秘献祭** · **公会区域增益** · 收益日报
 - **每账号独立代理**：HTTP / HTTPS / SOCKS5，UI 内一键测连通性（出口 IP + 延迟 + 失败分类）
 - **消息推送**：Server酱 与微信机器人（扫码登录、可双向发命令），日报未配推送则不可启用
-- **在线更新**：容器内点「立即更新」即可拉代码 + 重建 + 重启（可选 updater 服务），
-  面板会提示有新版并列出「新版修了什么」
+- **镜像更新**：本部署使用 `docker compose pull app && docker compose up -d`，已关闭 updater；
+  后台仍可查看版本信息与更新记录
 - **排查友好**：运行日志最新在最上面、刷新自动回填、可一键清除；
   后台有跨用户日志页（凭证/token/邮箱自动脱敏），状态面板显示近 10 分钟的链路成功率与超时
 - **Docker 一键部署**：单容器 + 单数据卷，零原生依赖（不需要编译工具链）
@@ -29,8 +29,8 @@ cd reelax-server
 cp .env.example .env
 echo "MASTER_KEY=$(openssl rand -hex 32)" >> .env   # Windows: 见下方说明
 
-# 2) 起服务（想用界面里的「一键更新」就带上 --profile update）
-docker compose --profile update up -d --build
+# 2) 拉取镜像并启动
+docker compose pull app && docker compose up -d
 
 # 3) 看日志确认启动成功
 docker compose logs -f app
@@ -99,44 +99,19 @@ node -e "console.log('MASTER_KEY=' + require('crypto').randomBytes(32).toString(
 
 ---
 
-## 二、在线更新
+## 二、更新容器
 
-有两种做法，任选：
-
-**A. 界面一键更新（推荐）**
-
-`.env` 里补两行（私有仓库必须给 token，public 仓库可省）：
-
-```env
-GITHUB_TOKEN=ghp_xxx                 # 可读私有仓库的 commit 信息 + 供 updater 拉代码
-REELAX_UPDATER_URL=http://updater:9000
-```
-
-然后带着 updater 起服务：
+在项目目录执行：
 
 ```bash
-docker compose --profile update up -d --build
+docker compose pull app && docker compose up -d
 ```
 
-之后在「管理 → 系统 → 在线更新」里点「检查更新」→「立即更新」。更新过程中会显示
-**步骤清单 + 进度条 + 已等待秒数**，构建期间的输出也能展开看；服务重启回来后页面会
-提示「**请刷新页面**」并给出刷新按钮（刷新是为了加载新版前端资源）。
+此命令拉取 GitHub 发布的 GHCR 镜像，并重建 app 容器。数据库、日志和凭证保存在
+`reelax-data` 数据卷中。更新前按 [部署文档](docs/DEPLOY.md) 备份数据，不要更换 `MASTER_KEY`。
 
-它会：拉取最新代码 → 重建镜像（并把提交号烧进镜像）→ 重启 app 容器。
-**更新前会自动备份数据库**，账号会自动恢复挂机。
-
-**B. 宿主机脚本**
-
-```powershell
-.\scripts\update.ps1            # Windows
-```
-```bash
-./scripts/update.sh             # Linux / macOS
-```
-
-> Docker 部署下应用代码在镜像里，**容器无法替换自己** —— 所以「一键更新」由
-> updater 这个旁路容器执行（它挂了 docker.sock）。这是刻意设计：
-> 只有它需要 docker.sock，app 本身权限收得很紧。
+本部署已移除 updater 服务，并禁用网页触发更新。`pull` 不会更新本地源码，也不会包含
+本地未发布的修复；本地修改需要另行构建、部署镜像。之后再次拉取上游镜像会替换这些本地修复。
 
 ---
 

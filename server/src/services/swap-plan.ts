@@ -106,7 +106,7 @@ export function readSwapTargets(mastery: unknown, inventory?: Map<string, number
       if (!fishId) continue;
       const remaining = Math.floor(num(item?.remainingQuantity));
       if (remaining <= 0) continue;
-      const available = Math.floor(num(item?.availableQuantity));
+      const available = Math.max(Math.floor(num(item?.availableQuantity)), inventory?.get(fishId) ?? 0);
       if (inventory && available >= remaining) continue; // 手上够了
       out.push({
         fishId,

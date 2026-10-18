@@ -143,12 +143,11 @@ describe("connectTarget（undici v7 的 host 已带端口，不能重复拼接�
 describe("proxyFingerprint", () => {
   it("配置变化时指纹变化（用于判断是否重建 Agent）", () => {
     const base = { protocol: "http" as const, host: "h", port: 1, username: null, password: null };
-    expect(proxyFingerprint(base)).toBe("http://h:1:");
+    expect(proxyFingerprint(base)).toBe(proxyFingerprint({ ...base }));
     expect(proxyFingerprint(null)).toBe("direct");
     expect(proxyFingerprint({ ...base, port: 2 })).not.toBe(proxyFingerprint(base));
     expect(proxyFingerprint({ ...base, username: "u" })).not.toBe(proxyFingerprint(base));
-    // 口令变化不算指纹变化（不会为了换密码重建连接池，但 set 时仍会带上新口令）
-    expect(proxyFingerprint({ ...base, password: "x" })).toBe(proxyFingerprint(base));
+    expect(proxyFingerprint({ ...base, password: "x" })).not.toBe(proxyFingerprint(base));
   });
 });
 
@@ -425,11 +424,12 @@ describe("真实 CONNECT 隧道（end-to-end）", () => {
 /* ---------------- Dispatcher 持有者 ---------------- */
 
 describe("ProxyDispatcherHolder", () => {
-  it("无代理时 current 为 undefined", () => {
+  it("首次直连也建立专用保活连接池", async () => {
     const h = new ProxyDispatcherHolder();
     h.set(null);
-    expect(h.current).toBeUndefined();
+    expect(h.current).toBeDefined();
     expect(h.currentFingerprint).toBe("direct");
+    await h.close();
   });
 
   it("相同配置重复 set 不会重建", () => {

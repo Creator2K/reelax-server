@@ -391,16 +391,16 @@ describe("★ 当前版本读不到时不能谎报「已是最新」", () => {
     expect(r.note ?? "").not.toContain("当前版本读不到");
   });
 
-  it("★ 手动指引给出三条路：脚本 / 预构建镜像 / 带 APP_COMMIT 的手动重建", async () => {
+  it("手动指引使用 Compose 拉取镜像，并说明本地修改不会进入发布镜像", async () => {
     delete process.env.APP_COMMIT;
     const { impl } = fakeFetch(() => ({ body: ghBody }));
     const r = await mk(impl).check();
     expect(r.manualHint).toBeTruthy();
-    expect(r.manualHint).toContain("scripts/update");
-    // ★ 不带 APP_COMMIT 的裸重建会让「当前版本」永远读不到，所以必须写出来
-    expect(r.manualHint).toContain("APP_COMMIT");
     // 没有 .git 的部署（tar）也能走预构建镜像这条路
     expect(r.manualHint).toContain("docker compose pull app");
+    expect(r.manualHint).toContain("docker compose up -d");
+    expect(r.manualHint).toContain("本地未发布");
+    expect(r.manualHint).not.toContain("--profile update");
   });
 
   it("★ updater 在线时把它的模式一起带出来（面板据此选路径）", async () => {

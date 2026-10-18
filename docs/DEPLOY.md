@@ -87,64 +87,20 @@ docker compose exec app node -e "
 "
 ```
 
-### 在线更新
+### 更新容器
 
-三种方式，按「省事」到「省资源」排：
-
-**A. 面板一键更新（需要 updater）**
+本部署已移除 updater。后续在项目目录执行：
 
 ```bash
-# 1) .env 里配好
-#    REELAX_UPDATER_URL=http://updater:9000
-#    REELAX_PROJECT_DIR=/绝对路径/到/reelax-server
-#    UPDATER_MODE=pull                 # 可选：auto（默认）/ git / pull，见下
-#    GITHUB_TOKEN=ghp_xxx              # 只有 git 模式 + 私有仓库才需要
-#    UPDATER_TOKEN=随便一串            # 可选：开启后 app 会带令牌，两边用同一个变量
-
-# 2) 带 profile 起服务
-docker compose --profile update up -d --build
-```
-
-之后在「管理 → 系统 → 在线更新」点按钮。updater 的行为取决于模式（`UPDATER_MODE`）：
-
-| 模式 | 它做什么 | 适合 |
-| --- | --- | --- |
-| `pull` | `docker compose pull app` → `up -d` | **最省资源**：镜像由 GitHub Actions 预构建推到 GHCR，主机只下载变化的层，几秒钟、几乎不吃 CPU。tar 解压部署也只有这条路 |
-| `git` | `git pull --ff-only` → `up -d --build`（在本机构建） | 想改代码后直接生效、或有自己的构建需求。需要挂载的仓库里有 `.git`，构建期间占 1~2 核 + 几百 MB + 1~2 GB 磁盘 |
-| `auto`（默认） | 有 `.git` 走 `git`，否则走 `pull` | 不想操心的默认值 |
-
-**B. 宿主机脚本**：`./scripts/update.sh` 或 `.\scripts\update.ps1`（git 工作区里用；会自动带 APP_COMMIT）
-
-**C. 直接拉预构建镜像**（不需要 git、不需要构建、不需要 updater）：
-
-```bash
-cd /绝对路径/到/reelax-server
 docker compose pull app && docker compose up -d
 ```
 
-预构建镜像：`.github/workflows/ci.yml` 的 `publish` 任务会在每次 `main` 提交通过校验后，
-构建 `linux/amd64` + `linux/arm64` 两种架构并推到 `ghcr.io/creator2k/reelax-server`（同时打 `sha-<短提交>` 标签便于回滚）。
-镜像里烧了提交号，所以面板的「当前版本」永远读得到。
+该命令拉取 `ghcr.io/creator2k/reelax-server:latest` 发布镜像，不更新本地源码。
+`reelax-data` 数据卷和 `.env` 继续使用；更新前按下方备份章节保存数据。
+本地未发布的修复需要另行构建、部署镜像，再次拉取上游镜像会替换这些修复。
 
-> ★ **只有拉取报 401 时才需要动可见性**：GHCR 的包一般继承仓库可见性（本仓库是公开的，
-> 实测推完即可匿名 `docker compose pull`）。万一你的包是私有的，去
-> `https://github.com/users/Creator2K/packages/container/reelax-server/settings`
-> → Danger Zone → Change visibility → Public；或者干脆在主机上 `docker login ghcr.io`。
-
-**实现要点（排障时会用到）**：
-
-- updater 是唯一挂了 `docker.sock` 的容器；app 本身不具备改代码的能力
-- **compose 项目名必须一致**：`docker-compose.yml` 顶部用 `name: reelax-server` 固定，
-  updater 也注入同名 `COMPOSE_PROJECT_NAME`。否则 updater 会从 `/project` 推导出
-  项目名 `project`，去新建一套容器/网络/卷，并在 `container_name` 上撞车
-  （症状：`Container name "/reelax-server" is already in use`）
-- 私有仓库的 `git pull` 靠 `GITHUB_TOKEN`，通过一次性 `http.extraheader` 注入
-  （**不写进 remote URL**，否则 token 会留在挂载进容器的 `.git/config` 里）
-- 版本显示靠构建参数：镜像里没有 `.git`，所以把提交号用
-  `ARG APP_COMMIT` 烧进镜像。CI 用 `GITHUB_SHA`、updater 在 pull 之后把确切提交传给构建
-- Linux 上 updater 以 root 操作挂载进来的仓库，git ≥ 2.35 会因属主不同拒绝
-  （`detected dubious ownership`）——updater 里已经用 `GIT_CONFIG_*` 传了 `safe.directory`；
-  若你自己写脚本调 git，也要注意这点
+Compose 固定项目名为 `reelax-server`，不要随意更改，否则可能连接到不同的数据卷。
+预构建镜像包含提交号，面板可继续查看版本与更新记录，网页触发更新已禁用。
 
 ### 推送通道
 

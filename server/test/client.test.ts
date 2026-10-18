@@ -172,6 +172,20 @@ function newClient(fetchImpl: typeof fetch, opts: Record<string, unknown> = {}) 
 /* ---------------- 行为层：会话引导 ---------------- */
 
 describe("ensureSession", () => {
+  it("Cookie 登录与 proof 刷新必须携带当前 Cookie", async () => {
+    const { impl, calls } = makeFetch((call) => ({
+      status: call.headers.cookie === "session=example" ? 200 : 401,
+      body: { player: { nickname: "测试" } },
+      headers: { "x-arcane-request-proof": PROOF },
+    }));
+    const client = newClient(impl, { email: "", password: "", cookie: "session=example" });
+    await client.ensureSession();
+    await client.refreshProof();
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.headers.cookie === "session=example")).toBe(true);
+    expect(client.proof).toBe(PROOF);
+  });
+
   it("成功时吸收 proof / 服务器时间 / 版本 / 玩家信息", async () => {
     const serverTime = Date.now() + 5_000;
     const { impl, calls } = makeFetch(() => ({

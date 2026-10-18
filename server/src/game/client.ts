@@ -63,8 +63,10 @@ export type GameClientOptions = {
   frontendVersion?: string;
   /** 单请求超时（毫秒） */
   timeoutMs?: number;
-  /** 代理 dispatcher；undefined 表示直连 */
+  /** 连接池（可用于代理，也可用于直连） */
   dispatcher?: Dispatcher;
+  /** 使用自有直连连接池时传 false，避免把直连网络错误误报成代理故障。 */
+  proxyConfigured?: boolean;
   /** 日志回调（避免客户端依赖 Logger 类型） */
   onLog?: (level: "info" | "warn" | "error", tag: string, msg: string) => void;
   /** 测试注入 */
@@ -110,6 +112,7 @@ export class GameClient {
   publicIdentity: { publicId?: string } | null = null;
 
   private dispatcher: Dispatcher | undefined;
+  private proxyConfigured: boolean;
   private onLog: GameClientOptions["onLog"];
   private fetchImpl: typeof fetch;
 
@@ -121,6 +124,7 @@ export class GameClient {
     this.frontendVersion = opts.frontendVersion || DEFAULT_FRONTEND_VERSION;
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.dispatcher = opts.dispatcher;
+    this.proxyConfigured = opts.proxyConfigured ?? Boolean(opts.dispatcher);
     this.onLog = opts.onLog;
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
@@ -135,8 +139,9 @@ export class GameClient {
   }
 
   /** 代理变更后替换 dispatcher（无需重建客户端，凭证与会话都保留） */
-  setDispatcher(dispatcher: Dispatcher | undefined): void {
+  setDispatcher(dispatcher: Dispatcher | undefined, proxyConfigured = Boolean(dispatcher)): void {
     this.dispatcher = dispatcher;
+    this.proxyConfigured = proxyConfigured;
   }
 
   /** 更新凭证（用户改密码/换 Cookie 后调用，会清掉旧 proof 强制重登） */
@@ -207,7 +212,9 @@ export class GameClient {
 
   /** 刷新 proof：GET /api/me（免签名） */
   async refreshProof(): Promise<any> {
-    const resp = await this.raw("/api/me", { headers: { "cache": "no-store" } });
+    const resp = await this.raw("/api/me", {
+      headers: { cache: "no-store", ...(this.cookie ? { Cookie: this.cookie } : {}) },
+    }).catch((err) => { throw this.toNetworkError(err); });
     const data = await this.readJson(resp);
     if (resp.status === 401 || resp.status === 403) {
       throw new GameClientError("会话已失效", {
@@ -285,7 +292,7 @@ export class GameClient {
         throw this.toNetworkError(err, opts.timeoutMs);
       }
 
-      const text = await resp.text().catch(() => "");
+      const text = await this.readResponseText(resp, opts.timeoutMs);
       const data = parseJsonLoose(text);
       this.absorb(resp, data);
 
@@ -347,7 +354,7 @@ export class GameClient {
 
     // ★ 只有在确实配了代理时，才把失败归因到代理。
     //   直连时的 ECONNREFUSED 就是普通的网络错误，报成「代理连接失败」会误导排查方向。
-    if (this.dispatcher) {
+    if (this.proxyConfigured) {
       const proxyCode = classifyProxyError(err);
       if (proxyCode !== "PROXY_ERROR") {
         return new GameClientError(`代理连接失败：${describeProxyError(err)}`, { code: proxyCode });
@@ -745,8 +752,17 @@ export class GameClient {
   }
 
   private async readJson(resp: Response): Promise<any> {
-    const text = await resp.text().catch(() => "");
+    const text = await this.readResponseText(resp);
     return parseJsonLoose(text);
+  }
+
+  private async readResponseText(resp: Response, timeoutMs?: number): Promise<string> {
+    try {
+      return await resp.text();
+    } catch (err) {
+      // 收到响应头不代表请求已成功，响应体超时/断流同样必须进入重试和失败统计。
+      throw this.toNetworkError(err, timeoutMs);
+    }
   }
 
   /** 从响应里吸收 proof / 服务器时间 / 版本 / Cookie / 玩家信息 */

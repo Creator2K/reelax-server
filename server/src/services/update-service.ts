@@ -431,18 +431,9 @@ export class UpdateService {
     let manualHint: string | null = null;
     if (!this.deps.allowLocalUpdate && !updaterAvailable) {
       manualHint =
-        "当前部署没有开启自动更新。在容器外的仓库目录里执行：\n" +
-        "  推荐：./scripts/update.sh          （Windows PowerShell： .\\scripts\\update.ps1）\n" +
-        "  它会 git pull --ff-only → 带上 APP_COMMIT 重建镜像 → 重启容器\n" +
-        "\n" +
-        "用的是预构建镜像（GHCR）时不必构建、也不需要有 .git：\n" +
+        "当前部署使用宿主机命令更新。在项目目录执行：\n" +
         "  docker compose pull app && docker compose up -d\n" +
-        "\n" +
-        "手动重建也行，但 ★必须带上 APP_COMMIT，否则「当前版本」永远读不到：\n" +
-        "  export APP_COMMIT=$(git rev-parse HEAD)     # PowerShell: $env:APP_COMMIT = (git rev-parse HEAD)\n" +
-        "  docker compose up -d --build\n" +
-        "\n" +
-        "想让这个面板里的「立即更新」可用：docker compose --profile update up -d --build";
+        "该命令拉取 GitHub 发布的镜像，不会包含本地未发布的源码修改。";
     }
 
     // 当前版本读不到时说清楚原因 —— 否则「已是最新」会误导人以为不用更新

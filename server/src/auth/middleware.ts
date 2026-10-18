@@ -127,8 +127,9 @@ export function cookieOptionsFor(req: Request, deps: { forceSecure?: boolean; ma
 }
 
 /** 从 cookie 解析当前用户（不做拦截，允许匿名） */
-export function attachAuth(auth: AuthService): RequestHandler {
-  return (req, _res, next) => {
+export function attachAuth(auth: AuthService, forceSecure?: boolean): RequestHandler {
+  const cookies = makeCookieStrategy(forceSecure, () => auth.cookieTtlMs);
+  return (req, res, next) => {
     const token = parseCookie(req.headers.cookie, SESSION_COOKIE);
     if (!token) {
       next();
@@ -138,7 +139,11 @@ export function attachAuth(auth: AuthService): RequestHandler {
     if (resolved) {
       req.auth = { user: resolved.user, sessionId: resolved.sessionId, expiresAt: resolved.expiresAt, token };
       // 滑动续期（内部会判断是否需要写库）
-      auth.maybeExtend(resolved.sessionId, resolved.expiresAt);
+      const expiresAt = auth.maybeExtend(resolved.sessionId, resolved.expiresAt);
+      if (expiresAt !== null) {
+        req.auth.expiresAt = expiresAt;
+        cookies.set(res, req, token);
+      }
     }
     next();
   };

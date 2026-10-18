@@ -385,10 +385,12 @@ export class AuthService {
   }
 
   /** 滑动续期：剩余不足一半时往后推，避免每请求都写库 */
-  maybeExtend(sessionId: string, expiresAt: number): void {
-    const remain = expiresAt - Date.now();
-    if (remain > this.ttlMs / 2) return;
-    this.repos.sessions.extend(sessionId, this.ttlMs);
+  maybeExtend(sessionId: string, expiresAt: number): number | null {
+    const at = Date.now();
+    const ttlMs = this.ttlMs;
+    if (expiresAt - at > ttlMs / 2) return null;
+    this.repos.sessions.extend(sessionId, ttlMs, at);
+    return at + ttlMs;
   }
 
   logout(token: string | null | undefined, userId?: string, ip?: string): void {

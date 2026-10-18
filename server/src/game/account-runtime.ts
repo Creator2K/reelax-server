@@ -343,7 +343,7 @@ export class AccountRuntime {
     const effective = own ?? this.deps.globalProxy;
     const changed = this.proxyHolder.set(effective);
     if (changed || effective) {
-      this.client.setDispatcher(this.proxyHolder.current);
+      this.client.setDispatcher(this.proxyHolder.current, Boolean(effective));
       this.log.info("代理", own ? `使用账号代理 ${own.host}:${own.port}` : effective ? "使用全局兜底代理" : "直连（未配置代理）");
     }
   }
@@ -681,13 +681,15 @@ export class AccountRuntime {
   }
 
   moduleStates(): ModuleRuntimeState[] {
+    const storedById = new Map(this.repos.modules.listForAccount(this.accountId).map((row) => [row.moduleId, row]));
     return MODULES.map((def) => {
-      const { config, issues } = this.resolveConfig(def);
+      const stored = storedById.get(def.id);
+      const { config, issues } = resolveModuleConfig(def, stored?.config);
       const inst = this.instances.get(def.id);
       return {
         id: def.id,
         name: def.name,
-        enabled: inst ? true : this.isEnabled(def),
+        enabled: inst ? true : (stored?.enabled ?? def.defaultEnabled),
         running: Boolean(inst),
         config,
         configIssues: issues,

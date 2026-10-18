@@ -37,6 +37,8 @@ export type WsGatewayDeps = {
 const SNAPSHOT_INTERVAL_MS = 2000;
 /** 心跳间隔 */
 const HEARTBEAT_MS = 30_000;
+/** 慢连接超过此积压量就断开，让浏览器重连后取最新快照，避免无限缓存历史帧。 */
+export const MAX_WS_BUFFERED_BYTES = 1024 * 1024;
 
 export class WsGateway {
   private wss: WebSocketServer;
@@ -44,6 +46,7 @@ export class WsGateway {
   private deps: WsGatewayDeps;
   /** userId → 上次推送内容的指纹（用于去重） */
   private lastFingerprint = new Map<string, string>();
+  private pendingSnapshots = new Map<string, NodeJS.Immediate>();
   private snapshotTimer: NodeJS.Timeout;
   private heartbeatTimer: NodeJS.Timeout;
   private unsubscribers: (() => void)[] = [];
@@ -112,7 +115,7 @@ export class WsGateway {
             evt === EVENTS.ACCOUNT_ERROR ||
             evt === EVENTS.FISHING_SYNC
           ) {
-            this.pushSnapshot(p.userId, true);
+            this.queueSnapshot(p.userId);
           }
         }),
       );
@@ -128,7 +131,7 @@ export class WsGateway {
       for (const c of this.clients) {
         if (!c.isAlive) {
           c.ws.terminate();
-          this.clients.delete(c);
+          this.removeClient(c);
           continue;
         }
         c.isAlive = false;
@@ -159,8 +162,8 @@ export class WsGateway {
     ws.on("pong", () => {
       client.isAlive = true;
     });
-    ws.on("close", () => this.clients.delete(client));
-    ws.on("error", () => this.clients.delete(client));
+    ws.on("close", () => this.removeClient(client));
+    ws.on("error", () => this.removeClient(client));
 
     this.send(ws, "hello", { serverTime: Date.now() });
     // 连上即推一次自己的快照
@@ -176,6 +179,23 @@ export class WsGateway {
     }
   }
 
+  private queueSnapshot(userId: string): void {
+    if (this.pendingSnapshots.has(userId) || !this.userIds().has(userId)) return;
+    this.pendingSnapshots.set(userId, setImmediate(() => {
+      this.pendingSnapshots.delete(userId);
+      this.pushSnapshot(userId, true);
+    }));
+  }
+
+  private removeClient(client: Client): void {
+    this.clients.delete(client);
+    if ([...this.clients].some((c) => c.userId === client.userId)) return;
+    this.lastFingerprint.delete(client.userId);
+    const pending = this.pendingSnapshots.get(client.userId);
+    if (pending) clearImmediate(pending);
+    this.pendingSnapshots.delete(client.userId);
+  }
+
   /** 推快照；force=false 时内容没变就不发 */
   private pushSnapshot(userId: string, force: boolean): void {
     const targets = [...this.clients].filter((c) => c.userId === userId && c.ws.readyState === WebSocket.OPEN);
@@ -184,7 +204,8 @@ export class WsGateway {
     const json = JSON.stringify(views);
     if (!force && this.lastFingerprint.get(userId) === json) return;
     this.lastFingerprint.set(userId, json);
-    for (const c of targets) this.send(c.ws, "snapshot", views);
+    const frame = JSON.stringify({ type: "snapshot", data: views, t: Date.now() });
+    for (const c of targets) this.sendEncoded(c.ws, frame);
   }
 
   private pushSnapshotTo(ws: WebSocket, userId: string, force: boolean): void {
@@ -200,16 +221,24 @@ export class WsGateway {
   }
 
   private sendTo(userId: string, type: string, data: unknown): void {
-    for (const c of this.clients) {
-      if (c.userId === userId && c.ws.readyState === WebSocket.OPEN) {
-        this.send(c.ws, type, data);
-      }
-    }
+    const targets = [...this.clients].filter((c) => c.userId === userId && c.ws.readyState === WebSocket.OPEN);
+    if (!targets.length) return;
+    const frame = JSON.stringify({ type, data, t: Date.now() });
+    for (const c of targets) this.sendEncoded(c.ws, frame);
   }
 
   private send(ws: WebSocket, type: string, data: unknown): void {
+    this.sendEncoded(ws, JSON.stringify({ type, data, t: Date.now() }));
+  }
+
+  private sendEncoded(ws: WebSocket, frame: string): void {
+    if (ws.readyState !== WebSocket.OPEN) return;
     try {
-      ws.send(JSON.stringify({ type, data, t: Date.now() }));
+      if (ws.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
+        ws.terminate();
+        return;
+      }
+      ws.send(frame, (err) => { if (err) ws.terminate(); });
     } catch {
       /* 发送失败由 close 事件清理 */
     }
@@ -228,6 +257,8 @@ export class WsGateway {
   close(): void {
     clearInterval(this.snapshotTimer);
     clearInterval(this.heartbeatTimer);
+    for (const pending of this.pendingSnapshots.values()) clearImmediate(pending);
+    this.pendingSnapshots.clear();
     for (const off of this.unsubscribers) {
       try {
         off();
@@ -244,6 +275,7 @@ export class WsGateway {
       }
     }
     this.clients.clear();
+    this.lastFingerprint.clear();
     this.wss.close();
   }
 }

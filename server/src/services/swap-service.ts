@@ -298,6 +298,8 @@ type Entry = {
   /** 扫描 / 批量执行是否正在跑（避免重复启动） */
   scanning: boolean;
   running: boolean;
+  /** 单条执行也占用同一把账号锁，避免与扫描、批量执行互相覆盖 */
+  executing: boolean;
   /** 用户点了「停止」：批量循环下一轮就退出 */
   stopRun: boolean;
   /** 本次批量执行里已经失败过的单（被抢走 / 过期），不再拿它组链 */
@@ -327,6 +329,7 @@ export class SwapService {
     this.requireOwnAccount(userId, accountId);
     const entry = this.entry(accountId);
     if (entry.scanning) return entry.state;
+    this.requireIdle(entry);
 
     entry.state = {
       ...entry.state,
@@ -358,9 +361,15 @@ export class SwapService {
     }
 
     const entry = this.entry(accountId);
-    const rt = this.deps.registry.require(accountId);
-    const result = await this.walkChain(rt, entry, hops);
-    return result.view;
+    this.requireIdle(entry);
+    entry.executing = true;
+    try {
+      const rt = this.deps.registry.require(accountId);
+      const result = await this.walkChain(rt, entry, hops);
+      return result.view;
+    } finally {
+      entry.executing = false;
+    }
   }
 
   /**
@@ -376,6 +385,7 @@ export class SwapService {
     this.requireOwnAccount(userId, accountId);
     const entry = this.entry(accountId);
     if (entry.running) return entry.state;
+    this.requireIdle(entry);
 
     const paths = this.filterPaths(entry, opts);
     if (!paths.length) {
@@ -426,8 +436,8 @@ export class SwapService {
   /* ---------------- 内部：扫描 ---------------- */
 
   private async scan(accountId: string, entry: Entry): Promise<void> {
-    const rt = this.deps.registry.require(accountId);
     try {
+      const rt = this.deps.registry.require(accountId);
       // 1) 拉全部交换单（不是只拉"我能响应的"：长链要靠中间环节的单串起来）
       const orders: BarterOrder[] = [];
       const seen = new Set<string>();
@@ -509,11 +519,16 @@ export class SwapService {
     rt: { client: { inventoryFish(): Promise<unknown>; barterFill(orderId: string, body: { requestFishId: string; offerFishId: string }): Promise<unknown> } },
     entry: Entry,
     hops: SwapHopInput[],
-  ): Promise<{ view: SwapExecuteResult; failedOrderId: string | null }> {
+    shouldStop: () => boolean = () => false,
+  ): Promise<{ view: SwapExecuteResult; failedOrderId: string | null; stopped?: boolean }> {
     const inventory = readSwapInventory(await rt.client.inventoryFish());
     const steps: SwapExecuteResult["steps"] = [];
 
     for (const [i, hop] of hops.entries()) {
+      if (shouldStop()) {
+        this.markStale(entry);
+        return { view: { ok: false, done: i, steps, error: "已按请求停止，已成交的步骤保留" }, failedOrderId: null, stopped: true };
+      }
       const have = inventory.get(hop.requestFishId) ?? 0;
       const fail = (text: string): { view: SwapExecuteResult; failedOrderId: string | null } => {
         steps.push({ index: i + 1, orderId: hop.orderId, ok: false, error: text });
@@ -544,20 +559,24 @@ export class SwapService {
 
   /** 批量循环：反复挑链、走链，直到换够 / 没得换 / 被停止 */
   private async runBatch(accountId: string, entry: Entry, opts: { quantity?: number } & SwapFilter, targetCount: number): Promise<void> {
-    const rt = this.deps.registry.require(accountId);
     let done = 0;
     let note: string | null = null;
 
     try {
+      const rt = this.deps.registry.require(accountId);
       while (done < targetCount) {
         if (entry.stopRun) {
           note = `已停止（换到 ${done}/${targetCount} 条）`;
           break;
         }
 
-        const inventory = readSwapInventory(await rt.client.inventoryFish());
+        // 每条链前重新读目标与库存：其它模块也可能献祭/卖鱼，不能一直沿用扫描时的缺口。
+        const [inv, mastery] = await Promise.all([rt.client.inventoryFish(), rt.client.mastery()]);
+        const inventory = readSwapInventory(inv);
+        const targets = readSwapTargets(mastery, inventory);
         const candidates = this.filterPaths(entry, opts).filter(
-          (path) => !path.hops.some((h) => entry.deadOrders.has(h.orderId)) && isSwapPathFeasible(path.hops, inventory),
+          (path) => targets.some((t) => t.fishId === path.target.fishId && t.biomeId === path.target.biomeId)
+            && !path.hops.some((h) => entry.deadOrders.has(h.orderId)) && isSwapPathFeasible(path.hops, inventory),
         );
         if (!candidates.length) {
           note = `没有可走的链了（换到 ${done}/${targetCount} 条）`;
@@ -576,7 +595,12 @@ export class SwapService {
           requestFishId: h.give.fishId,
           offerFishId: h.get.fishId,
         }));
-        const r = await this.walkChain(rt, entry, hops);
+        const r = await this.walkChain(rt, entry, hops, () => entry.stopRun);
+        if (r.stopped) {
+          note = `已停止（换到 ${done}/${targetCount} 条；当前链已成交 ${r.view.done} 跳）`;
+          this.log(entry, "warn", note);
+          break;
+        }
         if (!r.view.ok) {
           // 这一跳失败了：把那张单拉黑，换下一条候选链继续（不是整轮结束）
           if (r.failedOrderId) entry.deadOrders.add(r.failedOrderId);
@@ -648,7 +672,10 @@ export class SwapService {
   /** 筛选命中的目标「还差几条」之和（决定批量最多换几条） */
   private remainingOf(entry: Entry, filter: SwapFilter): number {
     const hit = new Set(this.filterPaths(entry, filter).map((p) => p.target.fishId));
-    const sum = entry.rawTargets.filter((t) => hit.has(t.fishId)).reduce((acc, t) => acc + Math.max(1, t.remaining), 0);
+    const sum = entry.rawTargets.filter((t) => hit.has(t.fishId)
+      && (!filter.biomeId || t.biomeId === filter.biomeId)
+      && (!filter.rarity || t.rarity === filter.rarity))
+      .reduce((acc, t) => acc + Math.max(0, t.remaining - t.available), 0);
     return sum || 1;
   }
 
@@ -726,6 +753,7 @@ export class SwapService {
       rawTargets: [],
       scanning: false,
       running: false,
+      executing: false,
       stopRun: false,
       deadOrders: new Set(),
     };
@@ -736,6 +764,12 @@ export class SwapService {
   /** 执行过之后把结果标成过期（面板据此提示"建议重新扫描"） */
   private markStale(entry: Entry): void {
     if (entry.state.result) entry.state = { ...entry.state, stale: true };
+  }
+
+  private requireIdle(entry: Entry): void {
+    if (entry.scanning || entry.running || entry.executing) {
+      throw new HttpError(409, "SWAP_BUSY", "该账号正在扫描或执行交换，请等待完成或先停止批量执行");
+    }
   }
 
   private requireOwnAccount(userId: string, accountId: string): void {

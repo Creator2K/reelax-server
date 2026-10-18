@@ -439,7 +439,7 @@ async function main(): Promise<void> {
     version: VERSION,
     startedAt,
     mount: (a) => {
-      a.use("/api", attachAuth(auth));
+      a.use("/api", attachAuth(auth, env.cookieSecure));
       a.use("/api/auth", createAuthRouter({ auth, env: { ...env, version: VERSION }, logger }));
       a.use("/api/modules", createModulesRouter({ notify }));
       a.use("/api/notify", createNotifyRouter({ notify, audit: repos.audit, limiters }));

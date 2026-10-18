@@ -172,7 +172,7 @@ export async function buildFullApp(
     version: "test",
     startedAt: Date.now(),
     mount: (a) => {
-      a.use("/api", attachAuth(auth));
+      a.use("/api", attachAuth(auth, env.cookieSecure));
       a.use("/api/auth", createAuthRouter({ auth, env: { ...env, version: "test" }, logger }));
       a.use("/api/modules", createModulesRouter({ notify, hasUsableChannel: () => notifyAvailable }));
       a.use("/api/notify", createNotifyRouter({ notify, audit: repos.audit, limiters }));

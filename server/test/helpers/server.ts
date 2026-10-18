@@ -97,7 +97,7 @@ export class TestServer {
       version: "test",
       startedAt: Date.now(),
       mount: (a) => {
-        a.use("/api", attachAuth(this.auth));
+        a.use("/api", attachAuth(this.auth, env.cookieSecure));
         a.use(
           "/api/auth",
           createAuthRouter({

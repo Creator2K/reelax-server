@@ -172,6 +172,81 @@ async function waitRun(accountId: string, jar: ReturnType<FullApp["seedApprovedU
 }
 
 describe("交换助手", () => {
+  it("批量执行按每个目标缺口分配，不能把两个目标的配额全换给第一个", async () => {
+    const mastery = { biomes: [F.b5, F.b6].map((f, i) => ({
+      biomeId: i === 0 ? "b_005" : "b_006", isUnlocked: true,
+      rarities: [{ fish: { id: f.fishId, name: f.name }, rarity: "mythic", remainingQuantity: 1, availableQuantity: 0 }],
+    })) };
+    const { accountId, jar, fills } = seedAccountWithGame({
+      pages: [[order("to-b5", F.b2, F.b5, 10), order("to-b6", F.b3, F.b6, 10)]],
+      inventory: [{ fishId: F.b2.fishId, quantity: 10 }, { fishId: F.b3.fishId, quantity: 10 }], mastery,
+    });
+    await scanAndWait(accountId, jar);
+    await app.post(`/api/accounts/${accountId}/swap/run`, { quantity: 2 }, jar);
+    const state = await waitRun(accountId, jar);
+    expect(state.run.doneCount).toBe(2);
+    expect(fills.map((f) => f.orderId)).toEqual(["to-b5", "to-b6"]);
+  });
+
+  it("已有部分目标鱼时只补缺口，重复使用旧扫描不能继续超换", async () => {
+    const { accountId, jar, fills } = seedAccountWithGame({
+      pages: [[order("to-b5", F.b2, F.b5, 10)]],
+      inventory: [{ fishId: F.b2.fishId, quantity: 10 }, { fishId: F.b5.fishId, quantity: 2 }],
+      mastery: { biomes: [{ biomeId: "b_005", isUnlocked: true, rarities: [
+        { fish: { id: F.b5.fishId }, rarity: "mythic", remainingQuantity: 3, availableQuantity: 2 },
+      ] }] },
+    });
+    await scanAndWait(accountId, jar);
+    const started = await app.post<State>(`/api/accounts/${accountId}/swap/run`, { quantity: 10 }, jar);
+    expect(started.body.run.targetCount).toBe(1);
+    await waitRun(accountId, jar);
+    expect(fills).toHaveLength(1);
+    await app.post(`/api/accounts/${accountId}/swap/run`, { quantity: 10 }, jar);
+    await waitRun(accountId, jar);
+    expect(fills).toHaveLength(1);
+  });
+
+  it("执行前重新检查专精，扫描后已完成的目标不能再消耗鱼", async () => {
+    const { accountId, jar, fills, rt } = seedAccountWithGame();
+    await scanAndWait(accountId, jar);
+    rt.client.mastery = async () => ({ biomes: [] });
+    await app.post(`/api/accounts/${accountId}/swap/run`, { quantity: 1 }, jar);
+    await waitRun(accountId, jar);
+    expect(fills).toHaveLength(0);
+  });
+
+  it("多跳链在第一跳执行中停止，不得继续第二跳；批量期间拒绝其它扫描和单条执行", async () => {
+    const { accountId, jar, fills, rt } = seedAccountWithGame({
+      pages: [[order("hop1", F.b2, F.b3), order("hop2", F.b3, F.b5)]],
+      inventory: [{ fishId: F.b2.fishId, quantity: 1 }],
+    });
+    await scanAndWait(accountId, jar);
+    let release!: () => void;
+    let began!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { began = resolve; });
+    const fill = rt.client.barterFill.bind(rt.client);
+    rt.client.barterFill = async (id, body) => {
+      began();
+      await gate;
+      return fill(id, body);
+    };
+    try {
+      await app.post(`/api/accounts/${accountId}/swap/run`, { quantity: 1 }, jar);
+      await entered;
+      expect((await app.post(`/api/accounts/${accountId}/swap/scan`, undefined, jar)).status).toBe(409);
+      expect((await app.post(`/api/accounts/${accountId}/swap/execute`, { hops: [
+        { orderId: "hop1", requestFishId: F.b2.fishId, offerFishId: F.b3.fishId },
+      ] }, jar)).status).toBe(409);
+      await app.post(`/api/accounts/${accountId}/swap/stop`, undefined, jar);
+    } finally { release(); }
+    const state = await waitRun(accountId, jar);
+    expect(state.run.status).toBe("stopped");
+    expect(state.run.doneCount).toBe(0);
+    expect(state.run.note).toContain("已成交 1 跳");
+    expect(fills.map((f) => f.orderId)).toEqual(["hop1"]);
+  });
+
   it("★ 扫描：翻页拉全交换单，算出专精目标与可行链", async () => {
     const { accountId, jar, orderCalls } = seedAccountWithGame({
       // 两页：第一页给出 B2→B3，第二页给出 B3→B5（链要跨页才能串起来）
@@ -457,7 +532,7 @@ describe("交换助手", () => {
           biomeId: "b_002",
           isUnlocked: true,
           rarities: [
-            { fish: { id: F.b2.fishId, name: F.b2.name }, rarity: "mythic", remainingQuantity: 1, availableQuantity: 0 },
+            { fish: { id: F.b2.fishId, name: F.b2.name }, rarity: "mythic", remainingQuantity: 2, availableQuantity: 1 },
           ],
         },
       ],
@@ -503,7 +578,7 @@ describe("交换助手", () => {
           biomeId: "b_002",
           isUnlocked: true,
           rarities: [
-            { fish: { id: F.b2.fishId, name: F.b2.name }, rarity: "mythic", remainingQuantity: 1, availableQuantity: 0 },
+            { fish: { id: F.b2.fishId, name: F.b2.name }, rarity: "mythic", remainingQuantity: 2, availableQuantity: 1 },
           ],
         },
       ],

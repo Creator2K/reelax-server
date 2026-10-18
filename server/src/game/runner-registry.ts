@@ -110,6 +110,10 @@ export class RunnerRegistry {
    */
   async start(accountId: string): Promise<AccountRuntime> {
     const rt = this.require(accountId);
+    const owner = this.deps.repos.users.findById(rt.userId);
+    if (owner?.status !== "approved") {
+      throw new HttpError(403, "OWNER_NOT_APPROVED", "账号所属用户未通过审批或已被封禁，不能启动");
+    }
     if (rt.status !== "stopped") return rt;
 
     if (this.runningCount >= this.deps.limits.maxRunningAccounts()) {
@@ -154,7 +158,7 @@ export class RunnerRegistry {
   async startAutoStartAccounts(): Promise<{ started: number; failed: number }> {
     const targets = this.list().filter((r) => {
       const row = this.deps.repos.accounts.findById(r.accountId);
-      return row?.auto_start === 1;
+      return row?.auto_start === 1 && this.deps.repos.users.findById(r.userId)?.status === "approved";
     });
     if (!targets.length) return { started: 0, failed: 0 };
 
@@ -173,7 +177,7 @@ export class RunnerRegistry {
         break;
       }
       try {
-        await rt.start();
+        await this.start(rt.accountId);
         started++;
       } catch (err) {
         failed++;
@@ -204,9 +208,7 @@ export class RunnerRegistry {
    */
   async stopAllForUser(userId: string): Promise<number> {
     const targets = this.list().filter((r) => r.userId === userId && r.status !== "stopped");
-    for (const rt of targets) {
-      await rt.stop("账号已被封禁").catch(() => {});
-    }
+    await Promise.allSettled(targets.map((rt) => rt.stop("账号已被封禁")));
     return targets.length;
   }
 

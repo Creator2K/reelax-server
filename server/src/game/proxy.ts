@@ -8,6 +8,7 @@
 //  4) 失败要分类：用户需要知道「是代理坏了」还是「游戏侧问题」，否则没法排查。
 import net from "node:net";
 import tls from "node:tls";
+import { createHash } from "node:crypto";
 import { Agent, type Dispatcher } from "undici";
 import { SocksClient } from "socks";
 
@@ -257,7 +258,8 @@ export function formatProxy(config: ProxyConfig): string {
 /** 代理唯一标识：配置变化时用于判断是否需要重建 Agent */
 export function proxyFingerprint(config: ProxyConfig | null): string {
   if (!config) return "direct";
-  return `${config.protocol}://${config.host}:${config.port}:${config.username ?? ""}`;
+  const passwordHash = createHash("sha256").update(config.password ?? "").digest("hex");
+  return `${config.protocol}://${config.host}:${config.port}:${config.username ?? ""}:${passwordHash}`;
 }
 
 /* ---------- Agent 构造 ---------- */
@@ -598,7 +600,6 @@ export class ProxyDispatcherHolder {
   set(config: ProxyConfig | null): boolean {
     const next = proxyFingerprint(config);
     if (next === this.fingerprint && this.dispatcher !== undefined) return false;
-    if (next === this.fingerprint && !config) return false;
 
     const previous = this.dispatcher;
     this.fingerprint = next;
@@ -616,7 +617,7 @@ export class ProxyDispatcherHolder {
       void (previous as unknown as { close?: () => Promise<void> }).close?.().catch(() => {});
     }
     this.rebuiltCount++;
-    this.log?.(`代理已${previous ? "切换" : "启用"}：${next}`);
+    this.log?.(`代理已${previous ? "切换" : "启用"}：${config ? formatProxy(config) : "直连"}`);
     return true;
   }
 
@@ -635,7 +636,8 @@ export class ProxyDispatcherHolder {
   async close(): Promise<void> {
     const d = this.dispatcher;
     this.dispatcher = undefined;
-    if (d) await (d as unknown as { close?: () => Promise<void> }).close?.().catch(() => {});
+    // 账号停止时主动中断在飞请求；close() 会等响应结束，慢响应可能让停止卡上几十秒。
+    if (d) await d.destroy().catch(() => {});
   }
 }
 

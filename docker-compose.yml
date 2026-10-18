@@ -3,23 +3,17 @@
 # 用法：
 #   1) 生成主密钥：openssl rand -hex 32
 #   2) 写进 .env：MASTER_KEY=<上面那串>（Windows 见 README）
-#   3) docker compose up -d --build
+#   3) docker compose pull app && docker compose up -d
 #   4) 打开 http://<服务器>:8580 —— 第一个注册的账号自动成为管理员
 #
-# 在线更新（可选）：
-#   把下面的 updater 服务一起启动，就能在「管理 → 系统」里点「检查更新 / 立即更新」：
-#     docker compose --profile update up -d --build
+# 更新容器：
+#   docker compose pull app && docker compose up -d
+# 本地源码修改需要另行构建镜像；pull 使用 GitHub 发布的镜像。
 #
 # ★ MASTER_KEY 必须长期保存：它就是凭证加密主密钥。弄丢之后数据库里的游戏密码 /
 #   Cookie / 推送 SendKey 全部无法解密（表现为「账号突然登不上」）。
 
-# ★ 显式固定 compose 项目名。
-#   不写这一行时，项目名会从**目录名**推导：宿主机上跑是 reelax-server，
-#   而 updater 容器里仓库挂在 /project → 项目名变成 project。
-#   两个项目名不同会导致：
-#     · 网络/卷被重新创建（project_default / project_reelax-data，数据卷对不上）
-#     · container_name 冲突（Container name "/reelax-server" is already in use）
-#   所以必须在这里写死，updater 也用同一个名字。
+# 固定项目名，避免目录变化导致连接到不同的数据卷。
 name: reelax-server
 
 services:
@@ -31,8 +25,8 @@ services:
         APP_COMMIT: "${APP_COMMIT:-unknown}"
         APP_BUILD_TIME: "${APP_BUILD_TIME:-unknown}"
     # 预构建镜像：GitHub Actions 每次 main 提交都会构建并推到 GHCR（见 .github/workflows/ci.yml）。
-    #   · 没有 git 的部署（tar 解压）：docker compose pull app && docker compose up -d
-    #   · 本地构建照旧可用（scripts/update.sh、updater、docker compose build），构建产物也打这个 tag
+    # 更新：docker compose pull app && docker compose up -d
+    # 本地构建也使用这个 tag；再次 pull 会替换为上游发布镜像。
     image: ghcr.io/creator2k/reelax-server:latest
     container_name: reelax-server
     restart: unless-stopped
@@ -94,12 +88,10 @@ services:
       REELAX_REPO: "${REELAX_REPO:-Creator2K/reelax-server}"
       # 私有仓库需要 GITHUB_TOKEN 才能读到远端提交信息（可选）
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
-      # 旁路更新器地址；启用了 update profile 才会实际存在
-      REELAX_UPDATER_URL: "${REELAX_UPDATER_URL:-}"
-      # 更新器令牌（可选）。与下面 updater 的 UPDATER_TOKEN 用同一个 .env 变量，
-      # 两边必须一致，否则一键更新会返回 401
-      REELAX_UPDATER_TOKEN: "${UPDATER_TOKEN:-}"
-      # 容器内不允许自行 git pull（代码在镜像里，改不了自己）—— 更新交给 updater
+      # 本部署只通过 docker compose pull 更新，禁用网页触发更新。
+      REELAX_UPDATER_URL: ""
+      REELAX_UPDATER_TOKEN: ""
+      # 容器内不执行源码更新，由宿主机通过 Compose 更新镜像
       ALLOW_LOCAL_UPDATE: "0"
 
       # ---- 日志 ----
@@ -128,55 +120,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ---- 可选：在线更新器 ----
-  #
-  # 它是唯一能改代码的容器（挂了 docker.sock）。只在需要点「立即更新」时启动：
-  #   docker compose --profile update up -d --build
-  #
-  # 安全说明：docker.sock 等同于宿主机 root 权限，所以这个服务**不对外暴露端口**，
-  # 只监听 compose 内网，并且只能被 app 触发。
-  updater:
-    build: ./updater
-    image: reelax-updater:latest
-    container_name: reelax-updater
-    restart: unless-stopped
-    profiles: ["update"]
-
-    environment:
-      UPDATER_PORT: 9000
-      # 容器内看到的是挂载进来的仓库目录
-      UPDATER_PROJECT_DIR: /project
-      UPDATER_COMPOSE_FILE: docker-compose.yml
-      UPDATER_SERVICE: app
-      # auto（默认）：挂载目录有 .git 就走 git（git pull + 本机构建），
-      # 否则走 pull（拉 GHCR 预构建镜像，几乎不吃 CPU）—— tar 解压部署用这个。
-      UPDATER_MODE: "${UPDATER_MODE:-auto}"
-      # 只在 pull 模式下用来读「这次换到了哪个提交」；与上面 app 的 image 保持一致
-      UPDATER_IMAGE: "${UPDATER_IMAGE:-ghcr.io/creator2k/reelax-server:latest}"
-      UPDATER_REBUILD: "1"
-      # ★ 与上面 name: 保持一致：updater 必须操作**同一个** compose 项目，
-      #   否则它会新建一套容器/网络/卷，并在 container_name 上撞车。
-      COMPOSE_PROJECT_NAME: reelax-server
-      # 可选：额外一道令牌（app 侧用 REELAX_UPDATER_TOKEN 提供）
-      UPDATER_TOKEN: "${UPDATER_TOKEN:-}"
-      # 私有仓库拉取凭据（public 仓库可留空）
-      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
-
-    volumes:
-      # 宿主机仓库目录（改这里要同步改 .env 的 REELAX_PROJECT_DIR）
-      - "${REELAX_PROJECT_DIR:-.}:/project"
-      # 让 updater 能操作 docker
-      - /var/run/docker.sock:/var/run/docker.sock
-
-    # 不映射端口：只在 compose 网络内可达（app 用 http://updater:9000 访问）
-    expose:
-      - "9000"
-
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
 
 volumes:
   reelax-data:
