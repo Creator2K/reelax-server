@@ -65,7 +65,7 @@ function RequireAuth() {
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
 
   return (
-    <RealtimeProvider enabled>
+    <RealtimeProvider key={user.id} userId={user.id} enabled>
       <AppLayout />
     </RealtimeProvider>
   );

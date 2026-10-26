@@ -294,7 +294,10 @@ export class AccountService {
         const first = errors[0]!;
         throw new HttpError(400, "INVALID_CONFIG", `${first.key}：${first.message}`);
       }
-      this.repos.modules.upsert(accountId, moduleId, { config: clean });
+      this.repos.modules.upsert(accountId, moduleId, {
+        config: clean,
+        enabled: this.repos.modules.find(accountId, moduleId)?.enabled ?? def.defaultEnabled,
+      });
     }
     if (patch.enabled !== undefined) {
       this.repos.modules.upsert(accountId, moduleId, { enabled: patch.enabled });
@@ -315,7 +318,7 @@ export class AccountService {
     this.requireOwned(accountId, userId);
     const def = getModule(moduleId);
     if (!def) throw new HttpError(404, "MODULE_NOT_FOUND", "功能不存在");
-    this.repos.modules.replaceConfig(accountId, moduleId, {});
+    this.repos.modules.replaceConfig(accountId, moduleId, {}, def.defaultEnabled);
     const rt = this.registry.require(accountId);
     await rt.restartModule(moduleId);
     return rt.moduleStates();

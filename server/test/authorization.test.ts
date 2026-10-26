@@ -352,4 +352,36 @@ describe("模块配置校验", () => {
     const states = await app.get<{ id: string; config: Record<string, unknown> }[]>(`/api/accounts/${aAccount}/modules`, A.jar);
     expect(states.body.find((s) => s.id === "keep-online")?.config.syncJitterMs).toBe(600);
   });
+
+  it("★ 首次保存配置时，默认开启的模块不能被意外关掉", async () => {
+    const u = app.seedApprovedUser("first-save@example.com");
+    const accountId = app.seedAccount(u.id, "首次保存");
+    expect(app.repos.modules.find(accountId, "keep-online")).toBeNull();
+
+    const r = await app.patch(
+      `/api/accounts/${accountId}/modules/keep-online`,
+      { config: { syncJitterMs: 900 } },
+      u.jar,
+    );
+    expect(r.status).toBe(200);
+    expect(app.repos.modules.find(accountId, "keep-online")).toMatchObject({
+      enabled: true,
+      config: { syncJitterMs: 900 },
+    });
+  });
+
+  it("★ 首次恢复默认时，默认开启的模块也不能被意外关掉", async () => {
+    const u = app.seedApprovedUser("first-reset@example.com");
+    const accountId = app.seedAccount(u.id, "首次恢复");
+    expect(app.repos.modules.find(accountId, "keep-online")).toBeNull();
+
+    const r = await app.post<{ states: { id: string; enabled: boolean }[] }>(
+      `/api/accounts/${accountId}/modules/keep-online/reset`,
+      {},
+      u.jar,
+    );
+    expect(r.status).toBe(200);
+    expect(r.body.states.find((s) => s.id === "keep-online")?.enabled).toBe(true);
+    expect(app.repos.modules.find(accountId, "keep-online")?.enabled).toBe(true);
+  });
 });

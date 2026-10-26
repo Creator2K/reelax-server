@@ -23,7 +23,7 @@ export function createApp(deps: HttpDeps): Express {
   app.disable("x-powered-by");
   if (deps.trustProxy) app.set("trust proxy", true);
 
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: "1mb", inflate: false }));
   app.use((_req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");

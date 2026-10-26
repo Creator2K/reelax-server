@@ -6,7 +6,7 @@
 //  3) `Math.max(0, indexOf(primary)) || 1` —— 下标 0（力量）是 falsy，被静默改成智力
 //     （该字段已被「属性顺序」列表取代，这里改为钉住新语义：顺序第一项就是主属性）。
 //  4) cookie 的 Max-Age 取自启动时的 env 值 —— 后台改「登录态有效期」不生效。
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildFullApp, type FullApp } from "./helpers/full-app.ts";
 import type { ModuleDefinition } from "../src/modules/types.ts";
 import { planStatAllocation } from "../src/modules/auto-stats/index.ts";
@@ -288,6 +288,38 @@ describe("模块状态的跨重启保留（日报的「昨日」不再因重启�
     // 关键：不能因为存状态就凭空插入 enabled=0 的行，把模块关掉
     expect(rt.isEnabled(def)).toBe(true);
     await rt.stopModule("t-state2");
+  });
+});
+
+describe("keep-online 热更新", () => {
+  it("★ 关闭后停止钓鱼循环，重新开启后启动新循环", async () => {
+    const { id: userId } = app.seedApprovedUser("hot-keep-online@example.com");
+    const accountId = app.seedAccount(userId, "热更新测试");
+    const rt = app.registry.require(accountId);
+    rt.setStatus("online", null);
+
+    const internals = rt as unknown as {
+      stopFishingLoop(): Promise<void>;
+      startFishingLoop(): void;
+    };
+    const stopLoop = vi.spyOn(internals, "stopFishingLoop").mockResolvedValue();
+    const startLoop = vi.spyOn(internals, "startFishingLoop").mockImplementation(() => {});
+    try {
+      app.repos.modules.upsert(accountId, "keep-online", { enabled: false });
+      const off = await rt.restartModule("keep-online");
+      expect(off).toMatchObject({ ok: true, enabled: false });
+      expect(stopLoop).toHaveBeenCalledOnce();
+      expect(startLoop).not.toHaveBeenCalled();
+
+      app.repos.modules.upsert(accountId, "keep-online", { enabled: true });
+      const on = await rt.restartModule("keep-online");
+      expect(on).toMatchObject({ ok: true, enabled: true });
+      expect(stopLoop).toHaveBeenCalledTimes(2);
+      expect(startLoop).toHaveBeenCalledOnce();
+    } finally {
+      stopLoop.mockRestore();
+      startLoop.mockRestore();
+    }
   });
 });
 

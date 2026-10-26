@@ -369,7 +369,8 @@ async function main(): Promise<void> {
         logger.info("管理员", `默认管理员 ${seeded.username}：${seeded.note}`);
       }
     } catch (err) {
-      logger.warn("管理员", `创建默认管理员失败：${err instanceof Error ? err.message : String(err)}`);
+      // 引导失败不能开放 HTTP，否则空库会被外部访问者抢先注册为管理员。
+      throw new Error(`创建默认管理员失败，已阻止启动：${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

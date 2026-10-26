@@ -115,9 +115,9 @@ export class AccountModulesRepo extends BaseRepo {
    * ★ 不改变 enabled —— 恢复默认配置不该顺手把功能开关也重置掉，
    *   否则用户点一下「恢复默认」就意外关掉了功能。
    */
-  replaceConfig(accountId: string, moduleId: string, config: Record<string, unknown>): ModuleState {
+  replaceConfig(accountId: string, moduleId: string, config: Record<string, unknown>, defaultEnabled = false): ModuleState {
     const current = this.find(accountId, moduleId);
-    const enabled = current?.enabled ?? false;
+    const enabled = current?.enabled ?? defaultEnabled;
     this.db.run(
       `INSERT INTO account_modules (account_id, module_id, enabled, config_json, updated_at)
        VALUES (?, ?, ?, ?, ?)

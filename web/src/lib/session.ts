@@ -3,6 +3,8 @@
 // 用 React Query 缓存 /api/auth/me；401 时视为未登录（不抛给页面，交给路由守卫处理）。
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "./api.ts";
+import { clearUserQueries, replaceSession, SESSION_QUERY_KEY } from "./session-cache.ts";
+export { SESSION_QUERY_KEY } from "./session-cache.ts";
 
 export type UserRole = "user" | "admin";
 export type UserStatus = "pending" | "approved" | "banned";
@@ -34,7 +36,6 @@ export type SystemInfo = {
   hasUsers: boolean;
 };
 
-export const SESSION_QUERY_KEY = ["session", "me"] as const;
 export const SYSTEM_QUERY_KEY = ["session", "system"] as const;
 
 export async function fetchMe(): Promise<SessionUser | null> {
@@ -48,9 +49,15 @@ export async function fetchMe(): Promise<SessionUser | null> {
 }
 
 export function useSession() {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: SESSION_QUERY_KEY,
-    queryFn: fetchMe,
+    queryFn: async () => {
+      const user = await fetchMe();
+      const previous = qc.getQueryData<SessionUser | null>(SESSION_QUERY_KEY);
+      if (previous?.id !== user?.id) await clearUserQueries(qc);
+      return user;
+    },
     staleTime: 30_000,
     retry: false,
   });
@@ -72,7 +79,7 @@ export function useAuthActions() {
     /** 登录标识可以是用户名，也可以是历史上注册的邮箱 */
     async login(username: string, password: string): Promise<SessionUser> {
       const data = await api.post<{ user: SessionUser }>("/api/auth/login", { username, password });
-      qc.setQueryData(SESSION_QUERY_KEY, data.user);
+      await replaceSession(qc, data.user);
       return data.user;
     },
     async register(input: {
@@ -83,17 +90,14 @@ export function useAuthActions() {
       inviteCode?: string;
     }): Promise<{ user: SessionUser; becameAdmin: boolean }> {
       const data = await api.post<{ user: SessionUser; becameAdmin: boolean }>("/api/auth/register", input);
-      qc.setQueryData(SESSION_QUERY_KEY, data.user);
+      await replaceSession(qc, data.user);
       return data;
     },
     async logout(): Promise<void> {
       try {
         await api.post("/api/auth/logout");
       } finally {
-        qc.setQueryData(SESSION_QUERY_KEY, null);
-        qc.removeQueries({ queryKey: ["accounts"] });
-        qc.removeQueries({ queryKey: ["proxies"] });
-        qc.removeQueries({ queryKey: ["logs"] });
+        await replaceSession(qc, null);
       }
     },
     async refresh(): Promise<void> {

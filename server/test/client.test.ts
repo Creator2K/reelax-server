@@ -754,6 +754,43 @@ describe("登录被拒 vs 会话失效（曾经把口令错报成「会话已失
   });
 });
 
+/* ---------------- 请求取消（停止/重启时使用） ---------------- */
+
+describe("AbortSignal 取消", () => {
+  it("★ 已取消的信号不会发起请求", async () => {
+    const { impl, calls } = makeFetch(() => ({ body: {} }));
+    const c = newClient(impl);
+    c.setProof(makeProof(Date.now() + 3_600_000));
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(c.fishingState(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("★ 请求进行中取消会真正传到 fetch，而不是等满超时", async () => {
+    let started!: () => void;
+    const didStart = new Promise<void>((resolve) => { started = resolve; });
+    const impl: typeof fetch = async (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        started();
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+          { once: true },
+        );
+      });
+    const c = newClient(impl);
+    c.setProof(makeProof(Date.now() + 3_600_000));
+
+    const controller = new AbortController();
+    const pending = c.fishingState(controller.signal);
+    await didStart;
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: GAME_ERROR_CODES.TIMEOUT });
+  });
+});
+
 /* ---------------- 单请求超时（per-request timeout） ---------------- */
 
 /**

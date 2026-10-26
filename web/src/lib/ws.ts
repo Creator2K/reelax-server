@@ -16,6 +16,7 @@ export type WsHandlers = {
   onStatus?: (connected: boolean) => void;
   /** 每次重连成功都会调用（用于重新拉取 REST 快照） */
   onReconnect?: () => void;
+  onSessionExpired?: () => void;
 };
 
 export type WsClient = { close: () => void };
@@ -65,9 +66,14 @@ export function connectWs(handlers: WsHandlers): WsClient {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       handlers.onStatus?.(false);
       if (closed) return;
+      if (event.code === 4001) {
+        closed = true;
+        handlers.onSessionExpired?.();
+        return;
+      }
       retryTimer = window.setTimeout(open, retryMs);
       retryMs = Math.min(Math.round(retryMs * 1.6), MAX_RETRY_MS);
     };

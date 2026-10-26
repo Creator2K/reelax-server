@@ -213,6 +213,49 @@ describe("WS 鉴权", () => {
     ws.close();
     expect(result).not.toBe("open");
   });
+
+  it("★ 退出单个会话会断开对应连接，但不会误伤同一用户的其它会话", async () => {
+    const row = repos.users.create({
+      email: "ws-revoke@example.com",
+      passwordHash: "scrypt$N=32768,r=8,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      displayName: "会话撤销",
+      status: "approved",
+    });
+    const first = auth.createSession(row, null, null);
+    const second = auth.createSession(row, null, null);
+    const c1 = new TestWsClient(port, `reelax_session=${first.token}`);
+    const c2 = new TestWsClient(port, `reelax_session=${second.token}`);
+    await Promise.all([c1.waitOpen(), c2.waitOpen()]);
+    await Promise.all([c1.wait((m) => m.type === "snapshot"), c2.wait((m) => m.type === "snapshot")]);
+
+    const closed1 = new Promise<number>((resolve) => c1.ws.once("close", (code) => resolve(code)));
+    auth.logout(first.token, row.id);
+    expect(await closed1).toBe(4001);
+    await c2.settle(100);
+    expect(c2.ws.readyState).toBe(WebSocket.OPEN);
+
+    const closed2 = new Promise<number>((resolve) => c2.ws.once("close", (code) => resolve(code)));
+    auth.logoutAll(row.id);
+    expect(await closed2).toBe(4001);
+  });
+
+  it("★ 会话记录被删除后，下一次推送前必须关闭连接", async () => {
+    const row = repos.users.create({
+      email: "ws-expired@example.com",
+      passwordHash: "scrypt$N=32768,r=8,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      displayName: "会话过期",
+      status: "approved",
+    });
+    const session = auth.createSession(row, null, null);
+    const c = new TestWsClient(port, `reelax_session=${session.token}`);
+    await c.waitOpen();
+    await c.wait((m) => m.type === "snapshot");
+
+    const closed = new Promise<number>((resolve) => c.ws.once("close", (code) => resolve(code)));
+    repos.sessions.deleteById(session.sessionId);
+    logger.info("测试", "会话删除后的下一条推送", { userId: row.id });
+    expect(await closed).toBe(4001);
+  });
 });
 
 describe("初始快照", () => {

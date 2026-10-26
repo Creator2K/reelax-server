@@ -7,6 +7,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import { useQueryClient } from "@tanstack/react-query";
 import { connectWs, type WsClient } from "./ws.ts";
 import { ACCOUNTS_QUERY_KEY } from "./queries.ts";
+import { SESSION_QUERY_KEY } from "./session-cache.ts";
 
 export type LogEntry = {
   t: number;
@@ -96,10 +97,12 @@ export type RealtimeEventHandlers = {
 
 export function RealtimeProvider({
   enabled,
+  userId,
   children,
   onEvent,
 }: {
   enabled: boolean;
+  userId: string;
   children: ReactNode;
   onEvent?: RealtimeEventHandlers["onEvent"];
 }) {
@@ -122,39 +125,34 @@ export function RealtimeProvider({
     const refreshAccounts = () => {
       void qc.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY });
     };
+    const belongsToCurrentSession = () => qc.getQueryData<{ id: string } | null>(SESSION_QUERY_KEY)?.id === userId;
 
     const client: WsClient = connectWs({
       onStatus: setConnected,
       onSnapshot: (data) => {
+        if (!belongsToCurrentSession()) return;
         qc.setQueryData(ACCOUNTS_QUERY_KEY, data);
       },
       onLog: (data) => {
+        if (!belongsToCurrentSession()) return;
         const e = data as LogEntry;
         if (e && typeof e.msg === "string") logStore.push(e);
       },
       onEvent: (data) => {
-        if (!data?.event) return;
+        if (!data?.event || !belongsToCurrentSession()) return;
         setLastEvent(data);
         onEventRef.current?.(data);
-        // 状态变化类事件需要刷新账号数据
-        if (
-          data.event === "account:status" ||
-          data.event === "account:started" ||
-          data.event === "account:stopped" ||
-          data.event === "account:error" ||
-          data.event === "fishing:sync"
-        ) {
-          refreshAccounts();
-        }
+        // 服务端会紧接着推送完整快照，无需每次结算再发 HTTP 查询。
       },
       onReconnect: refreshAccounts,
+      onSessionExpired: () => { void qc.invalidateQueries({ queryKey: SESSION_QUERY_KEY }); },
     });
 
     return () => {
       client.close();
       setConnected(false);
     };
-  }, [enabled, qc, logStore]);
+  }, [enabled, userId, qc, logStore]);
 
   // 退出登录时清掉日志缓冲，避免下一个用户看到上一个的日志
   useEffect(() => {

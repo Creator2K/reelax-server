@@ -74,6 +74,7 @@ export type GameClientOptions = {
 };
 
 export type RequestOptions = {
+  signal?: AbortSignal;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   headers?: Record<string, string>;
@@ -196,7 +197,7 @@ export class GameClient {
 
   /* ---------- 会话引导 ---------- */
 
-  async login(): Promise<unknown> {
+  async login(signal?: AbortSignal): Promise<unknown> {
     if (!this.hasCredentials) {
       throw new GameClientError("未配置邮箱或密码，无法登录", { code: GAME_ERROR_CODES.NO_CREDENTIALS });
     }
@@ -205,17 +206,20 @@ export class GameClient {
       body: { email: this.email, password: this.password },
       idempotent: true,
       _relogin: false,
+      signal,
     });
     this.log("info", "登录", `账号 ${this.email} 登录成功`);
     return data;
   }
 
   /** 刷新 proof：GET /api/me（免签名） */
-  async refreshProof(): Promise<any> {
+  async refreshProof(signal?: AbortSignal): Promise<any> {
     const resp = await this.raw("/api/me", {
       headers: { cache: "no-store", ...(this.cookie ? { Cookie: this.cookie } : {}) },
+      signal,
     }).catch((err) => { throw this.toNetworkError(err); });
     const data = await this.readJson(resp);
+    signal?.throwIfAborted();
     if (resp.status === 401 || resp.status === 403) {
       throw new GameClientError("会话已失效", {
         status: resp.status,
@@ -232,13 +236,14 @@ export class GameClient {
   }
 
   /** 确保会话可用：有 Cookie 先验证；失效且有账密则重新登录 */
-  async ensureSession(): Promise<any> {
+  async ensureSession(signal?: AbortSignal): Promise<any> {
     try {
-      return await this.refreshProof();
+      return await this.refreshProof(signal);
     } catch (err) {
+      signal?.throwIfAborted();
       if (err instanceof GameClientError && err.code === GAME_ERROR_CODES.SESSION_EXPIRED && this.hasCredentials) {
         this.log("warn", "会话", "Cookie 已失效，正在用账号密码重新登录");
-        return await this.login();
+        return await this.login(signal);
       }
       throw err;
     }
@@ -247,23 +252,25 @@ export class GameClient {
   /* ---------- 统一请求入口 ---------- */
 
   async request(path: string, opts: RequestOptions = {}): Promise<any> {
+    opts.signal?.throwIfAborted();
     const method = opts.method ?? "GET";
     // 幂等键在重试间必须复用，否则服务端会把重试当成第二次操作
     const idempotencyKey = opts.idempotent ? crypto.randomUUID() : null;
 
     if (!this.proof && !SIGNED_SKIP.has(path)) {
-      await this.ensureSession();
+      await this.ensureSession(opts.signal);
     }
     // proof 临近过期则主动续期（省掉一次「失败 → 重试」）
     if (this.proof && this.proofExpiresAt && this.now() > this.proofExpiresAt - PROOF_REFRESH_MARGIN_MS) {
       try {
-        await this.refreshProof();
+        await this.refreshProof(opts.signal);
       } catch (err) {
         this.log("warn", "会话", `proof 续期失败：${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
     const attempt = async (isRetry: boolean): Promise<any> => {
+      opts.signal?.throwIfAborted();
       const ts = String(this.now());
       const bodyStr = opts.body !== undefined ? JSON.stringify(opts.body) : "";
 
@@ -287,12 +294,13 @@ export class GameClient {
       try {
         // ★ 必须把单请求超时传下去：早期只把它用在错误文案里（raw 里仍用默认 30s），
         //   于是“per-request 超时”其实从未生效。
-        resp = await this.raw(path, { method, headers, body: opts.body !== undefined ? bodyStr : undefined, timeoutMs: opts.timeoutMs });
+        resp = await this.raw(path, { method, headers, body: opts.body !== undefined ? bodyStr : undefined, timeoutMs: opts.timeoutMs, signal: opts.signal });
       } catch (err) {
         throw this.toNetworkError(err, opts.timeoutMs);
       }
 
       const text = await this.readResponseText(resp, opts.timeoutMs);
+      opts.signal?.throwIfAborted();
       const data = parseJsonLoose(text);
       this.absorb(resp, data);
 
@@ -311,10 +319,11 @@ export class GameClient {
       if (canRefreshSession && looksLikeSignatureIssue(resp.status, text, message) && !isRetry) {
         // proof 过期 / Cookie 失效：先续期，续期失败且有账密则重登，然后重试一次
         try {
-          await this.refreshProof();
+          await this.refreshProof(opts.signal);
         } catch (refreshErr) {
+          opts.signal?.throwIfAborted();
           if (this.hasCredentials && opts._relogin !== false) {
-            await this.login();
+            await this.login(opts.signal);
           } else {
             throw new GameClientError(
               `会话已失效且无法自动重登：${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`,
@@ -371,26 +380,27 @@ export class GameClient {
   me() {
     return this.request("/api/me");
   }
-  fishingState() {
+  fishingState(signal?: AbortSignal) {
     // 每轮循环的第一件事；卡住同样会拖掉一整个周期
-    return this.request("/api/fishing/state", { timeoutMs: TIMEOUT_STATE_MS });
+    return this.request("/api/fishing/state", { timeoutMs: TIMEOUT_STATE_MS, signal });
   }
-  fishingStart() {
-    return this.request("/api/fishing/start", { method: "POST", idempotent: true, timeoutMs: TIMEOUT_MUTATE_MS });
+  fishingStart(signal?: AbortSignal) {
+    return this.request("/api/fishing/start", { method: "POST", idempotent: true, timeoutMs: TIMEOUT_MUTATE_MS, signal });
   }
   fishingStop() {
     return this.request("/api/fishing/stop", { method: "POST", idempotent: true, timeoutMs: TIMEOUT_MUTATE_MS });
   }
-  fishingRefill() {
-    return this.request("/api/fishing/refill", { method: "POST", idempotent: true, timeoutMs: TIMEOUT_MUTATE_MS });
+  fishingRefill(signal?: AbortSignal) {
+    return this.request("/api/fishing/refill", { method: "POST", idempotent: true, timeoutMs: TIMEOUT_MUTATE_MS, signal });
   }
-  fishingSync(snapshotKey?: string) {
+  fishingSync(snapshotKey?: string, signal?: AbortSignal) {
     // ★ 收竿同步用比周期更短的超时：失败要能在一个周期内进入重试，而不是把几轮都挂住
     return this.request("/api/fishing/sync", {
       method: "POST",
       idempotent: true,
       extraHeaders: { "X-Fishing-Run-Snapshot-Key": snapshotKey || "missing" },
       timeoutMs: TIMEOUT_SYNC_MS,
+      signal,
     });
   }
   biomes() {
@@ -722,11 +732,12 @@ export class GameClient {
 
   async raw(
     path: string,
-    { method = "GET", headers = {}, body, timeoutMs }: {
+    { method = "GET", headers = {}, body, timeoutMs, signal }: {
       method?: string;
       headers?: Record<string, string>;
       body?: string;
       timeoutMs?: number;
+      signal?: AbortSignal;
     } = {},
   ): Promise<Response> {
     const url = this.baseUrl + path;
@@ -744,7 +755,7 @@ export class GameClient {
       },
       body,
       redirect: "manual",
-      signal: AbortSignal.timeout(timeout),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
     };
     if (this.dispatcher) init.dispatcher = this.dispatcher;
 

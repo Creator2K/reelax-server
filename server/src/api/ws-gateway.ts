@@ -22,6 +22,7 @@ import { EVENTS } from "../lib/bus.ts";
 type Client = {
   ws: WebSocket;
   userId: string;
+  sessionId: string;
   isAlive: boolean;
 };
 
@@ -43,6 +44,7 @@ export const MAX_WS_BUFFERED_BYTES = 1024 * 1024;
 export class WsGateway {
   private wss: WebSocketServer;
   private clients = new Set<Client>();
+  private clientBySocket = new WeakMap<WebSocket, Client>();
   private deps: WsGatewayDeps;
   /** userId → 上次推送内容的指纹（用于去重） */
   private lastFingerprint = new Map<string, string>();
@@ -76,13 +78,21 @@ export class WsGateway {
       }
 
       this.wss.handleUpgrade(req, socket, head, (ws) => {
-        this.onConnection(ws, user.userId);
+        this.onConnection(ws, user.userId, user.sessionId);
       });
     });
 
     this.wss.on("error", (err) => {
       deps.logger.warn("WS", `服务端错误：${err instanceof Error ? err.message : String(err)}`);
     });
+
+    this.unsubscribers.push(deps.auth.onSessionsRevoked((scope) => {
+      for (const client of this.clients) {
+        if ("userId" in scope ? client.userId === scope.userId : client.sessionId === scope.sessionId) {
+          this.expireClient(client);
+        }
+      }
+    }));
 
     /* ---------- 日志实时推送 ---------- */
     this.unsubscribers.push(
@@ -123,6 +133,7 @@ export class WsGateway {
 
     /* ---------- 定时全量快照 ---------- */
     this.snapshotTimer = setInterval(() => {
+      for (const client of this.clients) this.checkSession(client);
       for (const userId of this.userIds()) this.pushSnapshot(userId, false);
     }, SNAPSHOT_INTERVAL_MS);
 
@@ -145,19 +156,20 @@ export class WsGateway {
   }
 
   /** 升级鉴权：读同一个会话 cookie */
-  private authenticate(req: IncomingMessage): { userId: string } | null {
+  private authenticate(req: IncomingMessage): { userId: string; sessionId: string } | null {
     const token = parseCookie(req.headers.cookie, SESSION_COOKIE);
     if (!token) return null;
     const resolved = this.deps.auth.resolveSession(token);
     if (!resolved) return null;
     // 未审批用户不推送业务数据（能连上但收不到账号信息）
     if (resolved.user.status !== "approved") return null;
-    return { userId: resolved.user.id };
+    return { userId: resolved.user.id, sessionId: resolved.sessionId };
   }
 
-  private onConnection(ws: WebSocket, userId: string): void {
-    const client: Client = { ws, userId, isAlive: true };
+  private onConnection(ws: WebSocket, userId: string, sessionId: string): void {
+    const client: Client = { ws, userId, sessionId, isAlive: true };
     this.clients.add(client);
+    this.clientBySocket.set(ws, client);
 
     ws.on("pong", () => {
       client.isAlive = true;
@@ -168,6 +180,20 @@ export class WsGateway {
     this.send(ws, "hello", { serverTime: Date.now() });
     // 连上即推一次自己的快照
     this.pushSnapshotTo(ws, userId, false);
+  }
+
+  private checkSession(client: Client): boolean {
+    if (this.deps.auth.isSessionApproved(client.sessionId, client.userId)) return true;
+    this.expireClient(client);
+    return false;
+  }
+
+  private expireClient(client: Client): void {
+    this.removeClient(client);
+    client.ws.close(4001, "Session expired");
+    const timer = setTimeout(() => client.ws.terminate(), 1000);
+    timer.unref();
+    client.ws.once("close", () => clearTimeout(timer));
   }
 
   /** 某用户当前的全部快照内容 */
@@ -233,6 +259,8 @@ export class WsGateway {
 
   private sendEncoded(ws: WebSocket, frame: string): void {
     if (ws.readyState !== WebSocket.OPEN) return;
+    const client = this.clientBySocket.get(ws);
+    if (!client || !this.checkSession(client)) return;
     try {
       if (ws.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
         ws.terminate();

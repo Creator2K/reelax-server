@@ -26,6 +26,7 @@ export type ApiUser = {
 };
 
 export type SessionToken = { token: string; sessionId: string; expiresAt: number };
+export type SessionRevocation = { userId: string } | { sessionId: string };
 
 /** 只依赖用到的几个限流器，便于测试注入假实现 */
 export type AuthLimiterLike = {
@@ -61,6 +62,7 @@ export class AuthService {
   private settings: SettingsService;
   private limiter: AuthDeps["limiter"];
   private log: Logger;
+  private revocationListeners = new Set<(scope: SessionRevocation) => void>();
 
   constructor(deps: AuthDeps) {
     this.repos = deps.repos;
@@ -177,54 +179,46 @@ export class AuthService {
       throw conflict("该用户名已被使用", "USERNAME_TAKEN");
     }
 
-    const isFirstUser = this.repos.users.countAll() === 0;
-    let consumedInvite: string | null = null;
-
-    if (!isFirstUser) {
-      if (!this.allowRegistration) {
-        throw forbidden("本服务已关闭自助注册，请联系管理员创建账号。", "REGISTRATION_DISABLED");
-      }
-      // 邀请码：由设置项决定是否强制（公开站点建议保持强制）
-      if (this.requireInvite) {
-        const code = input.inviteCode?.trim();
-        if (!code) throw badRequest("需要邀请码才能注册", "INVITE_REQUIRED");
-
-        const guess = this.limiter.inviteGuess.hit(input.ip ?? "unknown");
-        if (!guess.allowed) throw new HttpError(429, "RATE_LIMITED", "邀请码尝试过于频繁，请稍后再试。");
-
-        const invite = this.repos.invites.findByCode(code);
-        if (!invite) throw badRequest("邀请码无效", "INVITE_INVALID");
-        const usable = this.repos.invites.isUsable(invite);
-        if (!usable.ok) throw badRequest(usable.reason, "INVITE_UNUSABLE");
-
-        if (!this.repos.invites.consume(code)) {
-          throw badRequest("邀请码已用尽或已过期", "INVITE_UNUSABLE");
-        }
-        consumedInvite = code;
-      }
+    if (!this.allowRegistration) {
+      throw forbidden("本服务已关闭自助注册，请联系管理员创建账号。", "REGISTRATION_DISABLED");
     }
 
     const passwordHash = await hashPassword(input.password);
 
-    let row: UserRow;
+    let registered: { row: UserRow; isFirstUser: boolean; consumedInvite: string | null };
     try {
-      row = this.repos.users.create({
-        email: username,
-        passwordHash,
-        displayName,
-        // 首个注册者是管理员；其余为普通用户。
-        // ★ 两者都是 approved —— 注册即可用（邀请码已是门槛），
-        //   管理员只保留「封禁 / 解封」能力，不再需要逐个审批。
-        role: isFirstUser ? "admin" : "user",
-        status: "approved",
-        approvedBy: null,
+      // 哈希期间可能有人已注册，或管理员关闭了注册。
+      // 在同一同步事务内决定角色、消费邀请码并创建用户，失败时一起回滚。
+      registered = this.repos.transaction(() => {
+        if (!this.allowRegistration) {
+          throw forbidden("本服务已关闭自助注册，请联系管理员创建账号。", "REGISTRATION_DISABLED");
+        }
+        const isFirstUser = this.repos.users.countAll() === 0;
+        let consumedInvite: string | null = null;
+        if (!isFirstUser && this.requireInvite) {
+          const code = input.inviteCode?.trim();
+          if (!code) throw badRequest("需要邀请码才能注册", "INVITE_REQUIRED");
+          const guess = this.limiter.inviteGuess.hit(input.ip ?? "unknown");
+          if (!guess.allowed) throw new HttpError(429, "RATE_LIMITED", "邀请码尝试过于频繁，请稍后再试。");
+          const invite = this.repos.invites.findByCode(code);
+          if (!invite) throw badRequest("邀请码无效", "INVITE_INVALID");
+          const usable = this.repos.invites.isUsable(invite);
+          if (!usable.ok) throw badRequest(usable.reason, "INVITE_UNUSABLE");
+          if (!this.repos.invites.consume(code)) throw badRequest("邀请码已用尽或已过期", "INVITE_UNUSABLE");
+          consumedInvite = code;
+        }
+        const row = this.repos.users.create({
+          email: username, passwordHash, displayName,
+          role: isFirstUser ? "admin" : "user",
+          status: "approved", approvedBy: null,
+        });
+        return { row, isFirstUser, consumedInvite };
       });
     } catch (err) {
-      // 创建失败时把邀请码还回去（不要让用户白丢一个码）
-      if (consumedInvite) this.refundInvite(consumedInvite);
-      if (String(err).includes("UNIQUE")) throw conflict("该邮箱已注册", "EMAIL_TAKEN");
+      if (String(err).includes("UNIQUE")) throw conflict("该用户名已被使用", "USERNAME_TAKEN");
       throw err;
     }
+    const { row, isFirstUser, consumedInvite } = registered;
 
     this.repos.audit.record({
       userId: row.id,
@@ -247,15 +241,6 @@ export class AuthService {
     // 直接签发会话，注册完就是登录态
     const token = this.createSession(row, input.userAgent ?? null, input.ip ?? null);
     return { user: this.toApi(row), becameAdmin: isFirstUser, token };
-  }
-
-  /** 邀请码回滚（创建用户失败时，不让用户白丢一个码） */
-  private refundInvite(code: string): void {
-    try {
-      this.repos.invites.refund(code);
-    } catch {
-      /* 回滚失败只影响一个邀请码余量，不阻断注册错误上报 */
-    }
   }
 
   /* ---------- 登录 ---------- */
@@ -395,14 +380,41 @@ export class AuthService {
 
   logout(token: string | null | undefined, userId?: string, ip?: string): void {
     if (!token) return;
+    const session = this.repos.sessions.findByTokenHash(hashToken(token));
     this.repos.sessions.deleteByTokenHash(hashToken(token));
+    if (session) this.notifyRevoked({ sessionId: session.id });
     if (userId) {
       this.repos.audit.record({ userId, action: AUDIT_ACTIONS.LOGOUT, target: userId, ip: ip ?? null });
     }
   }
 
   logoutAll(userId: string): number {
-    return this.repos.sessions.deleteForUser(userId);
+    const removed = this.repos.sessions.deleteForUser(userId);
+    this.notifyRevoked({ userId });
+    return removed;
+  }
+
+  onSessionsRevoked(listener: (scope: SessionRevocation) => void): () => void {
+    this.revocationListeners.add(listener);
+    return () => { this.revocationListeners.delete(listener); };
+  }
+
+  private notifyRevoked(scope: SessionRevocation): void {
+    for (const listener of this.revocationListeners) {
+      try {
+        listener(scope);
+      } catch (err) {
+        // 断开长连接失败不能反向阻断退出登录 / 改密本身。
+        this.log.warn("认证", `会话撤销通知失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  /** 长连接只保存会话 ID；每次推送前确认记录、有效期和用户状态仍然有效。 */
+  isSessionApproved(sessionId: string, userId: string): boolean {
+    const session = this.repos.sessions.findById(sessionId);
+    return Boolean(session && session.user_id === userId && Number(session.expires_at) > Date.now()
+      && this.repos.users.findById(userId)?.status === "approved");
   }
 
   /* ---------- 自助 ---------- */
@@ -428,7 +440,7 @@ export class AuthService {
     const hash = await hashPassword(input.newPassword);
     this.repos.users.updatePasswordHash(user.id, hash);
     // 改口令后踢掉所有其他会话（当前会话也失效，前端会跳登录页）
-    this.repos.sessions.deleteForUser(user.id);
+    this.logoutAll(user.id);
     this.repos.audit.record({
       userId: user.id,
       action: AUDIT_ACTIONS.PASSWORD_CHANGED,
@@ -511,7 +523,7 @@ export class AuthService {
 
     this.repos.users.setStatus(userId, "approved", adminId);
     // 审批时清掉该用户此前失败的会话，让它重新登录拿到新状态
-    this.repos.sessions.deleteForUser(userId);
+    this.logoutAll(userId);
     this.repos.audit.record({
       userId: adminId,
       action: AUDIT_ACTIONS.USER_APPROVED,
@@ -532,7 +544,7 @@ export class AuthService {
       throw badRequest("不能拒绝最后一个管理员", "LAST_ADMIN");
     }
     this.repos.users.setStatus(userId, "banned", adminId);
-    this.repos.sessions.deleteForUser(userId);
+    this.logoutAll(userId);
     this.repos.audit.record({
       userId: adminId,
       action: AUDIT_ACTIONS.USER_REJECTED,
@@ -556,7 +568,7 @@ export class AuthService {
     }
 
     this.repos.users.setStatus(userId, status, status === "approved" ? adminId : null);
-    if (status !== "approved") this.repos.sessions.deleteForUser(userId);
+    if (status !== "approved") this.logoutAll(userId);
 
     this.repos.audit.record({
       userId: adminId,
@@ -629,6 +641,7 @@ export class AuthService {
         const strength = validatePasswordStrength(input.password);
         if (!strength.ok) throw badRequest(strength.message, "WEAK_PASSWORD");
         this.repos.users.updatePasswordHash(existing.id, await hashPassword(input.password));
+        this.logoutAll(existing.id);
         fixes.push("口令已按配置重置");
       }
       return {
@@ -679,7 +692,7 @@ export class AuthService {
 
     this.repos.users.updatePasswordHash(targetUserId, await hashPassword(newPassword));
     // 改口令后强制所有会话失效：否则旧会话（可能已被泄漏）仍然有效
-    this.repos.sessions.deleteForUser(targetUserId);
+    this.logoutAll(targetUserId);
   }
 
   /**

@@ -224,6 +224,12 @@ export class AccountRuntime {
   /** 上次真正写库的 (status, lastError) 指纹，用于跳过无意义的重复写 */
   private persistedStatusKey: string | null = null;
   private loopPromise: Promise<void> | null = null;
+  private loopController: AbortController | null = null;
+  private startupController: AbortController | null = null;
+  private startTask: Promise<void> | null = null;
+  private stopTask: Promise<void> | null = null;
+  private moduleRestarts = new Map<string, Promise<{ ok: boolean; error?: string; enabled: boolean }>>();
+  private displayRefresh: Promise<void> | null = null;
   private proxyHolder: ProxyDispatcherHolder;
 
   /** 缓存的展示数据 */
@@ -732,8 +738,9 @@ export class AccountRuntime {
   }
 
   /** 启动全部已启用模块（单个失败不影响其他） */
-  async startModules(): Promise<void> {
+  async startModules(epoch = this.startEpoch): Promise<void> {
     for (const def of MODULES) {
+      if (this.startCancelled(epoch)) return;
       await this.startModule(def);
     }
   }
@@ -802,22 +809,53 @@ export class AccountRuntime {
    * 账号未运行时只更新配置、不实例化。
    */
   async restartModule(id: string): Promise<{ ok: boolean; error?: string; enabled: boolean }> {
+    // 同一模块的连续保存按顺序生效，防止旧 onStop 清掉新实例的定时器。
+    const previous = this.moduleRestarts.get(id);
+    const task = (previous ?? Promise.resolve()).then(() => this.restartModuleNow(id));
+    this.moduleRestarts.set(id, task);
+    try {
+      return await task;
+    } finally {
+      if (this.moduleRestarts.get(id) === task) this.moduleRestarts.delete(id);
+    }
+  }
+
+  private async restartModuleNow(id: string): Promise<{ ok: boolean; error?: string; enabled: boolean }> {
     const def = getModule(id);
     if (!def) return { ok: false, error: "模块不存在", enabled: false };
 
     await this.stopModule(id);
-    if (this.status === "stopped") return { ok: true, enabled: this.isEnabled(def) };
+    if (id === "keep-online") await this.stopFishingLoop();
+    if (this.status === "stopped" || this.abortRequested) return { ok: true, enabled: this.isEnabled(def) };
 
     const res = await this.startModule(def);
+    if (id === "keep-online" && res.ok && this.isEnabled(def) && this.status !== "starting" && !this.abortRequested) {
+      this.startFishingLoop();
+    }
     return { ok: res.ok, ...(res.error ? { error: res.error } : {}), enabled: this.isEnabled(def) };
   }
 
   /* ---------------- 生命周期 ---------------- */
 
   async start(): Promise<void> {
+    if (this.stopTask) await this.stopTask;
+    // 被停止的启动仍可能在等待模块 onStart，先等其清理，避免清掉新一轮的模块。
+    if (this.startTask) await this.startTask.catch(() => {});
     if (this.status === "online" || this.status === "starting") return;
+    const task = this.startRun();
+    this.startTask = task;
+    try {
+      await task;
+    } finally {
+      if (this.startTask === task) this.startTask = null;
+    }
+  }
+
+  private async startRun(): Promise<void> {
     this.abortRequested = false;
     const epoch = ++this.startEpoch;
+    const startup = new AbortController();
+    this.startupController = startup;
     this.setStatus("starting", null);
     this.startedAt = Date.now();
     this.stats.startedAt = this.startedAt;
@@ -832,8 +870,9 @@ export class AccountRuntime {
     }
 
     try {
-      await this.client.ensureSession();
+      await this.client.ensureSession(startup.signal);
     } catch (err) {
+      if (this.startCancelled(epoch)) return;
       const e = err as GameClientError;
       const expired = e?.isSessionFatal;
       this.setStatus(expired ? "expired" : "error", e?.message ?? String(err));
@@ -845,7 +884,7 @@ export class AccountRuntime {
     if (this.startCancelled(epoch)) return;
 
     // 启动模块
-    await this.startModules();
+    await this.startModules(epoch);
     if (this.startCancelled(epoch)) {
       await this.cancelStart();
       return;
@@ -858,21 +897,31 @@ export class AccountRuntime {
     this.bus.emit(EVENTS.ACCOUNT_STARTED, { accountId: this.accountId, userId: this.userId });
 
     if (keepOnlineEnabled) {
-      this.loopPromise = this.tickLoop().catch((err) => {
-        this.log.error("保持在线", `循环意外退出：${err instanceof Error ? err.message : String(err)}`);
-      });
+      this.startFishingLoop();
     } else {
       this.log.info("会话", "「保持在线」未启用，账号不会产生渔获（仅运行其他模块）");
     }
   }
 
   async stop(reason = "手动停止"): Promise<void> {
+    if (this.stopTask) return this.stopTask;
     if (this.status === "stopped") return;
     // 让任何正在进行的 start() 失效（见 startEpoch 的注释）
     this.startEpoch++;
     this.log.info("会话", `停止账号「${this.label}」：${reason}`);
     this.abortRequested = true;
+    this.startupController?.abort();
+    this.loopController?.abort();
+    const task = this.stopRun(reason);
+    this.stopTask = task;
+    try {
+      await task;
+    } finally {
+      if (this.stopTask === task) this.stopTask = null;
+    }
+  }
 
+  private async stopRun(reason: string): Promise<void> {
     // 先停模块（它们可能持有定时器），再清空定时器池
     for (const id of [...this.instances.keys()]) {
       await this.stopModule(id);
@@ -880,10 +929,7 @@ export class AccountRuntime {
     this.timers.clear();
 
     // 等循环退出（最多 2 秒，避免卡住停止流程）
-    if (this.loopPromise) {
-      await Promise.race([this.loopPromise, new Promise((r) => setTimeout(r, 2000))]);
-      this.loopPromise = null;
-    }
+    await this.stopFishingLoop();
 
     await this.proxyHolder.close().catch(() => {});
     this.setStatus("stopped", null);
@@ -891,8 +937,51 @@ export class AccountRuntime {
     this.bus.emit(EVENTS.ACCOUNT_STOPPED, { accountId: this.accountId, userId: this.userId, reason });
   }
 
-  private isAborted(): boolean {
-    return this.abortRequested || this.status === "stopped";
+  private startFishingLoop(): void {
+    if (this.loopController && !this.loopController.signal.aborted) return;
+    const controller = new AbortController();
+    const epoch = this.startEpoch;
+    this.loopController = controller;
+    const task = this.tickLoop(controller.signal, epoch).catch((err) => {
+      if (!controller.signal.aborted) this.log.error("保持在线", `循环意外退出：${err instanceof Error ? err.message : String(err)}`);
+    }).finally(() => {
+      if (this.loopController === controller) {
+        this.loopController = null;
+        this.loopPromise = null;
+      }
+    });
+    this.loopPromise = task;
+  }
+
+  private async stopFishingLoop(): Promise<void> {
+    const controller = this.loopController;
+    const task = this.loopPromise;
+    controller?.abort();
+    if (task) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([task, new Promise<void>((resolve) => { timer = setTimeout(resolve, 2000); })]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (this.loopController === controller) {
+      this.loopController = null;
+      this.loopPromise = null;
+    }
+  }
+
+  /** 展示数据可以慢，收竿不能等它；同一时刻最多一批刷新。 */
+  private refreshDisplayInBackground(epoch: number): void {
+    if (this.displayRefresh) return;
+    const task = this.refreshDisplayData().then(() => {
+      if (!this.startCancelled(epoch)) this.recordXpSample();
+    }).catch((err) => {
+      this.log.debug("面板", `刷新失败：${describe(err)}`);
+    }).finally(() => {
+      if (this.displayRefresh === task) this.displayRefresh = null;
+    });
+    this.displayRefresh = task;
   }
 
   /** 这次启动是否已经被 stop() 作废 */
@@ -911,7 +1000,8 @@ export class AccountRuntime {
   }
 
   /** 保持在线主循环 */
-  private async tickLoop(): Promise<void> {
+  private async tickLoop(signal: AbortSignal, epoch: number): Promise<void> {
+    const isAborted = () => signal.aborted || this.startCancelled(epoch) || this.status === "stopped";
     let backoffIdx = 0;
     let snapshotKey = "missing";
     let keyRunId: string | null = null;
@@ -926,8 +1016,8 @@ export class AccountRuntime {
     const staggerMs = randomStaggerMs(START_STAGGER_MAX_MS);
     if (staggerMs > 0) {
       this.log.info("保持在线", `错峰 ${(staggerMs / 1000).toFixed(1)}s 后开始（避免多账号同时打代理）`);
-      await sleepUntil(Date.now() + staggerMs, () => this.isAborted(), 500);
-      if (this.isAborted()) return;
+      await sleepUntil(Date.now() + staggerMs, isAborted, 500);
+      if (isAborted()) return;
     }
 
     /** 本轮错误发生在「同步」这一步吗（决定要不要计入同步健康度） */
@@ -935,13 +1025,13 @@ export class AccountRuntime {
     /** 本轮是否已经做过一次"瞬时错误立刻重试" */
     let quickRetried = false;
 
-    while (!this.isAborted()) {
+    while (!isAborted()) {
       try {
-        const st = await this.client.fishingState();
+        const st = await this.client.fishingState(signal);
         // 这次请求期间可能已经被停止（stop 最多只等 2 秒就会返回）
-        if (this.isAborted()) return;
+        if (isAborted()) return;
         this.reportOnlineCount(st?.onlinePlayerCount);
-        await this.refreshDisplayData();
+        this.refreshDisplayInBackground(epoch);
         // 顺手采一条经验样本：面板要用它算「每小时经验 / 还差多久升级」
         this.recordXpSample();
         this.reportStatusPanel(buildStatusPanel(st, this));
@@ -951,19 +1041,23 @@ export class AccountRuntime {
         // 1. 确保有一轮在跑
         if (!run || run.status !== "running") {
           try {
-            const started = await this.client.fishingStart();
+            const started = await this.client.fishingStart(signal);
+            if (isAborted()) return;
             run = started?.run;
             this.log.info(
               "保持在线",
               `开始钓鱼：${run?.remainingCasts ?? "?"}/${run?.totalCasts ?? "?"} 杆，周期 ${run?.cycleDurationMs ?? "?"}ms`,
             );
           } catch (err) {
+            if (isAborted()) return;
             if (!autoRefill) throw err;
             this.log.info("保持在线", `直接开始失败（${describe(err)}），尝试补杆`);
-            const rf = await this.client.fishingRefill();
+            const rf = await this.client.fishingRefill(signal);
+            if (isAborted()) return;
             run = rf?.run;
             if (!run || run.status !== "running") {
-              run = (await this.client.fishingStart())?.run;
+              run = (await this.client.fishingStart(signal))?.run;
+              if (isAborted()) return;
             }
             this.log.info("保持在线", `补杆完成：${run?.remainingCasts ?? "?"} 杆可用`);
           }
@@ -982,18 +1076,18 @@ export class AccountRuntime {
         //   留一个下限后，最坏情况也只是"最多每 N 秒同步一次"。
         const floorAt = this.lastSyncAt ? this.lastSyncAt + MIN_SYNC_GAP_MS : 0;
         const wakeAt = Math.max(nextCastAt + (syncJitterMs > 0 ? jitter(syncJitterMs) : 0), floorAt);
-        await sleepUntil(wakeAt, () => this.isAborted(), 800);
-        if (this.isAborted()) return;
+        await sleepUntil(wakeAt, isAborted, 800);
+        if (isAborted()) return;
 
         // 3. 同步（run 换代时用 missing，与官方客户端一致）
         const key = keyRunId === run.id ? snapshotKey : "missing";
         phase = "sync";
-        const resp = await this.client.fishingSync(key);
+        const resp = await this.client.fishingSync(key, signal);
         phase = "other";
         // ★ 关键：同步期间被停止时不能再往下走 —— 下面会 setStatus("online")，
         //   而那时 stop() 早已把状态写成 stopped 并返回，账号于是变成
         //   「显示在线、其实没在钓、还占着一个全局并发名额」的僵尸状态。
-        if (this.isAborted()) return;
+        if (isAborted()) return;
         if (resp?.run) {
           if (resp.run.snapshotKey) snapshotKey = resp.run.snapshotKey;
           keyRunId = resp.run.id;
@@ -1015,7 +1109,7 @@ export class AccountRuntime {
         backoffIdx = 0;
         quickRetried = false;
       } catch (err) {
-        if (this.isAborted()) break;
+        if (isAborted()) break;
 
         // 会话类错误：挂起，等用户处理，不要无限重试
         if (err instanceof GameClientError && err.isSessionFatal) {
@@ -1053,7 +1147,7 @@ export class AccountRuntime {
         // ★ 退避加抖动：链路抖一下经常是"所有账号同时掉、同时重连"，固定 5/10/20 秒会让它们
         //   永远同步着打代理（正是并发超时的来源）。抖动后各自散开，且不超过 retrySec。
         const waitMs = Math.min(retrySec * 1000, jitter(sec * 1000));
-        await sleepUntil(Date.now() + waitMs, () => this.isAborted(), 800);
+        await sleepUntil(Date.now() + waitMs, isAborted, 800);
       }
     }
 

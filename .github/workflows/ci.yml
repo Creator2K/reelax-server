@@ -30,6 +30,9 @@ jobs:
       - name: 类型检查
         run: npm run typecheck
 
+      - name: 生产依赖安全审计
+        run: npm audit --omit=dev --workspace server --include-workspace-root=false --registry=https://registry.npmjs.org
+
       - name: Lint
         run: npm run lint
 

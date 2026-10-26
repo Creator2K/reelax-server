@@ -13,6 +13,7 @@ import { NotifyRepo } from "./notify.ts";
 import { CdkRepo } from "./cdk.ts";
 
 export type Repos = {
+  transaction: <T>(fn: () => T) => T;
   users: UsersRepo;
   sessions: AuthSessionsRepo;
   invites: InvitesRepo;
@@ -28,6 +29,7 @@ export type Repos = {
 
 export function createRepos(db: Db): Repos {
   return {
+    transaction: (fn) => db.tx(fn),
     users: new UsersRepo(db),
     sessions: new AuthSessionsRepo(db),
     invites: new InvitesRepo(db),
