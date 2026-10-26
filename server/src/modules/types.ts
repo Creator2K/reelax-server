@@ -37,6 +37,24 @@ export type SelectField = ConfigFieldBase & {
   default: string;
   options: { value: string; label: string; hint?: string }[];
 };
+
+/**
+ * 地图选择：选项来自**当前账号的 `/api/biomes`**，而不是编译进镜像的固定表。
+ *
+ * `options` 只是账号地图还没加载出来时的兜底清单；前端拿到实时地图后会合并/替换，
+ * 因此游戏新增地图不需要再改代码或重新发版。后端只校验它是合理长度的字符串，
+ * 不限制成旧表里的 id。
+ */
+export type BiomeSelectField = ConfigFieldBase & {
+  type: "biome-select";
+  default: string;
+  /** 账号地图未加载时的兜底选项（通常放内置地图表，保持旧实例可用） */
+  options: { value: string; label: string; hint?: string }[];
+  /** 是否允许空值（空值通常表示「自动选择已解锁的最高地图」） */
+  allowEmpty?: boolean;
+  /** 空值选项的文案 */
+  emptyLabel?: string;
+};
 /**
  * 多选：值是一组字符串 id。
  * 用于「从固定清单里挑几项」的配置（例如哪些通知要开）。
@@ -110,6 +128,7 @@ export type ConfigField =
   | StringField
   | TextareaField
   | SelectField
+  | BiomeSelectField
   | MultiSelectField
   | OrderField
   | OrderNumberField
@@ -344,6 +363,13 @@ export function resolveModuleConfig(
         }
         break;
       }
+      case "biome-select": {
+        if (typeof raw !== "string" || raw.length > 80 || (raw === "" && !field.allowEmpty)) {
+          issues.push({ key: field.key, message: field.allowEmpty ? "应为地图 id（或留空自动选择）" : "应为地图 id", value: raw });
+          merged[field.key] = field.default;
+        }
+        break;
+      }
       case "multi-select": {
         // 兼容「数组」与「逗号分隔的字符串」两种历史写法；
         // 不认识的 id 会被剔除（选项改名后旧值自动失效，而不是让界面显示空白项）
@@ -498,6 +524,15 @@ export function validateConfigPatch(
       case "select":
         if (!field.options.some((o) => o.value === v)) {
           errors.push({ key: k, message: `取值必须是 ${field.options.map((o) => o.value).join(" / ")} 之一`, value: v });
+        } else {
+          out[k] = v;
+        }
+        break;
+      case "biome-select":
+        if (typeof v !== "string" || v.length > 80) {
+          errors.push({ key: k, message: "应为地图 id", value: v });
+        } else if (v === "" && !field.allowEmpty) {
+          errors.push({ key: k, message: "请选择一张地图", value: v });
         } else {
           out[k] = v;
         }

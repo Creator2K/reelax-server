@@ -1,8 +1,9 @@
-// 地图清单（取自游戏 bundle 的 biome 定义，勿手改）
+// 地图兜底清单（取自游戏 bundle 的 biome 定义）
 //
-// 为什么硬编码而不是每次从 /api/biomes 拉：
-//   配置表单需要**在账号未启动时**也能渲染下拉选项（服务端拿不到游戏数据）。
-//   地图是游戏世界的固定内容，不随账号变化。
+// 配置表单现在优先使用当前账号的 `/api/biomes` 实时列表；这里只负责：
+//   · 账号地图还没加载 / 暂时离线时给下拉框兜底；
+//   · 游戏接口没有下发解锁信息时补 requiredLevel / unlockCost。
+// 游戏新增地图不需要改这张表：编号、名称、倍率等都以接口数据为准。
 //
 // requiredLevel / unlockCost 也一并抄下来：
 //   · 「自动解锁地图」要按等级与花费排序、并在日志里说清「要花多少」；
@@ -70,13 +71,16 @@ export function biomeLabel(id: unknown): string | null {
 }
 
 /**
- * 地图的「关卡等级」：就是清单里的位置（b_001 最小、b_015 最大）。
+ * 地图的「关卡等级」：b_001 → 0、b_016 → 15。
  *
- * 与 requiredLevel 同序（后者是玩家等级门槛），用位置更直观且不受数值调整影响。
- * 认不出的地图返回 -1（调用方按「不确定」处理，不做升降级判断）。
+ * 不再依赖内置表：游戏新增 `b_016` 时即使本地还没抄名字，也能按编号判断
+ * 它比 `b_015` 更高级。完全认不出的 id 返回 -1（调用方按「不确定」处理）。
  */
 export function biomeRank(id: unknown): number {
-  return BIOMES.findIndex((b) => b.id === id);
+  const m = /^b_(\d+)$/.exec(String(id ?? ""));
+  if (!m) return -1;
+  const n = Number(m[1]);
+  return Number.isInteger(n) && n > 0 ? n - 1 : -1;
 }
 
 export function biomeById(id: unknown): BiomeOption | null {
@@ -95,4 +99,47 @@ export function biomeUnlockInfo(biome: any): { requiredLevel: number; unlockCost
     requiredLevel: Number.isFinite(lvl) && lvl >= 0 ? lvl : (local?.requiredLevel ?? 0),
     unlockCost: Number.isFinite(cost) && cost >= 0 ? cost : (local?.unlockCost ?? 0),
   };
+}
+
+/**
+ * 从一组地图里挑「最高级」的一张：先看游戏接口给的鱼价值倍率，再看所需等级，
+ * 最后按地图编号。编号兜底能自动识别尚未写进内置表的新地图。
+ *
+ * 所有信息都缺失时仍按 id 升序取最小的一张，保证结果稳定、可测试。
+ */
+export function pickHighestBiome(list: any[]): any | null {
+  let best: any = null;
+  let bestScore: { value: number; level: number; rank: number } | null = null;
+  for (const item of list) {
+    if (!item) continue;
+    const cur = {
+      value: Number(item?.valueMultiplier) || 0,
+      level: Number(item?.requiredLevel) || 0,
+      rank: biomeRank(item?.id),
+    };
+    if (!best) {
+      best = item;
+      bestScore = cur;
+      continue;
+    }
+    const bs = bestScore!;
+    const better =
+      cur.value - bs.value ||
+      cur.level - bs.level ||
+      cur.rank - bs.rank;
+    if (better > 0) {
+      best = item;
+      bestScore = cur;
+      continue;
+    }
+    if (better === 0) {
+      const a = String(best?.id ?? "");
+      const b = String(item?.id ?? "");
+      if (b < a) {
+        best = item;
+        bestScore = cur;
+      }
+    }
+  }
+  return best;
 }

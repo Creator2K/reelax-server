@@ -259,6 +259,7 @@ function ModuleCard({
         {open && !blocked ? (
           <div className="border-t pt-3">
             <ModuleForm
+              accountId={accountId}
               fields={schema}
               values={state.config}
               configIssues={state.configIssues}

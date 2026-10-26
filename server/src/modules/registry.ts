@@ -117,8 +117,8 @@ export function assertRegistryValid(): void {
     for (const f of m.configSchema) {
       if (keys.has(f.key)) throw new Error(`模块 ${m.id} 的配置项重复：${f.key}`);
       keys.add(f.key);
-      if (f.type === "select" && (!f.options || f.options.length === 0)) {
-        throw new Error(`模块 ${m.id} 的 select 配置 ${f.key} 没有 options`);
+      if ((f.type === "select" || f.type === "biome-select") && (!f.options || f.options.length === 0)) {
+        throw new Error(`模块 ${m.id} 的 ${f.type} 配置 ${f.key} 没有 options`);
       }
       if (f.type === "number" && f.min !== undefined && f.max !== undefined && f.min > f.max) {
         throw new Error(`模块 ${m.id} 的配置 ${f.key} 的 min > max`);

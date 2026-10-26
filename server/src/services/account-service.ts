@@ -445,7 +445,8 @@ export class AccountService {
       party: state?.party ?? null,
       overview,
       invitations: invitationList(invitations),
-      biomeName: biomeName,
+      // 账号实时地图优先，内置表只做兜底：游戏新增地图后船队面板也能直接显示名字。
+      biomeName: (id) => rt.biomes.get(id)?.name ?? biomeName(id),
     });
   }
 

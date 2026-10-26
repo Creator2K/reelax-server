@@ -39,6 +39,7 @@ function makeCtx(opts: FakeOpts = {}) {
     biomes: async () => ({
       biomes: [
         { id: BIOME_HOME, name: "月落溪谷", isCurrent: world.currentBiome === BIOME_HOME },
+        { id: "b_012", name: "熔潮环礁", isCurrent: world.currentBiome === "b_012" },
         { id: BIOME_OTHER, name: "极昼冰湾", isCurrent: world.currentBiome === BIOME_OTHER },
         { id: BIOME_PITY, name: "星渊圣海", isCurrent: world.currentBiome === BIOME_PITY },
       ],
@@ -138,6 +139,22 @@ describe("保底切图模块", () => {
     expect(count(calls, `TRAVEL ${BIOME_HOME}`)).toBe(1);
     expect(world.currentBiome).toBe(BIOME_HOME);
     expect(log.info.some((m) => m.includes("🎉"))).toBe(true);
+  });
+
+  it("★ 保底地图选择「自动」时选已解锁的最高地图，新地图无需改代码", async () => {
+    const { ctx, calls, log, start } = makeCtx({ config: { arcaneBiome: "auto" } });
+    (ctx.api as unknown as { biomes: () => Promise<unknown> }).biomes = async () => ({
+      biomes: [
+        { id: BIOME_HOME, name: "月落溪谷", isCurrent: true },
+        { id: BIOME_PITY, name: "星渊圣海" },
+        { id: "b_016", name: "新地图" },
+      ],
+    });
+    const run = await start();
+
+    await run();
+    expect(count(calls, "TRAVEL b_016")).toBe(1);
+    expect(log.info.some((m) => m.includes("自动选择 新地图"))).toBe(true);
   });
 
   it("★ 完全不碰助手：一次 /api/convenience 都不发（既不读也不写）", async () => {

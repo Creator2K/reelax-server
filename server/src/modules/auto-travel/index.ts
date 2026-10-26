@@ -41,10 +41,12 @@
 //      比赛 / 金风命中则直接去（那两个是时段性的，犹豫就错过）。
 import { type ModuleDefinition } from "../types.ts";
 import { weatherMultiplier, weatherName } from "../keep-online/xp-multiplier.ts";
-import { BIOMES, BIOME_OPTIONS, biomeName } from "../shared/biomes.ts";
+import { BIOME_OPTIONS, biomeName, pickHighestBiome } from "../shared/biomes.ts";
 
 const GOLDEN_WEATHER_ID = "gilded_current";
 const SURGE_WEATHER_ID = "arcane_surge";
+/** 生物群系配置里的「自动」哨兵：避开 Radix Select 的空字符串限制 */
+export const AUTO_BIOME = "auto";
 
 /** 比赛的终态：这些状态下的场次不能再当成「该去的比赛图」 */
 const TERMINAL_TOURNAMENT_STATUSES = new Set(["ended", "finished", "settled", "settling", "canceled", "cancelled", "closed"]);
@@ -134,41 +136,13 @@ export function isSurge(biome: any): boolean {
  * 「已解锁的最高地图」= 鱼价值倍率最高的那张（越高等级的图倍率越高）。
  *
  * 排序键依次是：接口给的 `valueMultiplier`（越靠后的图越大，游戏自己会给）→
- * `requiredLevel`（个别版本不给倍率时用它）→ 内置地图表的顺序（兜底，让同一份数据结果稳定）→ id。
- * 全部相同（例如所有图倍率都是 1）时取 id 最小的，保证可测。
+ * `requiredLevel`（个别版本不给倍率时用它）→ 地图编号 b_N（兜底，新地图也能自动识别）→ id。
+ * 全部相同（例如所有图倍率都是 1、编号也对不上）时取 id 最小的，保证可测。
  */
 export function pickHighestUnlocked(list: any[]): any | null {
-  const score = (b: any) => ({
-    value: Number(b?.valueMultiplier) || 0,
-    level: Number(b?.requiredLevel) || 0,
-    order: biomeOrder(b?.id),
-  });
-  let best: any = null;
-  let bestScore: ReturnType<typeof score> | null = null;
-  for (const item of list) {
-    if (!item) continue;
-    const cur = score(item);
-    if (!best || !bestScore) {
-      best = item;
-      bestScore = cur;
-      continue;
-    }
-    const better =
-      cur.value - bestScore.value ||
-      cur.level - bestScore.level ||
-      cur.order - bestScore.order ||
-      (String(best.id) > String(item.id) ? 1 : String(best.id) < String(item.id) ? -1 : 0);
-    if (better > 0) {
-      best = item;
-      bestScore = cur;
-    }
-  }
-  return best;
-}
-
-/** 内置地图表里的次序（b_001 = 0 …）；表里没有的返回 -1 */
-function biomeOrder(id: unknown): number {
-  return BIOMES.findIndex((b) => b.id === String(id ?? ""));
+  // 统一在 shared/biomes 里实现：地图编号本身就是等级顺序，
+  // 因此 b_016 这类还没写进内置表的新地图也能被自动识别为更高一级。
+  return pickHighestBiome(list);
 }
 
 export type TravelDecision =
@@ -286,7 +260,8 @@ export function planTravel(input: {
     const surged = unlocked.filter(isSurge);
     if (surged.length) {
       const wantId = String(input.surgeBiomeId ?? "").trim();
-      const wanted = wantId ? (unlocked.find((b) => String(b?.id ?? "") === wantId) ?? null) : null;
+      const auto = !wantId || wantId === AUTO_BIOME;
+      const wanted = auto ? null : (unlocked.find((b) => String(b?.id ?? "") === wantId) ?? null);
       const target = wanted ?? pickHighestUnlocked(surged);
       if (target) {
         if (String(target.id) === currentBiomeId) {
@@ -298,7 +273,7 @@ export function planTravel(input: {
           reason: p,
           why:
             `奥秘涌流（各图加成相同，按涌流目标挑）→ ${describeBiome(target)}` +
-            (wantId && !wanted ? `（配置的 ${wantId} 未解锁，改用已解锁的最高地图）` : ""),
+            (!auto && wantId && !wanted ? `（配置的 ${wantId} 未解锁，改用已解锁的最高地图）` : ""),
         };
       }
     }
@@ -412,13 +387,13 @@ const PRIORITY_OPTIONS: { value: Priority; label: string; hint: string }[] = [
 const definition: ModuleDefinition = {
   id: "auto-travel",
   name: "自动切图",
-  version: "5.0.0",
+  version: "5.1.0",
   description:
     "按你排的优先级在已解锁地图里挑一张待着（做法与官方航线助手的「换图优先级」一致）：比赛 / 金风 / 经验 / 跟船队走，用点击加入的方式自行排序、想留几项留几项。涌流是覆盖所有地图的全局天气，各图加成相同，因此它不参与排序，而是由「经验」在涌流期间按「涌流目标」挑图（默认已解锁的最高地图）。船长 / 舵手还能在换图时把船员一起带走。",
   defaultEnabled: false,
   defaultConfig: {
     priorities: ["competition", "golden", "experience"],
-    surgeBiome: "",
+    surgeBiome: AUTO_BIOME,
     crewTravel: "off",
     checkEverySec: 120,
     minImprovePct: 3,
@@ -440,13 +415,13 @@ const definition: ModuleDefinition = {
     },
     {
       key: "surgeBiome",
-      type: "select",
+      type: "biome-select",
       label: "奥秘涌流期间去哪张图",
       hint:
         "涌流覆盖所有地图：这时各图天气加成完全相同，「天气经验最高」失去区分度（只能按 id 兜底挑到等级最低的图），因此改为按这里指定的图走。\n" +
-        "留空 = 已解锁的最高地图（鱼价值倍率最高的那张）。",
-      default: "",
-      options: [{ value: "", label: "自动：已解锁的最高地图" }, ...BIOME_OPTIONS],
+        "选择「自动」= 已解锁的最高地图（鱼价值倍率最高的那张）。地图列表会随账号实时更新，游戏新增地图无需等待客户端适配。",
+      default: AUTO_BIOME,
+      options: [{ value: AUTO_BIOME, label: "自动：已解锁的最高地图" }, ...BIOME_OPTIONS],
     },
     {
       key: "crewTravel",
@@ -830,7 +805,7 @@ const definition: ModuleDefinition = {
       "自动切图",
       `已启动：优先级 ${priorities.map((p) => PRIORITY_LABELS[p]).join(" > ")}；` +
         `经验只看天气加成${minImprovePct ? `，迟滞 ${minImprovePct}%` : ""}；` +
-        `涌流目标 ${surgeBiomeId ? biomeName(surgeBiomeId) ?? surgeBiomeId : "已解锁的最高地图"}；` +
+        `涌流目标 ${surgeBiomeId && surgeBiomeId !== AUTO_BIOME ? (biomeName(surgeBiomeId) ?? surgeBiomeId) : "已解锁的最高地图"}；` +
         (carryCrew
           ? priorities.includes("follow")
             ? "带队换图已开启（需船长 / 舵手；跟船队走生效时不会开船）"

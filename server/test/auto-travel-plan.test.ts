@@ -206,11 +206,15 @@ describe("自动切图 · 已解锁的最高地图", () => {
     expect(pickHighestUnlocked(noMult)?.id).toBe("b_007");
 
     const noInfo = [{ id: "b_003" }, { id: "b_011" }];
-    // 内置表里 b_011 更靠后 = 更高级
+    // 地图编号越靠后 = 更高级
     expect(pickHighestUnlocked(noInfo)?.id).toBe("b_011");
+
+    // ★ 游戏新增 b_016 时，即使内置表还没抄到它、接口也没给倍率/等级，
+    //   也能从编号自动判断它比 b_015 高，不需要再改代码。
+    expect(pickHighestUnlocked([{ id: "b_015" }, { id: "b_016" }])?.id).toBe("b_016");
   });
 
-  it("倍率相同时按内置表里的等级高低，表里都不认识才按 id 取最小（结果稳定）", () => {
+  it("倍率相同时按地图编号高低，完全认不出编号才按 id 取最小（结果稳定）", () => {
     // 倍率都是 1，但 b_004（雷痕峡湾）在表里比 b_002（雾语湿地）靠后 = 更高级
     const same = [
       { id: "b_004", valueMultiplier: 1 },

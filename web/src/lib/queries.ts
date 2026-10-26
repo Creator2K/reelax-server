@@ -457,6 +457,17 @@ export type ConfigField =
       options: { value: string; label: string; hint?: string }[];
     }
   | {
+      /** 地图选择：选项来自当前账号的实时地图列表，options 只是加载前兜底 */
+      key: string;
+      type: "biome-select";
+      label: string;
+      hint?: string;
+      default?: string;
+      options: { value: string; label: string; hint?: string }[];
+      allowEmpty?: boolean;
+      emptyLabel?: string;
+    }
+  | {
       /** 从固定清单里挑几项（值是一组 id） */
       key: string;
       type: "multi-select";

@@ -4,7 +4,7 @@
 // 后端加一个配置项，这里自动出现对应控件；后端改类型，这里跟着变。
 import { useEffect, useMemo, useState } from "react";
 import { IconChevronDown, IconRotateClockwise } from "@tabler/icons-react";
-import type { ConfigField, ModuleRuntimeState } from "@/lib/queries.ts";
+import { useAccountMaps, type ConfigField, type MapItem, type ModuleRuntimeState } from "@/lib/queries.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
@@ -19,6 +19,8 @@ import { TemplateFieldEditor } from "@/components/domain/TemplateFieldEditor.tsx
 import { cn } from "@/lib/utils.ts";
 
 export type ModuleFormProps = {
+  /** 当前账号：地图选择字段会按这个账号拉取实时地图列表 */
+  accountId: string;
   fields: ConfigField[];
   /** 当前生效值（后端已合并默认值） */
   values: Record<string, unknown>;
@@ -41,6 +43,7 @@ function toInputString(v: unknown): string {
 }
 
 export function ModuleForm({
+  accountId,
   fields,
   values,
   configIssues = [],
@@ -49,6 +52,22 @@ export function ModuleForm({
   onReset,
   moduleId,
 }: ModuleFormProps) {
+  // 同一张表单里可能有两个地图下拉（例：保底切图同时配奇异 / 奥秘），共用一次查询。
+  const needsBiomeOptions = fields.some((f) => f.type === "biome-select");
+  const mapsQuery = useAccountMaps(accountId, needsBiomeOptions);
+  const liveBiomeOptions = useMemo<{ value: string; label: string; hint?: string }[] | null>(() => {
+    const maps = mapsQuery.data?.maps;
+    if (!maps?.length) return null;
+    return maps.map((m: MapItem) => {
+      const code = /^b_(\d+)$/.exec(m.id)?.[1];
+      return {
+        value: m.id,
+        label: `${m.name}${code ? `（B${Number(code)}）` : `（${m.id}）`}${m.isUnlocked ? "" : " · 未解锁"}`,
+        ...(m.isUnlocked ? {} : { hint: "当前账号尚未解锁这张地图" }),
+      };
+    });
+  }, [mapsQuery.data?.maps]);
+
   // 本地草稿：用户改完点保存才提交，避免每敲一个字符打一次接口
   const [draft, setDraft] = useState<Record<string, unknown>>(values);
   const [saving, setSaving] = useState(false);
@@ -96,6 +115,7 @@ export function ModuleForm({
           key={f.key}
           field={f}
           value={draft[f.key]}
+          biomeOptions={liveBiomeOptions}
           disabled={disabled}
           onChange={(v) => set(f.key, v)}
         />
@@ -133,11 +153,14 @@ export function ModuleForm({
 function Field({
   field,
   value,
+  biomeOptions,
   disabled,
   onChange,
 }: {
   field: ConfigField;
   value: unknown;
+  /** 账号实时地图；null = 还没加载出来，此时用 schema 里的内置清单兜底 */
+  biomeOptions: { value: string; label: string; hint?: string }[] | null;
   disabled?: boolean;
   onChange: (v: unknown) => void;
 }) {
@@ -222,6 +245,41 @@ function Field({
           </Select>
         </div>
       );
+
+    case "biome-select": {
+      const selected = String(value ?? "");
+      const special = field.options.filter((o) => !/^b_\d+$/.test(o.value));
+      const fallbackMaps = field.options.filter((o) => /^b_\d+$/.test(o.value));
+      const options = [
+        ...(field.allowEmpty ? [{ value: "", label: field.emptyLabel ?? "自动选择" }] : []),
+        ...special,
+        ...(biomeOptions ?? fallbackMaps),
+      ];
+      if (selected && !options.some((o) => o.value === selected)) {
+        options.push({ value: selected, label: `${selected}（地图列表暂不可用）` });
+      }
+      return (
+        <div className="space-y-2">
+          {labelRow}
+          <Select
+            value={selected}
+            disabled={disabled}
+            onValueChange={(v) => onChange(v)}
+          >
+            <SelectTrigger id={id} className="max-w-80">
+              <SelectValue placeholder="请选择地图" />
+            </SelectTrigger>
+            <SelectContent>
+              {options.map((o) => (
+                <SelectItem key={o.value} value={o.value}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      );
+    }
 
     case "multi-select": {
       const selected = new Set(Array.isArray(value) ? value.map((x) => String(x)) : []);

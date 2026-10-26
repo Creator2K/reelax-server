@@ -5,6 +5,7 @@
 // （加错点、卖错装备、把号从比赛图拽走），所以必须有测试。
 import { describe, expect, it } from "vitest";
 import { MODULES, assertRegistryValid } from "../src/modules/registry.ts";
+import { resolveModuleConfig, validateConfigPatch } from "../src/modules/types.ts";
 import {
   investedOf,
   planFromScratch,
@@ -552,6 +553,20 @@ describe("模块清单自检", () => {
         expect(def.defaultConfig[f.key], `${def.id}.${f.key}`).toEqual(f.default);
       }
     }
+  });
+
+  it("★ 地图选择字段接受游戏新地图 id 和自动选项", () => {
+    const pity = MODULES.find((m) => m.id === "auto-pity")!;
+    expect(pity.configSchema.find((f) => f.key === "arcaneBiome")?.type).toBe("biome-select");
+
+    const resolved = resolveModuleConfig(pity, { exoticBiome: "b_016", arcaneBiome: "auto" });
+    expect(resolved.issues).toEqual([]);
+    expect(resolved.config.exoticBiome).toBe("b_016");
+    expect(resolved.config.arcaneBiome).toBe("auto");
+
+    const patch = validateConfigPatch(pity, { exoticBiome: "b_016", arcaneBiome: "auto" });
+    expect(patch.errors).toEqual([]);
+    expect(patch.patch).toEqual({ exoticBiome: "b_016", arcaneBiome: "auto" });
   });
 
   it("每个模块的字符串字段都有 label（前端表单靠它渲染）", () => {

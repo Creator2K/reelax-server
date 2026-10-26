@@ -26,7 +26,7 @@
 //  2) 被别的模块挪走后会一直"等待出货"，再也不会切回保底图（流程卡死）。
 //     现在决策会给出 reenter（每次流程限一次），把它抢回来。
 import { type ModuleDefinition } from "../types.ts";
-import { BIOME_OPTIONS } from "../shared/biomes.ts";
+import { BIOME_OPTIONS, pickHighestBiome } from "../shared/biomes.ts";
 import { holdTravel, releaseTravel } from "../shared/travel-lock.ts";
 import {
   PITY_LABELS,
@@ -52,6 +52,8 @@ export {
 
 /** 我们要让路的模块（它也会换图，且整个停掉是安全的） */
 const AUTO_TRAVEL_ID = "auto-travel";
+/** 地图配置里的「自动」哨兵：避开 Radix Select 的空字符串限制 */
+const AUTO_BIOME = "auto";
 /** 占「换图决策权」时显示给日志的名字 */
 const TRAVEL_LOCK_LABEL = "保底切图（守保底中）";
 
@@ -85,15 +87,15 @@ const freshFlow = (): TargetFlow => ({
 const definition: ModuleDefinition = {
   id: "auto-pity",
   name: "保底切图",
-  version: "3.0.0",
+  version: "3.1.0",
   description:
     "监控奇异鱼 / 奥秘鱼的硬保底进度（可同时监控两个，各自指定地图与阈值）：快触发保底时自动切到那张图，出货后自动切回原来的地图。两个都快到保底时先守更接近出货的那个（一样近时奥秘优先）。保底流程期间会临时暂停「自动切图」（出货后恢复），避免它把你从保底地图拽走。",
   defaultEnabled: false,
   defaultConfig: {
     rarities: ["exotic", "arcane"],
-    exoticBiome: "b_015",
+    exoticBiome: AUTO_BIOME,
     exoticThreshold: 30,
-    arcaneBiome: "b_015",
+    arcaneBiome: AUTO_BIOME,
     arcaneThreshold: 30,
     checkEverySec: 60,
     returnDelaySec: 5,
@@ -117,11 +119,13 @@ const definition: ModuleDefinition = {
     },
     {
       key: "exoticBiome",
-      type: "select",
+      type: "biome-select",
       label: "奇异鱼：保底地图（切到这里等出货）",
-      hint: "建议选对奇异鱼有加成的地图。还没解锁的地图切过去会失败，日志里会提示。",
-      default: "b_015",
-      options: BIOME_OPTIONS,
+      hint:
+        "默认「自动」：每次检查时选当前已解锁的最高地图，游戏新增地图后会自动跟上。\n" +
+        "也可以固定一张地图；还没解锁的地图不会切换，日志里会提示。",
+      default: AUTO_BIOME,
+      options: [{ value: AUTO_BIOME, label: "自动：已解锁的最高地图" }, ...BIOME_OPTIONS],
     },
     {
       key: "exoticThreshold",
@@ -135,11 +139,13 @@ const definition: ModuleDefinition = {
     },
     {
       key: "arcaneBiome",
-      type: "select",
+      type: "biome-select",
       label: "奥秘鱼：保底地图（切到这里等出货）",
-      hint: "建议选对奥秘鱼有加成的地图。可以和奇异鱼用同一张，也可以各用一张。",
-      default: "b_015",
-      options: BIOME_OPTIONS,
+      hint:
+        "默认「自动」：每次检查时选当前已解锁的最高地图，游戏新增地图后会自动跟上。\n" +
+        "可以和奇异鱼用同一张，也可以各用一张。",
+      default: AUTO_BIOME,
+      options: [{ value: AUTO_BIOME, label: "自动：已解锁的最高地图" }, ...BIOME_OPTIONS],
     },
     {
       key: "arcaneThreshold",
@@ -352,14 +358,47 @@ const definition: ModuleDefinition = {
 
         /* ---------- 读当前地图 + 所有档位的保底进度 ---------- */
         const [biomesData, stats] = await Promise.all([ctx.api.biomes(), ctx.api.statistics()]);
-        const biomes: any[] = biomesData?.biomes ?? [];
+        const biomes: any[] = (biomesData?.biomes ?? []).filter(Boolean);
+        const unlocked = biomes.filter((b) => b.isUnlocked !== false);
         const currentBiomeId: string | null = biomes.find((b) => b.isCurrent)?.id ?? null;
         const currentName = biomes.find((b) => b.id === currentBiomeId)?.name ?? currentBiomeId ?? "未知";
+
+        // 选择「自动」= 每次重新选择当前已解锁的最高地图。每次检查都重新算，
+        // 因此游戏新增 b_016、或者账号刚解锁一张新图时都不需要改配置/重启。
+        const autoTarget = pickHighestBiome(unlocked);
+        const roundTargets = targets.flatMap((t) => {
+          if (!t.biome || t.biome === AUTO_BIOME) {
+            const id = String(autoTarget?.id ?? "");
+            if (!id) {
+              idleOnce(`no-biome:${t.rarity}`, `${trigger}：${PITY_LABELS[t.rarity]} 没有可用的已解锁地图`);
+              return [];
+            }
+            idleOnce(
+              `auto-biome:${t.rarity}:${id}`,
+              `${trigger}：${PITY_LABELS[t.rarity]} 保底地图自动选择 ${String(autoTarget?.name ?? id)}`,
+            );
+            return [{ ...t, biome: id }];
+          }
+          const target = biomes.find((b) => String(b.id) === t.biome);
+          if (!target) {
+            idleOnce(`missing-biome:${t.rarity}:${t.biome}`, `${trigger}：${PITY_LABELS[t.rarity]} 的保底地图 ${t.biome} 不在游戏地图列表中`);
+            return [];
+          }
+          if (target.isUnlocked === false) {
+            idleOnce(`locked-biome:${t.rarity}:${t.biome}`, `${trigger}：${PITY_LABELS[t.rarity]} 的保底地图 ${String(target.name ?? t.biome)} 尚未解锁`);
+            return [];
+          }
+          return [t];
+        });
+        if (!roundTargets.length) {
+          idleOnce("no-usable-biome", `${trigger}：没有可用的保底地图，本功能暂不动作`);
+          return;
+        }
 
         const progress = new Map<PityRarity, PityProgress | null>();
         const caughtNow = new Set<PityRarity>();
 
-        for (const t of targets) {
+        for (const t of roundTargets) {
           const flow = S.flows[t.rarity];
           const cur = readPity(stats?.pity, t.rarity);
           if (!cur) {
@@ -390,7 +429,7 @@ const definition: ModuleDefinition = {
 
         /** 日志里把两个档位的进度都摊开（排查时不用来回翻） */
         const describeAll = () =>
-          targets
+          roundTargets
             .map((t) => {
               const p = progress.get(t.rarity) ?? null;
               const label = PITY_LABELS[t.rarity];
@@ -404,12 +443,12 @@ const definition: ModuleDefinition = {
         // 优先处理"正守着的"；否则挑一个到了阈值、且更接近出货的（一样近时奥秘优先）
         let handle: { rarity: PityRarity; biome: string; threshold: number } | null = null;
         if (S.active) {
-          handle = targets.find((t) => t.rarity === S.active) ?? null;
-          if (!handle) await endFlow(S.active, "该档位已不再监控"); // 勾选被取消
+          handle = roundTargets.find((t) => t.rarity === S.active) ?? null;
+          if (!handle) await endFlow(S.active, "该档位已不再监控或地图不可用");
         }
         if (!handle) {
           const picked = pickPityTarget(
-            targets.map((t) => ({
+            roundTargets.map((t) => ({
               rarity: t.rarity,
               remaining: progress.get(t.rarity)?.remaining ?? null,
               threshold: t.threshold,
@@ -557,7 +596,10 @@ const definition: ModuleDefinition = {
       "保底切图",
       targets.length
         ? `已启动：监控 ${targets
-            .map((t) => `${PITY_LABELS[t.rarity]}（阈值 ${t.threshold} 杆 → ${t.biome || "未配置地图"}）`)
+            .map(
+              (t) =>
+                `${PITY_LABELS[t.rarity]}（阈值 ${t.threshold} 杆 → ${!t.biome || t.biome === AUTO_BIOME ? "自动：已解锁的最高地图" : t.biome}）`,
+            )
             .join("、")}`
         : "已启动：未勾选任何要监控的保底（奇异鱼 / 奥秘鱼），本功能不会做任何事",
     );

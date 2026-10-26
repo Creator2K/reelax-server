@@ -19,7 +19,7 @@ import { decideGuildBoost, readGuildFunds } from "./decide.ts";
 const definition: ModuleDefinition = {
   id: "auto-guild-boost",
   name: "公会区域增益",
-  version: "1.0.0",
+  version: "1.1.0",
   description:
     "自动给指定地图买 / 续公会的区域经验增益（该地图上所有公会成员钓鱼经验 +50%）。花的是公会金库，需要干部权限；跟不跟随当前地图、买几份、金库留多少都能设。默认关闭。",
   defaultEnabled: false,
@@ -34,9 +34,11 @@ const definition: ModuleDefinition = {
   configSchema: [
     {
       key: "targetBiome",
-      type: "select",
+      type: "biome-select",
       label: "给哪张地图开增益",
-      hint: "「跟随当前地图」= 你在哪张图钓就给哪张开（助手也是这个行为）；也可以固定一张。",
+      hint:
+        "「跟随当前地图」= 你在哪张图钓就给哪张开（助手也是这个行为）；也可以固定一张。\n" +
+        "地图列表会随账号实时更新，游戏新增地图无需等待客户端适配。",
       default: "current",
       options: [{ value: "current", label: "跟随当前地图" }, ...BIOME_OPTIONS],
     },
