@@ -360,7 +360,9 @@ const definition: ModuleDefinition = {
         const [biomesData, stats] = await Promise.all([ctx.api.biomes(), ctx.api.statistics()]);
         const biomes: any[] = (biomesData?.biomes ?? []).filter(Boolean);
         const unlocked = biomes.filter((b) => b.isUnlocked !== false);
-        const currentBiomeId: string | null = biomes.find((b) => b.isCurrent)?.id ?? null;
+        const currentBiomeId: string | null = String(
+          biomesData?.currentBiomeId ?? biomesData?.player?.currentBiomeId ?? biomes.find((b) => b.isCurrent)?.id ?? "",
+        ).trim() || null;
         const currentName = biomes.find((b) => b.id === currentBiomeId)?.name ?? currentBiomeId ?? "未知";
 
         // 选择「自动」= 每次重新选择当前已解锁的最高地图。每次检查都重新算，

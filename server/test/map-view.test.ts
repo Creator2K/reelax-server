@@ -65,6 +65,18 @@ describe("buildMapsView", () => {
     expect(home.myCompetition).toBeNull();
   });
 
+  it("uses top-level currentBiomeId when per-map isCurrent is missing", () => {
+    const biomes = RAW.map(({ isCurrent: _isCurrent, ...b }) => b);
+    const view = buildMapsView({
+      biomes,
+      myCompetitionBiomes: new Map(),
+      party: null,
+      currentBiomeId: "b_012",
+    });
+    expect(view.currentBiomeId).toBe("b_012");
+    expect(view.current?.id).toBe("b_012");
+  });
+
   it("★ 没给解锁信息的图用内置表兜底（否则界面显示不出「需 Lv / 花费」）", () => {
     const locked = buildMapsView({ biomes: RAW, myCompetitionBiomes: new Map(), party: null }).maps.find(
       (m) => m.id === "b_015",

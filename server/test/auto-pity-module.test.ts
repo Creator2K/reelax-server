@@ -144,8 +144,9 @@ describe("保底切图模块", () => {
   it("★ 保底地图选择「自动」时选已解锁的最高地图，新地图无需改代码", async () => {
     const { ctx, calls, log, start } = makeCtx({ config: { arcaneBiome: "auto" } });
     (ctx.api as unknown as { biomes: () => Promise<unknown> }).biomes = async () => ({
+      currentBiomeId: BIOME_HOME,
       biomes: [
-        { id: BIOME_HOME, name: "月落溪谷", isCurrent: true },
+        { id: BIOME_HOME, name: "月落溪谷" },
         { id: BIOME_PITY, name: "星渊圣海" },
         { id: "b_016", name: "新地图" },
       ],

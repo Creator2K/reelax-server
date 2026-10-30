@@ -15,6 +15,7 @@ import { parseProxyInput, parseBaseUrl } from "./proxy-input.ts";
 import { buildMapsView, buildCompetitionMarks, checkTravel, type AccountMapsView } from "./map-view.ts";
 import { buildPartyView, invitationList, partyErrorMessage, type PartyView } from "./party-view.ts";
 import { biomeName } from "../modules/shared/biomes.ts";
+import { normalizeTravelParty } from "../modules/shared/party.ts";
 
 export type AccountView = {
   id: string;
@@ -361,10 +362,12 @@ export class AccountService {
       throw new HttpError(502, "GAME_UNREACHABLE", "读不到地图数据（账号可能还没连上游戏，稍后再试）");
     }
 
+    const live = await this.liveMapContext(rt);
     return buildMapsView({
       biomes,
       myCompetitionBiomes: await this.myCompetitionBiomes(rt),
-      party: partyOf(rt),
+      party: live.party,
+      currentBiomeId: live.currentBiomeId,
     });
   }
 
@@ -377,27 +380,16 @@ export class AccountService {
     const rt = this.requireRuntime(accountId, userId);
     await rt.refreshDisplayData(true);
 
-    const view = buildMapsView({ biomes: [...rt.biomes.values()], myCompetitionBiomes: new Map(), party: null });
+    const view = buildMapsView({
+      biomes: [...rt.biomes.values()],
+      myCompetitionBiomes: new Map(),
+      party: null,
+      currentBiomeId: this.currentBiomeIdOf(rt),
+    });
     const biome = view.maps.find((m) => m.id === input.biomeId) ?? null;
 
     // ★ 带队换图要**现场**再看一次船队状态：状态面板里的船队信息可能是几分钟前的
-    let party = view.party;
-    if (input.mode === "party") {
-      try {
-        const st = await rt.client.fishingState();
-        const p = st?.party ?? null;
-        party = p
-          ? {
-              inParty: Boolean(p.isInParty),
-              canChangeBoatBiome: Boolean(p.canChangeBoatBiome),
-              boatName: p.boatName ?? null,
-              boatBiomeId: p.boatBiomeId ?? null,
-            }
-          : null;
-      } catch {
-        party = null; // 拿不到就当没有权限：checkTravel 会给出明确原因
-      }
-    }
+    const party = input.mode === "party" ? (await this.liveMapContext(rt)).party : view.party;
 
     const check = checkTravel({ biome, party, mode: input.mode });
     if (!check.ok) throw new HttpError(400, check.code, check.message);
@@ -407,6 +399,36 @@ export class AccountService {
   }
 
   /** 账号运行时（不存在 = 账号不存在；越权一律 404） */
+  /** Live party and current map with fallbacks from both game endpoints. */
+  private async liveMapContext(rt: AccountRuntime): Promise<{
+    party: AccountMapsView["party"];
+    currentBiomeId: string | null;
+  }> {
+    const [state, overview] = await Promise.all([
+      rt.client.fishingState().catch(() => null),
+      rt.client.partyBoatsOverview().catch(() => null),
+    ]);
+    const live = normalizeTravelParty(state?.party, overview);
+    const party = live
+      ? {
+          inParty: live.isInParty,
+          canChangeBoatBiome: live.canChangeBoatBiome,
+          boatName: live.boatName,
+          boatBiomeId: live.boatBiomeId,
+        }
+      : partyOf(rt);
+    const currentBiomeId = String(
+      state?.currentBiomeId ?? state?.player?.currentBiomeId ?? state?.run?.biomeId ?? this.currentBiomeIdOf(rt) ?? "",
+    ).trim() || null;
+    return { party, currentBiomeId };
+  }
+
+  /** Current map id from the latest status snapshot (works when /api/biomes omits isCurrent). */
+  private currentBiomeIdOf(rt: AccountRuntime): string | null {
+    const panel = rt.statusPanel as { biomeId?: unknown } | null;
+    return panel?.biomeId == null ? null : String(panel.biomeId);
+  }
+
   private requireRuntime(accountId: string, userId: string) {
     this.requireOwned(accountId, userId);
     const rt = this.registry.get(accountId);

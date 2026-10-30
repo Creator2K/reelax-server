@@ -42,6 +42,7 @@
 import { type ModuleDefinition } from "../types.ts";
 import { weatherMultiplier, weatherName } from "../keep-online/xp-multiplier.ts";
 import { BIOME_OPTIONS, biomeName, pickHighestBiome } from "../shared/biomes.ts";
+import { normalizeTravelParty } from "../shared/party.ts";
 
 const GOLDEN_WEATHER_ID = "gilded_current";
 const SURGE_WEATHER_ID = "arcane_surge";
@@ -543,7 +544,16 @@ const definition: ModuleDefinition = {
     const partyState = async (): Promise<any> => {
       if (!partyFetched) {
         partyFetched = true;
-        partyCache = needParty ? ((await ctx.api.fishingState().catch(() => null))?.party ?? null) : null;
+        if (needParty) {
+          // Read both shapes: newer game versions can expose role and permissions in either response.
+          const [state, overview] = await Promise.all([
+            ctx.api.fishingState().catch(() => null),
+            ctx.api.partyBoatsOverview().catch(() => null),
+          ]);
+          partyCache = normalizeTravelParty(state?.party, overview);
+        } else {
+          partyCache = null;
+        }
       }
       return partyCache;
     };
@@ -726,9 +736,12 @@ const definition: ModuleDefinition = {
 
       const data = await ctx.api.biomes();
       const biomes: any[] = (data?.biomes ?? []).filter(Boolean);
-      const current = biomes.find((b) => b.isCurrent);
+      // Support both response shapes: top-level currentBiomeId and per-map isCurrent.
+      const currentBiomeId = String(
+        data?.currentBiomeId ?? data?.player?.currentBiomeId ?? biomes.find((b) => b.isCurrent)?.id ?? "",
+      ).trim();
       const unlocked = biomes.filter((b) => b.isUnlocked !== false);
-      if (!current || !unlocked.length) {
+      if (!currentBiomeId || !unlocked.length) {
         idle("地图数据尚未就绪");
         return;
       }
@@ -740,7 +753,7 @@ const definition: ModuleDefinition = {
       const decision = planTravel({
         priorities,
         unlocked,
-        currentBiomeId: current.id ?? null,
+        currentBiomeId,
         competition,
         minImprovePct,
         surgeBiomeId,
@@ -749,7 +762,7 @@ const definition: ModuleDefinition = {
               inParty: Boolean(party.isInParty),
               boatName: party.boatName ?? null,
               boatBiomeName: unlocked.find((b) => b.id === party.boatBiomeId)?.name ?? null,
-              sameAsCurrent: party.boatBiomeId === current.id,
+              sameAsCurrent: party.boatBiomeId === currentBiomeId,
             }
           : null,
       });

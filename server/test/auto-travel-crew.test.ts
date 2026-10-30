@@ -17,6 +17,7 @@ const STORM = "b_002"; // 天气最好（雷暴 ×1.5）→ 决策一定会去�
 type Opts = {
   crewTravel?: string;
   party?: unknown;
+  overview?: unknown;
   /** 船队换图接口抛这个错误 */
   partyError?: Error;
   /** 船队换图接口的响应 */
@@ -41,6 +42,7 @@ function makeCtx(opts: Opts = {}) {
     tournamentsOverview: async () => ({ current: null, upcoming: [] }),
     guildTournamentsOverview: async () => ({ current: null, upcoming: [] }),
     fishingState: async () => ({ party: opts.party ?? { isInParty: false } }),
+    partyBoatsOverview: async () => opts.overview ?? { party: null, crew: null },
     biomeTravel: async (id: string) => {
       calls.push(`PERSONAL ${id}`);
       world.currentBiome = id;
@@ -125,6 +127,18 @@ describe("自动切图 · 带队换图", () => {
     expect(line).toContain("留在原地 2 人");
     expect(line).toContain("未解锁目标 1");
     expect(line).toContain("不在船上 1");
+  });
+
+  it("derives captain permission from party overview when fishing state omits it", async () => {
+    const { calls, start } = makeCtx({
+      crewTravel: "carry",
+      party: { isInParty: true, boatName: "boat", boatBiomeId: HOME },
+      overview: { party: { isInParty: true, role: "captain", boatBiomeId: HOME }, crew: { name: "boat" } },
+    });
+    const run = await start();
+
+    await run();
+    expect(calls).toEqual([`PARTY ${STORM}`]);
   });
 
   it("★ 不是船长（无改航线权限）→ 按普通换图，并说明原因", async () => {

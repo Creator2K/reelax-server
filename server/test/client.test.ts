@@ -850,3 +850,20 @@ describe("单请求超时", () => {
     });
   });
 });
+/* ---------------- Party boat travel payload ---------------- */
+
+describe("party boat travel payload", () => {
+  it("explicitly opts out of the all-members-unlocked requirement", async () => {
+    const { impl, calls } = makeFetch(() => ({ body: { changed: true } }));
+    const c = newClient(impl);
+    c.setProof(makeProof(Date.now() + 3_600_000));
+
+    await c.partyBoatTravel("b_002");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("https://game.example/api/party-boats/current-biome");
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
+      biomeId: "b_002",
+      requireAllMembersUnlocked: false,
+    });
+  });
+});

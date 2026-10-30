@@ -440,9 +440,9 @@ export class GameClient {
       idempotent: true,
       body: {
         biomeId,
-        ...(opts.requireAllMembersUnlocked === undefined
-          ? {}
-          : { requireAllMembersUnlocked: opts.requireAllMembersUnlocked }),
+        // Always send an explicit value. Some game versions changed the omitted default
+        // to "all crew must have unlocked the map", which aborted the whole boat travel.
+        requireAllMembersUnlocked: opts.requireAllMembersUnlocked ?? false,
       },
     });
   }

@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.23.0";
+export const VERSION = "1.23.1";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,26 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.23.1",
+    date: "2026-10-30",
+    title: "修复新地图版本下自动切图与带队换图失效",
+    changes: [
+      {
+        kind: "fix",
+        text: "兼容游戏只返回顶层 `currentBiomeId`、不再在每张地图上给 `isCurrent` 的响应：自动切图、保底切图与「地图与天气」面板仍能识别当前所在地图并继续换图",
+      },
+      {
+        kind: "fix",
+        text: "船队权限同时读取 `fishing/state` 与船队总览：即使新版本只在船队总览里返回船长 / 舵手角色，自动切图仍会带队换图",
+      },
+      {
+        kind: "fix",
+        text: "船队换图请求明确使用「能跟的船员跟过来、未解锁或不在船上的留在原地」，避免游戏端默认值变化导致整条船换图被拒绝",
+      },
+    ],
+  },
+
   {
     version: "1.23.0",
     date: "2026-10-26",

@@ -50,6 +50,7 @@ function makeCtx(opts: FakeOpts = {}) {
     tournamentsOverview: async () => opts.personal ?? { current: null, upcoming: [] },
     guildTournamentsOverview: async () => opts.guild ?? { current: null, upcoming: [] },
     fishingState: async () => ({ party: opts.party ?? { isInParty: false } }),
+    partyBoatsOverview: async () => ({ party: null, crew: null }),
     biomeTravel: async (id: string) => {
       calls.push(`TRAVEL ${id}`);
       world.currentBiome = id;

@@ -48,8 +48,12 @@ export function buildMapsView(input: {
   /** biomeId → 「我报名的比赛」说明 */
   myCompetitionBiomes: Map<string, string>;
   party: AccountMapsView["party"];
+  /** Optional top-level current map id for newer game responses. */
+  currentBiomeId?: string | null;
 }): AccountMapsView {
   const maps: MapItemView[] = [];
+  const hasPerMapCurrent = (input.biomes ?? []).some((b) => b?.isCurrent === true);
+  const preferredCurrent = hasPerMapCurrent ? "" : String(input.currentBiomeId ?? "").trim();
   let currentBiomeId: string | null = null;
 
   for (const b of input.biomes ?? []) {
@@ -57,7 +61,7 @@ export function buildMapsView(input: {
     const id = String(b.id);
     const weatherId = biomeWeatherId(b);
     const info = biomeUnlockInfo(b);
-    const isCurrent = b.isCurrent === true;
+    const isCurrent = preferredCurrent ? id === preferredCurrent : b.isCurrent === true;
     if (isCurrent) currentBiomeId = id;
 
     maps.push({
