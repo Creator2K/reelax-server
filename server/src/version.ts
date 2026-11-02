@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.24.1";
+export const VERSION = "1.24.2";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,22 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.24.2",
+    date: "2026-11-02",
+    title: "修复切换账号后仍显示旧登录状态",
+    changes: [
+      {
+        kind: "fix",
+        text: "修复浏览器已有其它游戏账号登录时，打开新账号仍显示旧账号的问题：扩展现在会先删除同名的旧 Cookie（包括主机 Cookie 与 `.reelax.cn` 域 Cookie），再写入新账号会话，并校验写入结果",
+      },
+      {
+        kind: "improve",
+        text: "切换账号时会清理可能冲突的旧游戏会话 Cookie；同一浏览器共享游戏域登录态，已打开的旧账号标签页之后也可能切换成新账号",
+      },
+    ],
+  },
+
   {
     version: "1.24.1",
     date: "2026-11-02",

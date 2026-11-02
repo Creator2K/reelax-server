@@ -15,20 +15,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data?.error?.message || `HTTP ${response.status}`);
 
-    const cookies = Array.isArray(data.cookies) ? data.cookies : [];
+    const cookies = (Array.isArray(data.cookies) ? data.cookies : []).filter(
+      (cookie) => cookie?.name && typeof cookie.value === "string",
+    );
     if (!cookies.length) throw new Error("No game cookies returned");
 
+    // A game origin can have the same cookie name in both host-only and domain
+    // scopes. Remove every old copy first; otherwise Chrome sends both and the
+    // game may still authenticate the previously logged-in account.
+    const gameHost = new URL(GAME_ORIGIN).hostname;
+    const incomingNames = new Set(cookies.map((cookie) => String(cookie.name)));
+    const existing = await chrome.cookies.getAll({ domain: gameHost });
+    for (const cookie of existing) {
+      if (!incomingNames.has(cookie.name)) continue;
+      await chrome.cookies.remove({
+        url: `${GAME_ORIGIN}${cookie.path || "/"}`,
+        name: cookie.name,
+        ...(cookie.storeId ? { storeId: cookie.storeId } : {}),
+      });
+    }
+
     for (const cookie of cookies) {
-      if (!cookie?.name || typeof cookie.value !== "string") continue;
+      const name = String(cookie.name);
+      const value = String(cookie.value);
       await chrome.cookies.set({
         url: `${GAME_ORIGIN}/`,
-        name: String(cookie.name),
-        value: String(cookie.value),
+        name,
+        value,
         path: "/",
         secure: true,
         httpOnly: true,
         sameSite: "lax",
       });
+      const saved = await chrome.cookies.get({ url: `${GAME_ORIGIN}/`, name });
+      if (!saved || saved.value !== value) {
+        throw new Error(`Failed to replace game cookie: ${name}`);
+      }
     }
 
     await chrome.tabs.create({ url: data.gameUrl || `${GAME_ORIGIN}/` });

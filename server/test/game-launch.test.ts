@@ -147,5 +147,7 @@ describe("extension download", () => {
     expect(text).toContain("https://panel.example.com/*");
     expect(text).toContain("https://reelax.cn/*");
     expect(text).toContain("reelax-game-launch");
+    expect(text).toContain("chrome.cookies.remove");
+    expect(text).toContain("Failed to replace game cookie");
   });
 });
