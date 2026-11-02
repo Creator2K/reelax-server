@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.23.1";
+export const VERSION = "1.24.0";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,35 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.24.0",
+    date: "2026-11-02",
+    title: "账号卡片支持游戏一键登录",
+    notice: "一键登录需要安装浏览器扩展；不接受扩展时，可拖入一次自动填写书签，之后打开游戏并点击书签填充账号密码。",
+    changes: [
+      {
+        kind: "feature",
+        text: "账号管理页每个账号卡片新增「打开游戏」：安装浏览器扩展后，可以直接打开新标签页并写入该账号的游戏登录态，不需要再手动输入密码",
+      },
+      {
+        kind: "feature",
+        text: "账号管理页提供扩展 ZIP 下载与安装说明；下载包会按当前管理端和游戏域名自动生成权限，不需要手工修改配置",
+      },
+      {
+        kind: "feature",
+        text: "新增无扩展降级方案：安装一次「Reelax 自动填写」书签，打开游戏后点击书签即可自动填写邮箱和密码，不会自动提交登录",
+      },
+      {
+        kind: "improve",
+        text: "游戏启动使用 45 秒一次性票据：票据按账号与登录方式绑定、只能兑换一次；扩展模式只返回游戏 Cookie，不向管理网页暴露密码",
+      },
+      {
+        kind: "improve",
+        text: "打开游戏会记录审计事件；Cookie 导入账号没有可填写密码，使用扩展方案登录",
+      },
+    ],
+  },
+
   {
     version: "1.23.1",
     date: "2026-10-30",

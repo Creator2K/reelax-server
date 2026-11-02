@@ -46,6 +46,7 @@ export const AUDIT_ACTIONS = {
   /** 交换助手：手动执行一条交换链（会真的把鱼换出去） */
   ACCOUNT_SWAP_EXECUTE: "account.swap.execute",
   ACCOUNT_CREDENTIALS_UPDATED: "account.credentials.updated",
+  ACCOUNT_GAME_LAUNCH: "account.game.launch",
   MODULE_UPDATED: "account.module.updated",
   /** 后台：CDK 码库（手动添加 / 删除） */
   ADMIN_CDK_ADDED: "admin.cdk.added",

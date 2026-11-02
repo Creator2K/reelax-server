@@ -33,6 +33,7 @@ import { bootstrapModules } from "./modules/bootstrap.ts";
 import { upgradeModuleConfigs } from "./modules/config-upgrades.ts";
 import { createAuthRouter } from "./api/routes/auth.ts";
 import { createAccountsRouter } from "./api/routes/accounts.ts";
+import { createGameLaunchRouter } from "./api/routes/game-launch.ts";
 import { createProxiesRouter } from "./api/routes/proxy-routes.ts";
 import { createModulesRouter } from "./api/routes/modules.ts";
 import { createLogsRouter } from "./api/routes/logs-routes.ts";
@@ -445,6 +446,10 @@ async function main(): Promise<void> {
       a.use("/api/modules", createModulesRouter({ notify }));
       a.use("/api/notify", createNotifyRouter({ notify, audit: repos.audit, limiters }));
       a.use("/api/accounts", createAccountsRouter({ accounts, registry, audit: repos.audit, swap }));
+      a.use(
+        "/api/game-launch",
+        createGameLaunchRouter({ accounts, audit: repos.audit, gameOrigin: env.baseUrl }),
+      );
       a.use("/api/proxies", createProxiesRouter({ proxies, accounts, audit: repos.audit, limiters }));
       a.use("/api/logs", createLogsRouter({ logger, logs: repos.logs }));
       // CDK 公共库：提交时用指定账号试领验证，兑换时复用该账号的会话与代理

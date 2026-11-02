@@ -1160,6 +1160,35 @@ export class AccountRuntime {
   }
 
   /**
+   * Prepare a game session for browser launch.
+   *
+   * The returned cookie is written by the extension/bookmarklet only after a one-time
+   * launch ticket is redeemed. Passwords are never persisted on the browser side.
+   */
+  async gameLaunchSession(): Promise<{
+    email: string;
+    password: string;
+    cookie: string;
+    gameUrl: string;
+  }> {
+    if (this.status === "stopped" || this.status === "error" || this.status === "expired") {
+      this.refreshCredentials();
+      this.refreshProxy();
+    }
+    if (this.credentialError) throw new Error(this.credentialError);
+
+    await this.client.ensureSession();
+    if (!this.client.cookie) throw new Error("游戏会话没有返回 Cookie，无法在浏览器中打开");
+
+    return {
+      email: this.client.email,
+      password: this.client.password,
+      cookie: this.client.cookie,
+      gameUrl: this.client.baseUrl,
+    };
+  }
+
+  /**
    * 用本账号兑换 CDK（服务端「CDK 兑换」用）。
    *
    * 复用本账号已有的会话、代理与重试逻辑；客户端会在需要时自动 ensureSession，

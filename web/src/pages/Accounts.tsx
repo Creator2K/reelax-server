@@ -7,6 +7,9 @@ import { Link } from "react-router-dom";
 import {
   IconActivity,
   IconAlertTriangle,
+  IconBookmark,
+  IconDownload,
+  IconExternalLink,
   IconCoin,
   IconFish,
   IconGauge,
@@ -55,6 +58,15 @@ import {
   useStopAccount,
 } from "@/lib/mutations.ts";
 import { fmtCompact, fmtExact, fmtNum, fmtRelative } from "@/lib/utils.ts";
+import { api } from "@/lib/api.ts";
+import { toast } from "sonner";
+import {
+  buildGameBookmarklet,
+  gameLaunchUrl,
+  hasGameLaunchExtension,
+  launchWithExtension,
+  type GameLaunchTicket,
+} from "@/lib/game-launch.ts";
 
 export default function AccountsPage() {
   const { data: accounts, isPending, error } = useAccounts();
@@ -64,6 +76,7 @@ export default function AccountsPage() {
   const del = useDeleteAccount();
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [gameGuideOpen, setGameGuideOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Account | null>(null);
 
   usePageHeader("账号管理", "每个账号独立运行、独立配置功能；建议为每个账号绑定代理以隔离出口 IP");
@@ -77,9 +90,37 @@ export default function AccountsPage() {
   const totalGold = list.reduce((s, a) => s + (a.stats?.gold ?? 0), 0);
   const totalFish = list.reduce((s, a) => s + (a.stats?.fishCount ?? 0), 0);
 
+  const openGame = async (account: Account) => {
+    const extension = hasGameLaunchExtension();
+    const mode = extension ? "cookie" : "credentials";
+    if (!extension && !account.hasPassword) {
+      setGameGuideOpen(true);
+      toast.info("Cookie 登录账号需要安装扩展后才能一键打开");
+      return;
+    }
+    try {
+      const launch = await api.post<GameLaunchTicket>("/api/game-launch/tickets", {
+        accountId: account.id,
+        mode,
+      });
+      if (extension) {
+        await launchWithExtension(launch.ticket);
+        toast.success(`已在浏览器中登录「${account.label}」`);
+      } else {
+        window.open(gameLaunchUrl(launch.gameUrl, launch.ticket), "_blank", "noopener,noreferrer");
+        toast.info("游戏已打开，请点书签自动填写账号密码");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "打开游戏失败");
+    }
+  };
   return (
     <PageContainer wide>
       <PageHeaderActions>
+        <Button size="sm" variant="outline" onClick={() => setGameGuideOpen(true)}>
+          <IconDownload className="size-3.5" />
+          游戏登录扩展
+        </Button>
         <Button size="sm" onClick={() => setCreateOpen(true)}>
           <IconPlus className="size-3.5" />
           添加账号
@@ -156,12 +197,15 @@ export default function AccountsPage() {
                 onStart={() => start.mutate(a.id)}
                 onStop={() => stop.mutate(a.id)}
                 onDelete={() => setPendingDelete(a)}
+                onOpenGame={() => openGame(a)}
                 busy={start.isPending || stop.isPending}
               />
             ))}
           </div>
         </>
       )}
+
+      <GameLaunchGuideDialog open={gameGuideOpen} onOpenChange={setGameGuideOpen} />
 
       <CreateAccountDialog open={createOpen} onOpenChange={setCreateOpen} proxies={proxies ?? []} />
 
@@ -196,14 +240,17 @@ function AccountCard({
   onStart,
   onStop,
   onDelete,
+  onOpenGame,
   busy,
 }: {
   account: Account;
   onStart: () => void;
   onStop: () => void;
   onDelete: () => void;
+  onOpenGame: () => Promise<void>;
   busy: boolean;
 }) {
+  const [opening, setOpening] = useState(false);
   const running = account.status !== "stopped";
   const panel = account.statusPanel;
 
@@ -272,6 +319,19 @@ function AccountCard({
       </div>
 
       <div className="border-border/60 flex items-center justify-end gap-1.5 border-t px-3 py-2">
+        <Button
+          size="sm"
+          variant="outline"
+          className="mr-auto"
+          disabled={opening || !account.credentialOk}
+          onClick={() => {
+            setOpening(true);
+            void onOpenGame().finally(() => setOpening(false));
+          }}
+        >
+          <IconExternalLink className="size-3.5" />
+          {opening ? "正在打开…" : "打开游戏"}
+        </Button>
         {running ? (
           <Button size="sm" variant="outline" onClick={onStop} disabled={busy}>
             <IconPlayerStop className="size-3.5" />
@@ -506,6 +566,76 @@ function CreateAccountDialog({
           </Button>
           <Button onClick={() => void submit()} disabled={invalid || create.isPending}>
             {create.isPending ? "添加中…" : "添加并启动"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function GameLaunchGuideDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const bookmarklet = buildGameBookmarklet(window.location.origin);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>游戏一键登录</DialogTitle>
+          <DialogDescription>
+            安装扩展后可真正一键写入游戏登录态；不接受扩展时，可以拖一个书签脚本到书签栏，打开游戏后点一下自动填写账号密码。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-5 text-sm">
+          <section className="space-y-2 rounded-xl border p-4">
+            <h3 className="flex items-center gap-2 font-medium">
+              <IconDownload className="size-4" />
+              方案一：浏览器扩展（推荐）
+            </h3>
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              下载后解压，在 Chrome / Edge 的扩展管理页开启开发者模式，选择“加载已解压的扩展”，然后刷新本页面。
+            </p>
+            <Button asChild size="sm">
+              <a href="/api/game-launch/extension.zip">
+                <IconDownload className="size-3.5" />
+                下载扩展 ZIP
+              </a>
+            </Button>
+          </section>
+
+          <section className="space-y-2 rounded-xl border p-4">
+            <h3 className="flex items-center gap-2 font-medium">
+              <IconBookmark className="size-4" />
+              方案二：自动填写书签
+            </h3>
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              把下面的链接拖到浏览器书签栏，只需安装一次。之后点账号卡片的“打开游戏”，再点一下该书签，会自动填入邮箱和密码，不会自动提交。
+            </p>
+            <a
+              href={bookmarklet}
+              draggable
+              onClick={(event) => event.preventDefault()}
+              className="border-primary/30 bg-primary/5 text-primary inline-flex cursor-grab items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium active:cursor-grabbing"
+              title="拖到书签栏"
+            >
+              <IconBookmark className="size-3.5" />
+              Reelax 自动填写
+            </a>
+            <p className="text-muted-foreground text-[11px]">
+              Cookie 导入账号没有可填写密码，只能使用扩展方案。
+            </p>
+          </section>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            知道了
           </Button>
         </DialogFooter>
       </DialogContent>

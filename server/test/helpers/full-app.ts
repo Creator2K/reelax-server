@@ -19,6 +19,7 @@ import { Bus } from "../../src/lib/bus.ts";
 import { createApp } from "../../src/api/server.ts";
 import { createAuthRouter } from "../../src/api/routes/auth.ts";
 import { createAccountsRouter } from "../../src/api/routes/accounts.ts";
+import { createGameLaunchRouter } from "../../src/api/routes/game-launch.ts";
 import { createProxiesRouter } from "../../src/api/routes/proxy-routes.ts";
 import { createModulesRouter } from "../../src/api/routes/modules.ts";
 import { NotifyService } from "../../src/services/notify-service.ts";
@@ -177,6 +178,10 @@ export async function buildFullApp(
       a.use("/api/modules", createModulesRouter({ notify, hasUsableChannel: () => notifyAvailable }));
       a.use("/api/notify", createNotifyRouter({ notify, audit: repos.audit, limiters }));
       a.use("/api/accounts", createAccountsRouter({ accounts, registry, audit: repos.audit, swap }));
+      a.use(
+        "/api/game-launch",
+        createGameLaunchRouter({ accounts, audit: repos.audit, gameOrigin: env.baseUrl }),
+      );
       a.use("/api/cdk", createCdkRouter({ cdk }));
       a.use("/api/proxies", createProxiesRouter({ proxies, accounts, audit: repos.audit, limiters }));
       a.use("/api/logs", createLogsRouter({ logger, logs: repos.logs }));

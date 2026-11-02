@@ -2,6 +2,7 @@
 //
 // 所有方法都以 userId 为一等参数，并且**先校验归属再返回**；
 // 越权一律返回 404（不泄漏资源是否存在）。
+import { createHash, randomBytes } from "node:crypto";
 import type { Repos } from "../db/repositories/index.ts";
 import type { AccountRow, AccountSafeRow } from "../db/repositories/accounts.ts";
 import { accountSafeToApi } from "../db/repositories/accounts.ts";
@@ -64,6 +65,15 @@ export type UpdateAccountInput = {
   proxyId?: string | null;
 };
 
+export type GameLaunchMode = "cookie" | "credentials";
+
+type GameLaunchTicket = {
+  accountId: string;
+  userId: string;
+  mode: GameLaunchMode;
+  expiresAt: number;
+};
+
 export class AccountService {
   private repos: Repos;
   private vault: CredentialVault;
@@ -71,6 +81,7 @@ export class AccountService {
   /** 判定用户是否有可用推送通道（收益日报的前置条件） */
   private hasUsableChannel: (userId: string) => boolean;
 
+  private gameLaunchTickets = new Map<string, GameLaunchTicket>();
   constructor(deps: {
     repos: Repos;
     vault: CredentialVault;
@@ -130,6 +141,79 @@ export class AccountService {
 
   getForUser(accountId: string, userId: string): AccountView {
     return this.toView(this.requireOwned(accountId, userId));
+  }
+
+  /* ---------- Browser game launch ---------- */
+
+  private static launchHash(token: string): string {
+    return createHash("sha256").update(token, "utf8").digest("hex");
+  }
+
+  private purgeGameLaunchTickets(now = Date.now()): void {
+    for (const [hash, ticket] of this.gameLaunchTickets) {
+      if (ticket.expiresAt <= now) this.gameLaunchTickets.delete(hash);
+    }
+  }
+
+  createGameLaunchTicket(
+    accountId: string,
+    userId: string,
+    mode: GameLaunchMode,
+  ): { ticket: string; expiresAt: number; gameUrl: string } {
+    const row = this.requireOwned(accountId, userId);
+    if (mode === "credentials" && !row.has_password) {
+      throw new HttpError(400, "PASSWORD_NOT_SAVED", "该账号没有保存游戏密码，请改用扩展登录或重新导入密码");
+    }
+    const rt = this.registry.get(accountId);
+    if (!rt) throw new HttpError(404, "ACCOUNT_NOT_FOUND", "账号不存在");
+
+    this.purgeGameLaunchTickets();
+    const token = randomBytes(32).toString("base64url");
+    const expiresAt = Date.now() + 45_000;
+    this.gameLaunchTickets.set(AccountService.launchHash(token), { accountId, userId, mode, expiresAt });
+    return { ticket: token, expiresAt, gameUrl: rt.client.baseUrl };
+  }
+
+  async redeemGameLaunchTicket(token: string): Promise<{
+    mode: GameLaunchMode;
+    gameUrl: string;
+    label: string;
+    email: string;
+    password?: string;
+    cookies?: { name: string; value: string }[];
+  }> {
+    this.purgeGameLaunchTickets();
+    const hash = AccountService.launchHash(token);
+    const ticket = this.gameLaunchTickets.get(hash);
+    if (!ticket) throw new HttpError(400, "LAUNCH_TICKET_INVALID", "启动票据无效或已使用");
+    this.gameLaunchTickets.delete(hash);
+
+    const row = this.repos.accounts.findById(ticket.accountId);
+    const owner = this.repos.users.findById(ticket.userId);
+    if (!row || row.user_id !== ticket.userId || owner?.status !== "approved") {
+      throw new HttpError(400, "LAUNCH_TICKET_INVALID", "启动票据无效或已使用");
+    }
+    const rt = this.registry.get(ticket.accountId);
+    if (!rt) throw new HttpError(404, "ACCOUNT_NOT_FOUND", "账号不存在");
+
+    const session = await rt.gameLaunchSession();
+    const cookies = session.cookie
+      .split(/;\s*/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const at = part.indexOf("=");
+        return at > 0 ? { name: part.slice(0, at), value: part.slice(at + 1) } : null;
+      })
+      .filter((item): item is { name: string; value: string } => Boolean(item));
+
+    return {
+      mode: ticket.mode,
+      gameUrl: session.gameUrl,
+      label: row.label,
+      email: session.email,
+      ...(ticket.mode === "credentials" ? { password: session.password } : { cookies }),
+    };
   }
 
   /* ---------- 创建 / 更新 / 删除 ---------- */

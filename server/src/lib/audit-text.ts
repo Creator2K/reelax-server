@@ -84,6 +84,9 @@ export function describeAudit(row: AuditLike, r: AuditResolvers = {}): string {
   const target = row?.target ?? null;
   const note = detailNote(row?.detail_json ?? null);
 
+  if (action === "account.game.launch") {
+    return `打开账号${accountText(target ?? "", r)}的游戏页面（一次性登录）`;
+  }
   // 账号 + 功能：target 是 "账号 id:功能 id"
   if (action === "account.module.updated") {
     const [accountId = "", moduleId = ""] = String(target ?? "").split(":");
