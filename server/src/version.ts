@@ -8,7 +8,7 @@
 //    两份由 test/changelog-json.test.ts 钉住不许漂移。
 //
 // 当前版本（与 package.json 的 version 同步维护）
-export const VERSION = "1.24.0";
+export const VERSION = "1.24.1";
 
 export type ChangeKind = "feature" | "improve" | "fix";
 
@@ -23,6 +23,22 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.24.1",
+    date: "2026-11-02",
+    title: "修复 HTTP 访问时一键登录报错",
+    changes: [
+      {
+        kind: "fix",
+        text: "修复管理端通过普通 HTTP 访问时，浏览器不提供 `crypto.randomUUID()`，导致安装扩展后点击「打开游戏」提示 `crypto.randomUUID is not a function` 的问题",
+      },
+      {
+        kind: "improve",
+        text: "一键登录请求 ID 增加 `crypto.getRandomValues()` 与普通回退方案，HTTPS、HTTP、内网 IP 访问均可正常使用扩展登录",
+      },
+    ],
+  },
+
   {
     version: "1.24.0",
     date: "2026-11-02",
